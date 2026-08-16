@@ -24,6 +24,13 @@ class GtfsRealtimeService {
     try {
       final response = await _client.get(endpoint).timeout(requestTimeout);
 
+      if (response.statusCode == 429) {
+        throw const GtfsRealtimeException(
+          'Realtime data is temporarily unavailable because the data service '
+          'is receiving too many requests. Please wait a moment and try again.',
+        );
+      }
+
       if (response.statusCode != 200) {
         throw GtfsRealtimeException(
           'Government realtime feed returned HTTP ${response.statusCode}.',
@@ -125,10 +132,11 @@ class GtfsRealtimeService {
   }
 
   static String? _optionalString(bool isPresent, String value) {
-    if (!isPresent || value.isEmpty) {
+    if (!isPresent) {
       return null;
     }
-    return value;
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
   }
 
   static DateTime? _decodeTimestamp(gtfs.VehiclePosition vehiclePosition) {

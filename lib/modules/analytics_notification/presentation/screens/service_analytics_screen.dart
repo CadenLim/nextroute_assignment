@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/analytics/service_analytics_calculator.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/data/models/service_analytics.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/data/services/gtfs_realtime_service.dart';
+
+const _autoRefreshInterval = Duration(seconds: 30);
 
 class ServiceAnalyticsScreen extends StatefulWidget {
   const ServiceAnalyticsScreen({super.key});
@@ -16,16 +20,21 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
       const ServiceAnalyticsCalculator();
 
   late Future<ServiceAnalytics> _analyticsFuture;
+  Timer? _refreshTimer;
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
     _analyticsFuture = _loadAnalytics();
+    _refreshTimer = Timer.periodic(_autoRefreshInterval, (_) {
+      _refresh();
+    });
   }
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
     _service.close();
     super.dispose();
   }
@@ -116,6 +125,10 @@ class _AnalyticsContent extends StatelessWidget {
           Text(
             'SERVICE ANALYTICS',
             style: Theme.of(context).textTheme.titleLarge,
+          ),
+          Text(
+            'Auto-refresh: every ${_autoRefreshInterval.inSeconds} seconds',
+            style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 12),
           _MetricCard(

@@ -97,6 +97,14 @@ class GtfsRealtimeService {
             latitude: latitude,
             longitude: longitude,
             timestamp: _decodeTimestamp(vehiclePosition),
+            currentStopSequence: vehiclePosition.hasCurrentStopSequence()
+                ? vehiclePosition.currentStopSequence
+                : null,
+            stopId: _optionalString(
+              vehiclePosition.hasStopId(),
+              vehiclePosition.stopId,
+            ),
+            currentStatus: _decodeCurrentStatus(vehiclePosition),
           ),
         );
       }
@@ -152,6 +160,26 @@ class GtfsRealtimeService {
     } on ArgumentError {
       return null;
     }
+  }
+
+  static RealtimeVehicleStopStatus? _decodeCurrentStatus(
+    gtfs.VehiclePosition vehiclePosition,
+  ) {
+    if (!vehiclePosition.hasCurrentStatus()) {
+      return null;
+    }
+
+    final status = vehiclePosition.currentStatus;
+    if (status == gtfs.VehiclePosition_VehicleStopStatus.INCOMING_AT) {
+      return RealtimeVehicleStopStatus.incomingAt;
+    }
+    if (status == gtfs.VehiclePosition_VehicleStopStatus.STOPPED_AT) {
+      return RealtimeVehicleStopStatus.stoppedAt;
+    }
+    if (status == gtfs.VehiclePosition_VehicleStopStatus.IN_TRANSIT_TO) {
+      return RealtimeVehicleStopStatus.inTransitTo;
+    }
+    return null;
   }
 }
 

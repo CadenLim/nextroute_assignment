@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gtfs_realtime_bindings/gtfs_realtime_bindings.dart' as gtfs;
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/data/models/realtime_vehicle.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/data/services/gtfs_realtime_service.dart';
 
 void main() {
@@ -67,4 +68,75 @@ void main() {
       service.close();
     },
   );
+
+  test('protobuf decoding preserves explicit stop context fields', () async {
+    final protobufFeed = gtfs.FeedMessage(
+      header: gtfs.FeedHeader(gtfsRealtimeVersion: '2.0'),
+      entity: [
+        gtfs.FeedEntity(
+          id: 'incoming',
+          vehicle: gtfs.VehiclePosition(
+            position: gtfs.Position(latitude: 3, longitude: 101),
+            currentStopSequence: 1,
+            stopId: 'stop-1',
+            currentStatus: gtfs.VehiclePosition_VehicleStopStatus.INCOMING_AT,
+          ),
+        ),
+        gtfs.FeedEntity(
+          id: 'stopped',
+          vehicle: gtfs.VehiclePosition(
+            position: gtfs.Position(latitude: 3.1, longitude: 101.1),
+            currentStopSequence: 2,
+            stopId: 'stop-2',
+            currentStatus: gtfs.VehiclePosition_VehicleStopStatus.STOPPED_AT,
+          ),
+        ),
+        gtfs.FeedEntity(
+          id: 'in-transit',
+          vehicle: gtfs.VehiclePosition(
+            position: gtfs.Position(latitude: 3.2, longitude: 101.2),
+            currentStopSequence: 3,
+            stopId: 'stop-3',
+            currentStatus: gtfs.VehiclePosition_VehicleStopStatus.IN_TRANSIT_TO,
+          ),
+        ),
+        gtfs.FeedEntity(
+          id: 'implicit-status',
+          vehicle: gtfs.VehiclePosition(
+            position: gtfs.Position(latitude: 3.3, longitude: 101.3),
+            currentStopSequence: 4,
+            stopId: '   ',
+          ),
+        ),
+      ],
+    );
+    final service = GtfsRealtimeService(
+      client: MockClient(
+        (request) async =>
+            http.Response.bytes(protobufFeed.writeToBuffer(), 200),
+      ),
+    );
+
+    final vehicles = (await service.fetchVehiclePositions()).vehicles;
+
+    expect(vehicles.map((vehicle) => vehicle.currentStopSequence), [
+      1,
+      2,
+      3,
+      4,
+    ]);
+    expect(vehicles.first.stopId, 'stop-1');
+    expect(vehicles.last.stopId, isNull);
+    expect(vehicles.map((vehicle) => vehicle.currentStatus), [
+      RealtimeVehicleStopStatus.incomingAt,
+      RealtimeVehicleStopStatus.stoppedAt,
+      RealtimeVehicleStopStatus.inTransitTo,
+      null,
+    ]);
+    expect(
+      vehicles.last.effectiveCurrentStatus,
+      RealtimeVehicleStopStatus.inTransitTo,
+    );
+    service.close();
+  });
 }

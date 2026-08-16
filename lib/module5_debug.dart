@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/presentation/screens/notification_centre_screen.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/presentation/screens/service_analytics_screen.dart';
 
 void main() {
@@ -12,11 +13,57 @@ class Module5DebugApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Module 5 Realtime Debug',
+      title: 'Module 5 Debug',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
       ),
-      home: const ServiceAnalyticsScreen(),
+      home: const Module5DebugHome(),
+    );
+  }
+}
+
+class Module5DebugHome extends StatelessWidget {
+  const Module5DebugHome({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Module 5 Debug')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.analytics_outlined),
+              title: const Text('Service Analytics'),
+              subtitle: const Text('View the Phase 2 realtime analytics.'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (context) => const ServiceAnalyticsScreen(),
+                  ),
+                );
+              },
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.notifications_outlined),
+              title: const Text('Notification Centre'),
+              subtitle: const Text('Open the local DEMO notification inbox.'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (context) => const NotificationCentreScreen(),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

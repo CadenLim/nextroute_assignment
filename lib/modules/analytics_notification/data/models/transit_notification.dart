@@ -1,5 +1,7 @@
 enum TransitNotificationType { service, delay, crowd }
 
+enum TransitNotificationOrigin { demo, appGenerated, official }
+
 class TransitNotification {
   const TransitNotification({
     required this.id,
@@ -9,7 +11,7 @@ class TransitNotification {
     required this.routeId,
     required this.createdAt,
     required this.isRead,
-    required this.isDemo,
+    required this.origin,
   });
 
   final String id;
@@ -19,7 +21,9 @@ class TransitNotification {
   final String? routeId;
   final DateTime createdAt;
   final bool isRead;
-  final bool isDemo;
+  final TransitNotificationOrigin origin;
+
+  bool get isDemo => origin == TransitNotificationOrigin.demo;
 
   factory TransitNotification.fromJson(Map<String, dynamic> json) {
     return TransitNotification(
@@ -30,7 +34,7 @@ class TransitNotification {
       routeId: _optionalString(json['routeId']),
       createdAt: _parseDateTime(json['createdAt']),
       isRead: _requiredBool(json, 'isRead'),
-      isDemo: _requiredBool(json, 'isDemo'),
+      origin: _parseOrigin(json),
     );
   }
 
@@ -43,7 +47,7 @@ class TransitNotification {
       'routeId': routeId,
       'createdAt': createdAt.toUtc().toIso8601String(),
       'isRead': isRead,
-      'isDemo': isDemo,
+      'origin': origin.name,
     };
   }
 
@@ -56,7 +60,7 @@ class TransitNotification {
       routeId: routeId,
       createdAt: createdAt,
       isRead: isRead ?? this.isRead,
-      isDemo: isDemo,
+      origin: origin,
     );
   }
 
@@ -106,5 +110,23 @@ class TransitNotification {
       }
     }
     throw const FormatException('Invalid or missing notification type.');
+  }
+
+  static TransitNotificationOrigin _parseOrigin(Map<String, dynamic> json) {
+    final value = json['origin'];
+    if (value is String) {
+      for (final origin in TransitNotificationOrigin.values) {
+        if (origin.name == value) {
+          return origin;
+        }
+      }
+      throw const FormatException('Invalid notification origin.');
+    }
+
+    if (!json.containsKey('origin') && json['isDemo'] == true) {
+      return TransitNotificationOrigin.demo;
+    }
+
+    throw const FormatException('Missing notification origin.');
   }
 }

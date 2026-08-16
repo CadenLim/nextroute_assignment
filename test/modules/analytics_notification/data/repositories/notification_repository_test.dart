@@ -97,6 +97,11 @@ void main() {
             'id': 'invalid-date',
             'createdAt': 'not-a-date',
           }),
+          jsonEncode({
+            ...valid.toJson(),
+            'id': 'invalid-origin',
+            'origin': 'unknown-origin',
+          }),
         ],
       );
       final repository = NotificationRepository(storage, now: () => fixedNow);
@@ -119,11 +124,13 @@ void main() {
       expect(defaults.serviceAlertsEnabled, isTrue);
       expect(defaults.delayAlertsEnabled, isTrue);
       expect(defaults.crowdAlertsEnabled, isTrue);
+      expect(defaults.realtimeDataAlertsEnabled, isTrue);
 
       const updated = NotificationPreferences(
         serviceAlertsEnabled: false,
         delayAlertsEnabled: true,
         crowdAlertsEnabled: false,
+        realtimeDataAlertsEnabled: false,
       );
       await repository.savePreferences(updated);
       final reloaded = await NotificationRepository(storage).loadPreferences();
@@ -131,11 +138,71 @@ void main() {
       expect(reloaded.serviceAlertsEnabled, isFalse);
       expect(reloaded.delayAlertsEnabled, isTrue);
       expect(reloaded.crowdAlertsEnabled, isFalse);
+      expect(reloaded.realtimeDataAlertsEnabled, isFalse);
     },
   );
+
+  test('old preference JSON defaults realtime data alerts to true', () async {
+    final storage = _FakeNotificationLocalStorage(
+      preferencesJson: jsonEncode({
+        'serviceAlertsEnabled': false,
+        'delayAlertsEnabled': false,
+        'crowdAlertsEnabled': false,
+      }),
+    );
+
+    final preferences = await NotificationRepository(storage).loadPreferences();
+
+    expect(preferences.realtimeDataAlertsEnabled, isTrue);
+  });
+
+  test('stores a deterministic notification ID only once', () async {
+    final storage = _FakeNotificationLocalStorage(notificationRecords: []);
+    final repository = NotificationRepository(storage);
+    final alert = _notification(
+      id: 'app-realtime-data-stale',
+      origin: TransitNotificationOrigin.appGenerated,
+    );
+
+    final firstAdd = await repository.addNotificationIfAbsent(alert);
+    final secondAdd = await repository.addNotificationIfAbsent(alert);
+    final stored = await repository.loadNotifications();
+
+    expect(firstAdd, isTrue);
+    expect(secondAdd, isFalse);
+    expect(stored, hasLength(1));
+    expect(stored.single.id, 'app-realtime-data-stale');
+  });
+
+  test('disabled realtime data alerts are not persisted', () async {
+    final storage = _FakeNotificationLocalStorage(notificationRecords: []);
+    final repository = NotificationRepository(storage);
+    await repository.savePreferences(
+      const NotificationPreferences(
+        serviceAlertsEnabled: true,
+        delayAlertsEnabled: true,
+        crowdAlertsEnabled: true,
+        realtimeDataAlertsEnabled: false,
+      ),
+    );
+
+    final wasStored = await repository.addRealtimeDataAlertIfEnabled(
+      _notification(
+        id: 'app-realtime-data-unavailable',
+        origin: TransitNotificationOrigin.appGenerated,
+      ),
+    );
+
+    expect(wasStored, isFalse);
+    expect(await repository.loadNotifications(), isEmpty);
+  });
 }
 
-TransitNotification _notification({required String id, bool isRead = false}) {
+TransitNotification _notification({
+  required String id,
+  bool isRead = false,
+  TransitNotificationOrigin origin = TransitNotificationOrigin.demo,
+}) {
   return TransitNotification(
     id: id,
     type: TransitNotificationType.service,
@@ -144,12 +211,15 @@ TransitNotification _notification({required String id, bool isRead = false}) {
     routeId: null,
     createdAt: DateTime.utc(2026, 8, 16, 9),
     isRead: isRead,
-    isDemo: true,
+    origin: origin,
   );
 }
 
 class _FakeNotificationLocalStorage implements NotificationLocalStorage {
-  _FakeNotificationLocalStorage({this.notificationRecords});
+  _FakeNotificationLocalStorage({
+    this.notificationRecords,
+    this.preferencesJson,
+  });
 
   List<String>? notificationRecords;
   String? preferencesJson;

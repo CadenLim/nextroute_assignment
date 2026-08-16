@@ -236,11 +236,10 @@ class _NotificationCard extends StatelessWidget {
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                   ),
-                  if (notification.isDemo)
-                    const Chip(
-                      visualDensity: VisualDensity.compact,
-                      label: Text('DEMO'),
-                    ),
+                  Chip(
+                    visualDensity: VisualDensity.compact,
+                    label: Text(_labelForOrigin(notification.origin)),
+                  ),
                 ],
               ),
               const SizedBox(height: 8),
@@ -277,6 +276,14 @@ class _NotificationCard extends StatelessWidget {
       TransitNotificationType.service => 'Service',
       TransitNotificationType.delay => 'Delay',
       TransitNotificationType.crowd => 'Crowd',
+    };
+  }
+
+  static String _labelForOrigin(TransitNotificationOrigin origin) {
+    return switch (origin) {
+      TransitNotificationOrigin.demo => 'DEMO',
+      TransitNotificationOrigin.appGenerated => 'APP-GENERATED',
+      TransitNotificationOrigin.official => 'OFFICIAL',
     };
   }
 

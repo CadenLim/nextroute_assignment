@@ -44,6 +44,26 @@ class NotificationRepository {
     return _storage.writeNotificationRecords(records);
   }
 
+  Future<bool> addNotificationIfAbsent(TransitNotification notification) async {
+    final notifications = await loadNotifications();
+    if (notifications.any((existing) => existing.id == notification.id)) {
+      return false;
+    }
+
+    await saveNotifications([notification, ...notifications]);
+    return true;
+  }
+
+  Future<bool> addRealtimeDataAlertIfEnabled(
+    TransitNotification notification,
+  ) async {
+    final preferences = await loadPreferences();
+    if (!preferences.realtimeDataAlertsEnabled) {
+      return false;
+    }
+    return addNotificationIfAbsent(notification);
+  }
+
   Future<List<TransitNotification>> markAsRead(String notificationId) async {
     final notifications = await loadNotifications();
     final updated = notifications
@@ -119,7 +139,7 @@ class NotificationRepository {
         routeId: null,
         createdAt: now.subtract(const Duration(minutes: 5)),
         isRead: false,
-        isDemo: true,
+        origin: TransitNotificationOrigin.demo,
       ),
       TransitNotification(
         id: 'demo-delay-notice',
@@ -131,7 +151,7 @@ class NotificationRepository {
         routeId: 'DEMO-ROUTE',
         createdAt: now.subtract(const Duration(minutes: 30)),
         isRead: false,
-        isDemo: true,
+        origin: TransitNotificationOrigin.demo,
       ),
       TransitNotification(
         id: 'demo-crowd-notice',
@@ -143,7 +163,7 @@ class NotificationRepository {
         routeId: null,
         createdAt: now.subtract(const Duration(hours: 1)),
         isRead: false,
-        isDemo: true,
+        origin: TransitNotificationOrigin.demo,
       ),
     ];
   }

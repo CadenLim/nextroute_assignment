@@ -106,10 +106,23 @@ class _NotificationPreferencesScreenState
           child: Padding(
             padding: EdgeInsets.all(16),
             child: Text(
-              'Foundation only: these local settings do not generate live '
-              'alerts or operating-system notifications yet.',
+              'These settings are stored locally. Realtime data alerts control '
+              'NextRoute-generated data-health warnings only; they do not '
+              'create official or operating-system notifications.',
             ),
           ),
+        ),
+        SwitchListTile(
+          title: const Text('Realtime data alerts'),
+          subtitle: const Text(
+            'Allow NextRoute-generated realtime data-health alerts.',
+          ),
+          value: preferences.realtimeDataAlertsEnabled,
+          onChanged: _isSaving
+              ? null
+              : (value) => _savePreferences(
+                  preferences.copyWith(realtimeDataAlertsEnabled: value),
+                ),
         ),
         SwitchListTile(
           title: const Text('Service alerts'),

@@ -1,9 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/analytics/realtime_data_health_alert_engine.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/analytics/service_analytics_calculator.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/data/models/service_analytics.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/data/models/transit_notification.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/data/models/vehicle_position_feed.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/data/repositories/notification_repository.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/data/services/gtfs_realtime_service.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/data/storage/notification_local_storage.dart';
 
 const _autoRefreshInterval = Duration(seconds: 30);
 
@@ -18,6 +23,11 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
   final GtfsRealtimeService _service = GtfsRealtimeService();
   final ServiceAnalyticsCalculator _calculator =
       const ServiceAnalyticsCalculator();
+  final RealtimeDataHealthAlertEngine _dataHealthAlertEngine =
+      RealtimeDataHealthAlertEngine();
+  final NotificationRepository _notificationRepository = NotificationRepository(
+    SharedPreferencesNotificationLocalStorage(),
+  );
 
   late Future<ServiceAnalytics> _analyticsFuture;
   Timer? _refreshTimer;
@@ -58,14 +68,39 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
 
   Future<ServiceAnalytics> _loadAnalytics() async {
     try {
-      final feed = await _service.fetchVehiclePositions();
-      return _calculator.calculate(feed);
+      final feed = await _fetchFeedWithFailureMonitoring();
+      final analytics = _calculator.calculate(feed);
+      final alert = _dataHealthAlertEngine.recordSuccessfulFetch(analytics);
+      await _storeDataHealthAlert(alert);
+      return analytics;
     } finally {
       if (mounted) {
         setState(() {
           _isLoading = false;
         });
       }
+    }
+  }
+
+  Future<VehiclePositionFeed> _fetchFeedWithFailureMonitoring() async {
+    try {
+      return await _service.fetchVehiclePositions();
+    } on Object {
+      final alert = _dataHealthAlertEngine.recordFailedFetch();
+      await _storeDataHealthAlert(alert);
+      rethrow;
+    }
+  }
+
+  Future<void> _storeDataHealthAlert(TransitNotification? alert) async {
+    if (alert == null) {
+      return;
+    }
+
+    try {
+      await _notificationRepository.addRealtimeDataAlertIfEnabled(alert);
+    } on Object {
+      return;
     }
   }
 

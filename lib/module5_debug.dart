@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/presentation/screens/gtfs_static_debug_screen.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/presentation/screens/notification_centre_screen.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/presentation/screens/service_analytics_screen.dart';
 
@@ -51,12 +52,31 @@ class Module5DebugHome extends StatelessWidget {
             child: ListTile(
               leading: const Icon(Icons.notifications_outlined),
               title: const Text('Notification Centre'),
-              subtitle: const Text('Open the local DEMO notification inbox.'),
+              subtitle: const Text(
+                'View local notifications and app-generated alerts.',
+              ),
               trailing: const Icon(Icons.chevron_right),
               onTap: () {
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
                     builder: (context) => const NotificationCentreScreen(),
+                  ),
+                );
+              },
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.calendar_month_outlined),
+              title: const Text('GTFS Static Schedule'),
+              subtitle: const Text(
+                'Download and inspect the Rapid Bus KL schedule archive.',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (context) => const GtfsStaticDebugScreen(),
                   ),
                 );
               },

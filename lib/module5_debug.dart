@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:nextroute_assignment/modules/analytics_notification/presentation/screens/vehicle_position_debug_screen.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/presentation/screens/service_analytics_screen.dart';
 
 void main() {
   runApp(const Module5DebugApp());
@@ -16,7 +16,7 @@ class Module5DebugApp extends StatelessWidget {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
       ),
-      home: const VehiclePositionDebugScreen(),
+      home: const ServiceAnalyticsScreen(),
     );
   }
 }

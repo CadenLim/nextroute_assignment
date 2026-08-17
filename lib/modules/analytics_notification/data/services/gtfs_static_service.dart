@@ -6,6 +6,7 @@ import 'package:csv/csv.dart';
 import 'package:http/http.dart' as http;
 import 'package:nextroute_assignment/modules/analytics_notification/data/models/gtfs_route.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/data/models/gtfs_static_feed.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/data/models/gtfs_stop.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/data/models/gtfs_stop_time.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/data/models/gtfs_trip.dart';
 
@@ -75,11 +76,13 @@ class GtfsStaticService {
     final routesText = _readRequiredTextFile(archive, 'routes.txt');
     final tripsText = _readRequiredTextFile(archive, 'trips.txt');
     final stopTimesText = _readRequiredTextFile(archive, 'stop_times.txt');
+    final stopsText = _readRequiredTextFile(archive, 'stops.txt');
 
     return GtfsStaticFeed(
       routes: List.unmodifiable(parseRoutesCsv(routesText)),
       trips: List.unmodifiable(parseTripsCsv(tripsText)),
       stopTimes: List.unmodifiable(parseStopTimesCsv(stopTimesText)),
+      stops: List.unmodifiable(parseStopsCsv(stopsText)),
     );
   }
 
@@ -161,6 +164,40 @@ class GtfsStaticService {
       }
     }
     return _requireValidRecords(stopTimes, 'stop_times.txt');
+  }
+
+  static List<GtfsStop> parseStopsCsv(String contents) {
+    final rows = _parseCsvRows(
+      contents,
+      fileName: 'stops.txt',
+      requiredHeaders: const {'stop_id', 'stop_lat', 'stop_lon'},
+    );
+    final stops = <GtfsStop>[];
+    for (final row in rows) {
+      try {
+        stops.add(
+          GtfsStop(
+            stopId: _requiredValue(row, 'stop_id'),
+            stopName: _optionalValue(row, 'stop_name'),
+            stopLatitude: _requiredCoordinate(
+              row,
+              'stop_lat',
+              minimum: -90,
+              maximum: 90,
+            ),
+            stopLongitude: _requiredCoordinate(
+              row,
+              'stop_lon',
+              minimum: -180,
+              maximum: 180,
+            ),
+          ),
+        );
+      } on FormatException {
+        continue;
+      }
+    }
+    return _requireValidRecords(stops, 'stops.txt');
   }
 
   void close() {
@@ -279,6 +316,23 @@ class GtfsStaticService {
     final parsed = int.tryParse(value);
     if (parsed == null) {
       throw FormatException('Invalid integer for $header.');
+    }
+    return parsed;
+  }
+
+  static double _requiredCoordinate(
+    Map<String, String> row,
+    String header, {
+    required double minimum,
+    required double maximum,
+  }) {
+    final value = _requiredValue(row, header);
+    final parsed = double.tryParse(value);
+    if (parsed == null ||
+        !parsed.isFinite ||
+        parsed < minimum ||
+        parsed > maximum) {
+      throw FormatException('Invalid coordinate for $header.');
     }
     return parsed;
   }

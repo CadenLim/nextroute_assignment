@@ -136,6 +136,7 @@ class _StaticFeedContent extends StatelessWidget {
             _CountCard(label: 'Routes', count: feed.routes.length),
             _CountCard(label: 'Trips', count: feed.trips.length),
             _CountCard(label: 'Stop Times', count: feed.stopTimes.length),
+            _CountCard(label: 'Stops', count: feed.stops.length),
           ],
         ),
         const SizedBox(height: 20),

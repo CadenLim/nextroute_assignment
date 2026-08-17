@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/presentation/screens/gtfs_static_debug_screen.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/presentation/screens/notification_centre_screen.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/presentation/screens/realtime_gps_stop_localisation_debug_screen.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/presentation/screens/realtime_static_match_debug_screen.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/presentation/screens/realtime_stop_context_debug_screen.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/presentation/screens/service_analytics_screen.dart';
@@ -115,6 +116,24 @@ class Module5DebugHome extends StatelessWidget {
                   MaterialPageRoute<void>(
                     builder: (context) =>
                         const RealtimeStopContextDebugScreen(),
+                  ),
+                );
+              },
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.gps_fixed),
+              title: const Text('GPS Stop Localisation Audit'),
+              subtitle: const Text(
+                'Estimate the nearest scheduled stop without calculating delay.',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (context) =>
+                        const RealtimeGpsStopLocalisationDebugScreen(),
                   ),
                 );
               },

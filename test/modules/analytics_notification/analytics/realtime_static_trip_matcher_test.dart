@@ -178,7 +178,12 @@ GtfsStaticFeed _staticFeed({
   List<GtfsTrip> trips = const [],
   List<GtfsStopTime> stopTimes = const [],
 }) {
-  return GtfsStaticFeed(routes: const [], trips: trips, stopTimes: stopTimes);
+  return GtfsStaticFeed(
+    routes: const [],
+    trips: trips,
+    stopTimes: stopTimes,
+    stops: const [],
+  );
 }
 
 RealtimeVehicle _vehicle({

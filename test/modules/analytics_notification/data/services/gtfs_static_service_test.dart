@@ -51,14 +51,90 @@ void main() {
     expect(stopTimes.single.stopSequence, 7);
   });
 
-  test('extracts and parses all three required files from a ZIP', () {
+  test('parses a valid stop and a quoted name containing a comma', () {
+    final stops = GtfsStaticService.parseStopsCsv(
+      'stop_id,stop_name,stop_lat,stop_lon\n'
+      'stop-1,"City, Centre",3.1390,101.6869\n',
+    );
+
+    expect(stops, hasLength(1));
+    expect(stops.single.stopId, 'stop-1');
+    expect(stops.single.stopName, 'City, Centre');
+    expect(stops.single.stopLatitude, 3.1390);
+    expect(stops.single.stopLongitude, 101.6869);
+  });
+
+  test('blank optional stop name is allowed', () {
+    final stops = GtfsStaticService.parseStopsCsv(
+      'stop_id,stop_name,stop_lat,stop_lon\n'
+      'stop-1,,3.1390,101.6869\n',
+    );
+
+    expect(stops.single.stopName, isNull);
+  });
+
+  test('invalid and out-of-range stop coordinates are skipped safely', () {
+    final stops = GtfsStaticService.parseStopsCsv(
+      'stop_id,stop_name,stop_lat,stop_lon\n'
+      'invalid-text,Text,not-a-number,101\n'
+      'invalid-infinite,Infinite,Infinity,101\n'
+      'invalid-lat,Latitude,91,101\n'
+      'invalid-lon,Longitude,3,181\n'
+      'valid,Valid,3,101\n',
+    );
+
+    expect(stops.map((stop) => stop.stopId), ['valid']);
+  });
+
+  test('extracts and parses all four required files from a ZIP', () {
     final feed = GtfsStaticService.parseArchiveBytes(_buildGtfsZip());
 
     expect(feed.routes, hasLength(1));
     expect(feed.trips, hasLength(2));
     expect(feed.stopTimes, hasLength(1));
+    expect(feed.stops, hasLength(1));
     expect(feed.routes.single.routeId, 'route-1');
     expect(feed.findTripById('trip-1')?.routeId, 'route-1');
+    expect(feed.stopsById['stop-1']?.stopName, 'City Centre');
+  });
+
+  test('missing stops.txt throws a clear exception', () {
+    final zipWithoutStops = _buildGtfsZip(includeStops: false);
+
+    expect(
+      () => GtfsStaticService.parseArchiveBytes(zipWithoutStops),
+      throwsA(
+        isA<GtfsStaticException>().having(
+          (error) => error.message,
+          'message',
+          contains('stops.txt'),
+        ),
+      ),
+    );
+  });
+
+  test('stops.txt with zero valid records throws a clear exception', () {
+    final archive = Archive()
+      ..addFile(ArchiveFile.string('routes.txt', _routesCsv))
+      ..addFile(ArchiveFile.string('trips.txt', _tripsCsv))
+      ..addFile(ArchiveFile.string('stop_times.txt', _stopTimesCsv))
+      ..addFile(
+        ArchiveFile.string(
+          'stops.txt',
+          'stop_id,stop_name,stop_lat,stop_lon\ninvalid,Invalid,91,181\n',
+        ),
+      );
+
+    expect(
+      () => GtfsStaticService.parseArchiveBytes(ZipEncoder().encode(archive)),
+      throwsA(
+        isA<GtfsStaticException>().having(
+          (error) => error.message,
+          'message',
+          contains('stops.txt contains no valid records'),
+        ),
+      ),
+    );
   });
 
   test('missing a required GTFS file throws a clear exception', () {
@@ -84,31 +160,32 @@ void main() {
   });
 }
 
-List<int> _buildGtfsZip({bool includeStopTimes = true}) {
+const _routesCsv =
+    'route_id,route_short_name,route_long_name,route_type\n'
+    'route-1,R1,"City, Centre",3\n';
+const _tripsCsv =
+    'route_id,service_id,trip_id,trip_headsign,direction_id\n'
+    'route-1,weekday,trip-1,City Centre,0\n'
+    'route-1,weekday,trip-without-stop-times,,1\n';
+const _stopTimesCsv =
+    'trip_id,arrival_time,departure_time,stop_id,stop_sequence\n'
+    'trip-1,25:10:00,25:12:00,stop-1,1\n';
+const _stopsCsv =
+    'stop_id,stop_name,stop_lat,stop_lon\n'
+    'stop-1,City Centre,3.1390,101.6869\n';
+
+List<int> _buildGtfsZip({
+  bool includeStopTimes = true,
+  bool includeStops = true,
+}) {
   final archive = Archive()
-    ..addFile(
-      ArchiveFile.string(
-        'routes.txt',
-        'route_id,route_short_name,route_long_name,route_type\n'
-            'route-1,R1,"City, Centre",3\n',
-      ),
-    )
-    ..addFile(
-      ArchiveFile.string(
-        'trips.txt',
-        'route_id,service_id,trip_id,trip_headsign,direction_id\n'
-            'route-1,weekday,trip-1,City Centre,0\n'
-            'route-1,weekday,trip-without-stop-times,,1\n',
-      ),
-    );
+    ..addFile(ArchiveFile.string('routes.txt', _routesCsv))
+    ..addFile(ArchiveFile.string('trips.txt', _tripsCsv));
   if (includeStopTimes) {
-    archive.addFile(
-      ArchiveFile.string(
-        'stop_times.txt',
-        'trip_id,arrival_time,departure_time,stop_id,stop_sequence\n'
-            'trip-1,25:10:00,25:12:00,stop-1,1\n',
-      ),
-    );
+    archive.addFile(ArchiveFile.string('stop_times.txt', _stopTimesCsv));
+  }
+  if (includeStops) {
+    archive.addFile(ArchiveFile.string('stops.txt', _stopsCsv));
   }
   return ZipEncoder().encode(archive);
 }

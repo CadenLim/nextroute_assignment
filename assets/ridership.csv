@@ -1,0 +1,16 @@
+date,origin,destination,ridership
+2026-08-01,KL Sentral,KLCC,4231
+2026-08-02,KL Sentral,KLCC,4512
+2026-08-03,KL Sentral,KLCC,4789
+2026-08-04,KL Sentral,KLCC,4920
+2026-08-05,KL Sentral,KLCC,5103
+2026-08-06,KL Sentral,KLCC,4987
+2026-08-07,KL Sentral,KLCC,5321
+2026-08-08,KLCC,KL Sentral,4876
+2026-08-09,KLCC,KL Sentral,5012
+2026-08-10,KL Sentral,Pasar Seni,3765
+2026-08-11,Pasar Seni,KL Sentral,3890
+2026-08-12,KL Sentral,Bukit Bintang,4218
+2026-08-13,Bukit Bintang,KL Sentral,4356
+2026-08-14,KL Sentral,Masjid Jamek,3987
+2026-08-15,Masjid Jamek,KL Sentral,4123

@@ -94,6 +94,15 @@ class GtfsRealtimeService {
             routeId: trip == null
                 ? null
                 : _optionalString(trip.hasRouteId(), trip.routeId),
+            tripStartTime: trip == null
+                ? null
+                : _optionalString(trip.hasStartTime(), trip.startTime),
+            tripStartDate: trip == null
+                ? null
+                : _optionalString(trip.hasStartDate(), trip.startDate),
+            scheduleRelationship: trip == null
+                ? null
+                : _decodeScheduleRelationship(trip),
             latitude: latitude,
             longitude: longitude,
             timestamp: _decodeTimestamp(vehiclePosition),
@@ -180,6 +189,25 @@ class GtfsRealtimeService {
       return RealtimeVehicleStopStatus.inTransitTo;
     }
     return null;
+  }
+
+  static RealtimeTripScheduleRelationship? _decodeScheduleRelationship(
+    gtfs.TripDescriptor trip,
+  ) {
+    if (!trip.hasScheduleRelationship()) {
+      return null;
+    }
+
+    return switch (trip.scheduleRelationship.value) {
+      0 => RealtimeTripScheduleRelationship.scheduled,
+      1 => RealtimeTripScheduleRelationship.added,
+      2 => RealtimeTripScheduleRelationship.unscheduled,
+      3 => RealtimeTripScheduleRelationship.canceled,
+      5 => RealtimeTripScheduleRelationship.replacement,
+      6 => RealtimeTripScheduleRelationship.duplicated,
+      7 => RealtimeTripScheduleRelationship.deleted,
+      _ => null,
+    };
   }
 }
 

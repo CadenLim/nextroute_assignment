@@ -4,6 +4,10 @@ import 'dart:convert';
 import 'package:archive/archive.dart';
 import 'package:csv/csv.dart';
 import 'package:http/http.dart' as http;
+import 'package:nextroute_assignment/modules/analytics_notification/data/models/gtfs_agency.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/data/models/gtfs_calendar_date.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/data/models/gtfs_calendar_service.dart';
+import 'package:nextroute_assignment/modules/analytics_notification/data/models/gtfs_frequency.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/data/models/gtfs_route.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/data/models/gtfs_static_feed.dart';
 import 'package:nextroute_assignment/modules/analytics_notification/data/models/gtfs_stop.dart';
@@ -77,12 +81,35 @@ class GtfsStaticService {
     final tripsText = _readRequiredTextFile(archive, 'trips.txt');
     final stopTimesText = _readRequiredTextFile(archive, 'stop_times.txt');
     final stopsText = _readRequiredTextFile(archive, 'stops.txt');
+    final agencyText = _readOptionalTextFile(archive, 'agency.txt');
+    final calendarText = _readOptionalTextFile(archive, 'calendar.txt');
+    final calendarDatesText = _readOptionalTextFile(
+      archive,
+      'calendar_dates.txt',
+    );
+    final frequenciesText = _readOptionalTextFile(archive, 'frequencies.txt');
 
     return GtfsStaticFeed(
       routes: List.unmodifiable(parseRoutesCsv(routesText)),
       trips: List.unmodifiable(parseTripsCsv(tripsText)),
       stopTimes: List.unmodifiable(parseStopTimesCsv(stopTimesText)),
       stops: List.unmodifiable(parseStopsCsv(stopsText)),
+      agencies: agencyText == null
+          ? const []
+          : List.unmodifiable(parseAgencyCsv(agencyText)),
+      calendarServices: calendarText == null
+          ? const []
+          : List.unmodifiable(parseCalendarCsv(calendarText)),
+      calendarDates: calendarDatesText == null
+          ? const []
+          : List.unmodifiable(parseCalendarDatesCsv(calendarDatesText)),
+      frequencies: frequenciesText == null
+          ? const []
+          : List.unmodifiable(parseFrequenciesCsv(frequenciesText)),
+      hasAgencyFile: agencyText != null,
+      hasCalendarFile: calendarText != null,
+      hasCalendarDatesFile: calendarDatesText != null,
+      hasFrequenciesFile: frequenciesText != null,
     );
   }
 
@@ -200,6 +227,133 @@ class GtfsStaticService {
     return _requireValidRecords(stops, 'stops.txt');
   }
 
+  static List<GtfsAgency> parseAgencyCsv(String contents) {
+    final rows = _parseCsvRows(
+      contents,
+      fileName: 'agency.txt',
+      requiredHeaders: const {'agency_name', 'agency_timezone'},
+    );
+    final agencies = <GtfsAgency>[];
+    for (final row in rows) {
+      try {
+        agencies.add(
+          GtfsAgency(
+            agencyId: _optionalValue(row, 'agency_id'),
+            agencyName: _requiredValue(row, 'agency_name'),
+            agencyTimezone: _requiredValue(row, 'agency_timezone'),
+          ),
+        );
+      } on FormatException {
+        continue;
+      }
+    }
+    return _requireValidRecords(agencies, 'agency.txt');
+  }
+
+  static List<GtfsCalendarService> parseCalendarCsv(String contents) {
+    final rows = _parseCsvRows(
+      contents,
+      fileName: 'calendar.txt',
+      requiredHeaders: const {
+        'service_id',
+        'monday',
+        'tuesday',
+        'wednesday',
+        'thursday',
+        'friday',
+        'saturday',
+        'sunday',
+        'start_date',
+        'end_date',
+      },
+    );
+    final services = <GtfsCalendarService>[];
+    for (final row in rows) {
+      try {
+        services.add(
+          GtfsCalendarService(
+            serviceId: _requiredValue(row, 'service_id'),
+            monday: _requiredBinaryFlag(row, 'monday'),
+            tuesday: _requiredBinaryFlag(row, 'tuesday'),
+            wednesday: _requiredBinaryFlag(row, 'wednesday'),
+            thursday: _requiredBinaryFlag(row, 'thursday'),
+            friday: _requiredBinaryFlag(row, 'friday'),
+            saturday: _requiredBinaryFlag(row, 'saturday'),
+            sunday: _requiredBinaryFlag(row, 'sunday'),
+            startDate: _requiredGtfsDate(row, 'start_date'),
+            endDate: _requiredGtfsDate(row, 'end_date'),
+          ),
+        );
+      } on FormatException {
+        continue;
+      }
+    }
+    return _requireValidRecords(services, 'calendar.txt');
+  }
+
+  static List<GtfsCalendarDate> parseCalendarDatesCsv(String contents) {
+    final rows = _parseCsvRows(
+      contents,
+      fileName: 'calendar_dates.txt',
+      requiredHeaders: const {'service_id', 'date', 'exception_type'},
+    );
+    final calendarDates = <GtfsCalendarDate>[];
+    for (final row in rows) {
+      try {
+        final exceptionValue = _requiredInt(row, 'exception_type');
+        final exceptionType = switch (exceptionValue) {
+          1 => GtfsCalendarDateExceptionType.serviceAdded,
+          2 => GtfsCalendarDateExceptionType.serviceRemoved,
+          _ => throw const FormatException('Invalid exception_type.'),
+        };
+        calendarDates.add(
+          GtfsCalendarDate(
+            serviceId: _requiredValue(row, 'service_id'),
+            date: _requiredGtfsDate(row, 'date'),
+            exceptionType: exceptionType,
+          ),
+        );
+      } on FormatException {
+        continue;
+      }
+    }
+    return _requireValidRecords(calendarDates, 'calendar_dates.txt');
+  }
+
+  static List<GtfsFrequency> parseFrequenciesCsv(String contents) {
+    final rows = _parseCsvRows(
+      contents,
+      fileName: 'frequencies.txt',
+      requiredHeaders: const {
+        'trip_id',
+        'start_time',
+        'end_time',
+        'headway_secs',
+      },
+    );
+    final frequencies = <GtfsFrequency>[];
+    for (final row in rows) {
+      try {
+        final headwaySecs = _requiredInt(row, 'headway_secs');
+        if (headwaySecs <= 0) {
+          throw const FormatException('Invalid headway_secs.');
+        }
+        frequencies.add(
+          GtfsFrequency(
+            tripId: _requiredValue(row, 'trip_id'),
+            startTime: _requiredValue(row, 'start_time'),
+            endTime: _requiredValue(row, 'end_time'),
+            headwaySecs: headwaySecs,
+            exactTimes: _optionalExactTimes(row),
+          ),
+        );
+      } on FormatException {
+        continue;
+      }
+    }
+    return _requireValidRecords(frequencies, 'frequencies.txt');
+  }
+
   void close() {
     if (_ownsClient) {
       _client.close();
@@ -231,6 +385,25 @@ class GtfsStaticService {
         cause: error,
       );
     }
+  }
+
+  static String? _readOptionalTextFile(Archive archive, String fileName) {
+    for (final file in archive) {
+      final normalizedName = file.name.replaceAll('\\', '/');
+      final baseName = normalizedName.split('/').last.toLowerCase();
+      if (!file.isFile || baseName != fileName.toLowerCase()) {
+        continue;
+      }
+      try {
+        return utf8.decode(file.content);
+      } on FormatException catch (error) {
+        throw GtfsStaticException(
+          'GTFS metadata file $fileName is not valid UTF-8 text.',
+          cause: error,
+        );
+      }
+    }
+    return null;
   }
 
   static List<Map<String, String>> _parseCsvRows(
@@ -318,6 +491,30 @@ class GtfsStaticService {
       throw FormatException('Invalid integer for $header.');
     }
     return parsed;
+  }
+
+  static bool _requiredBinaryFlag(Map<String, String> row, String header) {
+    return switch (_requiredInt(row, header)) {
+      0 => false,
+      1 => true,
+      _ => throw FormatException('Invalid binary flag for $header.'),
+    };
+  }
+
+  static String _requiredGtfsDate(Map<String, String> row, String header) {
+    final value = _requiredValue(row, header);
+    if (!RegExp(r'^\d{8}$').hasMatch(value)) {
+      throw FormatException('Invalid GTFS date for $header.');
+    }
+    return value;
+  }
+
+  static int _optionalExactTimes(Map<String, String> row) {
+    final value = _optionalInt(row, 'exact_times') ?? 0;
+    if (value != 0 && value != 1) {
+      throw const FormatException('Invalid exact_times.');
+    }
+    return value;
   }
 
   static double _requiredCoordinate(

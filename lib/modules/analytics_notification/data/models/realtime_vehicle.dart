@@ -1,5 +1,15 @@
 enum RealtimeVehicleStopStatus { incomingAt, stoppedAt, inTransitTo }
 
+enum RealtimeTripScheduleRelationship {
+  scheduled,
+  added,
+  unscheduled,
+  canceled,
+  replacement,
+  duplicated,
+  deleted,
+}
+
 class RealtimeVehicle {
   const RealtimeVehicle({
     required this.vehicleId,
@@ -11,6 +21,9 @@ class RealtimeVehicle {
     this.currentStopSequence,
     this.stopId,
     this.currentStatus,
+    this.tripStartTime,
+    this.tripStartDate,
+    this.scheduleRelationship,
   });
 
   final String? vehicleId;
@@ -22,6 +35,9 @@ class RealtimeVehicle {
   final int? currentStopSequence;
   final String? stopId;
   final RealtimeVehicleStopStatus? currentStatus;
+  final String? tripStartTime;
+  final String? tripStartDate;
+  final RealtimeTripScheduleRelationship? scheduleRelationship;
 
   RealtimeVehicleStopStatus? get effectiveCurrentStatus {
     if (currentStatus != null) {

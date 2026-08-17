@@ -139,4 +139,61 @@ void main() {
     );
     service.close();
   });
+
+  test('protobuf decoding preserves optional trip-instance metadata', () async {
+    final protobufFeed = gtfs.FeedMessage(
+      header: gtfs.FeedHeader(gtfsRealtimeVersion: '2.0'),
+      entity: [
+        gtfs.FeedEntity(
+          id: 'with-instance-metadata',
+          vehicle: gtfs.VehiclePosition(
+            trip: gtfs.TripDescriptor(
+              tripId: 'frequency-trip',
+              startTime: '25:10:00',
+              startDate: '20260817',
+              scheduleRelationship:
+                  gtfs.TripDescriptor_ScheduleRelationship.UNSCHEDULED,
+            ),
+            position: gtfs.Position(latitude: 3, longitude: 101),
+          ),
+        ),
+        gtfs.FeedEntity(
+          id: 'blank-instance-metadata',
+          vehicle: gtfs.VehiclePosition(
+            trip: gtfs.TripDescriptor(startTime: '   ', startDate: ''),
+            position: gtfs.Position(latitude: 3.1, longitude: 101.1),
+          ),
+        ),
+        gtfs.FeedEntity(
+          id: 'without-instance-metadata',
+          vehicle: gtfs.VehiclePosition(
+            trip: gtfs.TripDescriptor(),
+            position: gtfs.Position(latitude: 3.2, longitude: 101.2),
+          ),
+        ),
+      ],
+    );
+    final service = GtfsRealtimeService(
+      client: MockClient(
+        (request) async =>
+            http.Response.bytes(protobufFeed.writeToBuffer(), 200),
+      ),
+    );
+
+    final vehicles = (await service.fetchVehiclePositions()).vehicles;
+
+    expect(vehicles.first.tripStartTime, '25:10:00');
+    expect(vehicles.first.tripStartDate, '20260817');
+    expect(
+      vehicles.first.scheduleRelationship,
+      RealtimeTripScheduleRelationship.unscheduled,
+    );
+    expect(vehicles[1].tripStartTime, isNull);
+    expect(vehicles[1].tripStartDate, isNull);
+    expect(vehicles[1].scheduleRelationship, isNull);
+    expect(vehicles.last.tripStartTime, isNull);
+    expect(vehicles.last.tripStartDate, isNull);
+    expect(vehicles.last.scheduleRelationship, isNull);
+    service.close();
+  });
 }

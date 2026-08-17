@@ -3,9 +3,10 @@ import '../services/api_service.dart';
 
 // ── Crowd levels & rule-based prediction ────────────────────────────────────
 // This is NOT a trained ML model. It is a transparent, rule-based estimator:
-// weekday/weekend + time-of-day bands (based on typical urban rail commuter
-// behaviour) combined with whether the station is a major interchange.
-// This matches the brief: focus on Flutter + data handling, not ML training.
+// a weekday/weekend + time-of-day baseline pattern (based on typical urban
+// rail commuter behaviour), scaled by each station's REAL average daily
+// ridership from the local dataset — so busier real stations genuinely
+// produce higher estimates than quieter ones, not just a fixed guess.
 
 enum CrowdLevel { low, moderate, high, critical }
 
@@ -56,35 +57,40 @@ class CrowdResult {
   CrowdResult(this.level, this.occupancy);
 }
 
-const List<String> kMajorStations = [
-  'KL Sentral',
-  'KLCC',
-  'Bukit Bintang',
-  'Masjid Jamek',
-];
-
-// Core rule-based estimator. station/day/minutesOfDay in, crowd level out.
-CrowdResult predictCrowd(String station, String day, int minutesOfDay) {
+// Baseline occupancy shape for an "average" station across the day.
+// This is the modelled part (no real hourly data exists publicly).
+int _baselineOccupancy(String day, int minutesOfDay) {
   final isWeekend = day == 'Saturday' || day == 'Sunday';
-  final isMajor = kMajorStations.contains(station);
-
-  if (isWeekend) {
-    return CrowdResult(CrowdLevel.low, isMajor ? 34 : 22);
-  }
+  if (isWeekend) return 24;
 
   final h = minutesOfDay / 60.0;
+  if (h < 6.0) return 8;
+  if (h < 7.0) return 16;
+  if (h < 7.5) return 46;
+  if (h < 8.0) return 84;
+  if (h < 8.25) return 60;
+  if (h < 9.0) return 42;
+  if (h < 17.0) return 40;
+  if (h < 17.5) return 58;
+  if (h < 19.5) return 80;
+  if (h < 21.0) return 32;
+  return 14;
+}
 
-  if (h < 6.0) return CrowdResult(CrowdLevel.low, 8);
-  if (h < 7.0) return CrowdResult(CrowdLevel.low, isMajor ? 24 : 14);
-  if (h < 7.5) return CrowdResult(CrowdLevel.moderate, isMajor ? 58 : 44);
-  if (h < 8.0) return CrowdResult(CrowdLevel.critical, isMajor ? 95 : 82);
-  if (h < 8.25) return CrowdResult(CrowdLevel.high, isMajor ? 72 : 58);
-  if (h < 9.0) return CrowdResult(CrowdLevel.moderate, isMajor ? 52 : 40);
-  if (h < 17.0) return CrowdResult(CrowdLevel.moderate, isMajor ? 52 : 38);
-  if (h < 17.5) return CrowdResult(CrowdLevel.high, isMajor ? 70 : 55);
-  if (h < 19.5) return CrowdResult(CrowdLevel.critical, isMajor ? 92 : 78);
-  if (h < 21.0) return CrowdResult(CrowdLevel.moderate, isMajor ? 45 : 30);
-  return CrowdResult(CrowdLevel.low, isMajor ? 22 : 12);
+CrowdLevel _levelForOccupancy(int occupancy) {
+  if (occupancy >= 80) return CrowdLevel.critical;
+  if (occupancy >= 55) return CrowdLevel.high;
+  if (occupancy >= 28) return CrowdLevel.moderate;
+  return CrowdLevel.low;
+}
+
+// Core rule-based estimator.
+// [magnitudeFactor] comes from real data: a station with higher real average
+// ridership gets a factor above 1.0, a quieter one gets a factor below 1.0.
+CrowdResult predictCrowd(String day, int minutesOfDay, double magnitudeFactor) {
+  final baseline = _baselineOccupancy(day, minutesOfDay);
+  final occupancy = (baseline * magnitudeFactor).round().clamp(4, 99);
+  return CrowdResult(_levelForOccupancy(occupancy), occupancy);
 }
 
 String getAiInsight(String station, CrowdLevel level, TimeOfDay time, String day) {
@@ -95,13 +101,13 @@ String getAiInsight(String station, CrowdLevel level, TimeOfDay time, String day
   }
   switch (level) {
     case CrowdLevel.critical:
-      return 'Heavy office commuters are expected around $t due to weekday rush hour. Platform crowding is severe and trains may skip stops.';
+      return 'Heavy commuters are expected at $station around $t, combining rush-hour timing with $station\'s real historical ridership volume. Platform crowding is severe.';
     case CrowdLevel.high:
-      return 'Passenger volume is high at $t. Platforms will be congested and boarding may require waiting for the next train.';
+      return 'Passenger volume is high at $station around $t. Platforms will be congested and boarding may require waiting for the next train.';
     case CrowdLevel.moderate:
-      return 'Moderate passenger flow at $t. Some crowding on platforms is expected but conditions remain manageable.';
+      return 'Moderate passenger flow expected at $station around $t. Some crowding on platforms but conditions remain manageable.';
     case CrowdLevel.low:
-      return 'Light traffic at $t. Comfortable boarding and ample seating should be available.';
+      return 'Light traffic expected at $station around $t. Comfortable boarding and ample seating should be available.';
   }
 }
 
@@ -132,6 +138,12 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     'KL Sentral', 'KLCC', 'Pasar Seni', 'Masjid Jamek', 'Bukit Bintang',
   ];
 
+  // Real per-station average ridership, loaded once from the CSV at startup.
+  // This is what makes Crowd Estimate / Peak Hours actually reflect real data.
+  Map<String, double> _stationAvg = {};
+  double _maxStationAvg = 1;
+  bool _statsReady = false;
+
   // ── Tab 1: Crowd Estimate state ──
   String _station = 'KL Sentral';
   String _day = 'Monday';
@@ -150,6 +162,45 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   List<MapEntry<DateTime, int>>? _historyData;
   bool _loadingHistory = false;
   String? _historyError;
+  final ScrollController _historyScrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStationStats();
+  }
+
+  @override
+  void dispose() {
+    _historyScrollController.dispose();
+    super.dispose();
+  }
+
+  // Loads each demo station's real average daily ridership from the CSV,
+  // so predictCrowd() can scale its estimates against real magnitude
+  // instead of a fixed "is this a major station" guess.
+  Future<void> _loadStationStats() async {
+    final Map<String, double> avgs = {};
+    for (final s in _stations) {
+      avgs[s] = await _apiService.getStationAverageRidership(s);
+    }
+    final maxAvg = avgs.values.isEmpty
+        ? 1.0
+        : avgs.values.reduce((a, b) => a > b ? a : b);
+    if (!mounted) return;
+    setState(() {
+      _stationAvg = avgs;
+      _maxStationAvg = maxAvg == 0 ? 1 : maxAvg;
+      _statsReady = true;
+    });
+  }
+
+  // Converts a station's real average ridership into a multiplier roughly
+  // between 0.55 (quietest real station in our dataset) and 1.15 (busiest).
+  double _magnitudeFactor(String station) {
+    final avg = _stationAvg[station] ?? 0;
+    return 0.55 + 0.6 * (avg / _maxStationAvg);
+  }
 
   Future<void> _pickTime() async {
     final picked = await showTimePicker(context: context, initialTime: _time);
@@ -163,11 +214,12 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
   void _runCrowdEstimate() {
     setState(() => _loadingCrowd = true);
-    Future.delayed(const Duration(milliseconds: 500), () {
+    Future.delayed(const Duration(milliseconds: 400), () {
       if (!mounted) return;
       final minutes = _time.hour * 60 + _time.minute;
+      final factor = _magnitudeFactor(_station);
       setState(() {
-        _crowdResult = predictCrowd(_station, _day, minutes);
+        _crowdResult = predictCrowd(_day, minutes, factor);
         _loadingCrowd = false;
       });
     });
@@ -175,11 +227,12 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
   void _runPeakHours() {
     setState(() => _loadingPeak = true);
-    Future.delayed(const Duration(milliseconds: 500), () {
+    Future.delayed(const Duration(milliseconds: 400), () {
       if (!mounted) return;
       final hours = [6, 8, 10, 12, 14, 16, 18, 20, 22];
+      final factor = _magnitudeFactor(_peakStation);
       final slots = hours
-          .map((h) => MapEntry(h, predictCrowd(_peakStation, _peakDay, h * 60)))
+          .map((h) => MapEntry(h, predictCrowd(_peakDay, h * 60, factor)))
           .toList();
       setState(() {
         _peakSlots = slots;
@@ -199,6 +252,15 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       setState(() {
         _historyData = data;
         _loadingHistory = false;
+      });
+      // Jump the chart to the most recent date once it's rendered, so users
+      // see current data by default instead of the very first day on file.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_historyScrollController.hasClients) {
+          _historyScrollController.jumpTo(
+            _historyScrollController.position.maxScrollExtent,
+          );
+        }
       });
     } catch (e) {
       if (!mounted) return;
@@ -256,13 +318,15 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               child: FutureBuilder<String>(
                 future: _apiService.getDatasetStatus(),
                 builder: (context, snapshot) {
+                  final base = snapshot.data ?? 'Loading local ridership dataset...';
+                  final suffix = _statsReady ? ' · station averages ready' : ' · computing station averages...';
                   return Row(
                     children: [
                       const Icon(Icons.check_circle, color: Colors.green, size: 14),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          snapshot.data ?? 'Loading local ridership dataset...',
+                          base + suffix,
                           style: const TextStyle(
                               color: Colors.green, fontSize: 12, fontWeight: FontWeight.bold),
                           overflow: TextOverflow.ellipsis,
@@ -298,6 +362,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         children: [
           const Text('Station Crowd Estimate',
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
+          const SizedBox(height: 4),
+          const Text(
+            'Modelled time-of-day pattern, scaled by each station\'s real average ridership.',
+            style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
+          ),
           const SizedBox(height: 16),
           DropdownButtonFormField<String>(
             value: _station,
@@ -333,8 +402,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               minimumSize: const Size(double.infinity, 48),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
-            onPressed: _loadingCrowd ? null : _runCrowdEstimate,
-            label: const Text('Predict Crowd', style: TextStyle(color: Colors.white, fontSize: 16)),
+            onPressed: (!_statsReady || _loadingCrowd) ? null : _runCrowdEstimate,
+            label: Text(_statsReady ? 'Predict Crowd' : 'Loading station data...',
+                style: const TextStyle(color: Colors.white, fontSize: 16)),
           ),
           if (_crowdResult != null) ...[
             const SizedBox(height: 24),
@@ -378,20 +448,19 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     children: [
                       const Text('EST. QUEUE',
                           style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.baseline,
-                        textBaseline: TextBaseline.alphabetic,
-                        children: [
-                          Text(_crowdResult!.level.queueEstimate,
-                              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.black87)),
-                        ],
-                      ),
+                      Text(_crowdResult!.level.queueEstimate,
+                          style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.black87)),
                     ],
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 12),
+            Text(
+              'Based on $_station\'s real average ridership (~${(_stationAvg[_station] ?? 0).round()} trips/day in local dataset).',
+              style: const TextStyle(fontSize: 11, color: Colors.black45),
+            ),
+            const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -422,7 +491,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 4),
           const Text(
-            'Modelled typical pattern based on general weekday/weekend commuter behaviour — not live sensor data.',
+            'Modelled time-of-day shape, scaled by this station\'s real average ridership — not live sensor data.',
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: 16),
@@ -451,8 +520,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               minimumSize: const Size(double.infinity, 48),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
-            onPressed: _loadingPeak ? null : _runPeakHours,
-            label: const Text('Show Peak Pattern', style: TextStyle(color: Colors.white, fontSize: 16)),
+            onPressed: (!_statsReady || _loadingPeak) ? null : _runPeakHours,
+            label: Text(_statsReady ? 'Show Peak Pattern' : 'Loading station data...',
+                style: const TextStyle(color: Colors.white, fontSize: 16)),
           ),
           if (_peakSlots != null) ...[
             const SizedBox(height: 24),
@@ -484,7 +554,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               final peak = _peakSlots!.reduce((a, b) => a.value.occupancy >= b.value.occupancy ? a : b);
               final label = peak.key == 12 ? '12pm' : peak.key > 12 ? '${peak.key - 12}pm' : '${peak.key}am';
               return Text(
-                'Busiest modelled window: around $label (${peak.value.level.label}, ~${peak.value.occupancy}% capacity).',
+                'Busiest modelled window for $_peakStation: around $label (${peak.value.level.label}, ~${peak.value.occupancy}% capacity).',
                 style: const TextStyle(fontSize: 12, color: Colors.black54),
               );
             }),
@@ -561,6 +631,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               final maxEntry = _historyData!.reduce((a, b) => a.value >= b.value ? a : b);
               final minEntry = _historyData!.reduce((a, b) => a.value <= b.value ? a : b);
               final maxVal = maxEntry.value.toDouble();
+              final latest = _historyData!.last;
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -575,8 +646,20 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                       Expanded(child: _statCard('LOWEST', minEntry.value.toString())),
                     ],
                   ),
-                  const SizedBox(height: 20),
-                  const Text('Daily totals', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Most recent on file: ${latest.key.day}/${latest.key.month}/${latest.key.year} — ${latest.value} trips.',
+                    style: const TextStyle(fontSize: 11, color: Colors.black45),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Daily totals', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
+                      Text('${_historyData!.length} days — scrolled to most recent',
+                          style: const TextStyle(fontSize: 11, color: Colors.black45)),
+                    ],
+                  ),
                   const SizedBox(height: 12),
                   Container(
                     height: 150,
@@ -586,18 +669,24 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
                     ),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: _historyData!.map((entry) {
-                        final factor = maxVal == 0 ? 0.0 : entry.value / maxVal;
-                        final isMax = entry.value == maxEntry.value;
-                        return _buildTrendBar(
-                          '${entry.key.day}/${entry.key.month}',
-                          factor,
-                          isMax ? const Color(0xFF4F46E5) : Colors.blueGrey,
-                        );
-                      }).toList(),
+                    child: SingleChildScrollView(
+                      controller: _historyScrollController,
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: _historyData!.map((entry) {
+                          final factor = maxVal == 0 ? 0.0 : entry.value / maxVal;
+                          final isMax = entry.value == maxEntry.value;
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 4),
+                            child: _buildTrendBar(
+                              '${entry.key.day}/${entry.key.month}',
+                              factor,
+                              isMax ? const Color(0xFF4F46E5) : Colors.blueGrey,
+                            ),
+                          );
+                        }).toList(),
+                      ),
                     ),
                   ),
                 ],

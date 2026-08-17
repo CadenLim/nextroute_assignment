@@ -77,6 +77,16 @@ class ApiService {
     return entries;
   }
 
+  // Real average daily ridership for a station, computed from the actual
+  // dataset. Used to scale the rule-based crowd prediction so busier real
+  // stations genuinely produce higher estimates than quieter ones.
+  Future<double> getStationAverageRidership(String station) async {
+    final daily = await getDailyTotalsForStation(station);
+    if (daily.isEmpty) return 0;
+    final total = daily.fold<int>(0, (sum, e) => sum + e.value);
+    return total / daily.length;
+  }
+
   // Simple status line shown at the top of the AI Crowd screen so users
   // can see the dataset actually loaded, instead of a fake "syncing" text.
   Future<String> getDatasetStatus() async {

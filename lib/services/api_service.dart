@@ -1,6 +1,26 @@
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart' show rootBundle;
 
+// =========================================================
+// YOUR CODE (Module 1 / Journey Planning)
+// =========================================================
+class StationModel {
+  final String id;
+  final String name;
+  final Set<String> lines;
+  final String category;
+
+  StationModel({
+    required this.id,
+    required this.name,
+    required this.lines,
+    required this.category,
+  });
+}
+
+// =========================================================
+// FRIEND'S CODE (Module 3 / Crowd AI / Ridership)
+// =========================================================
 // One row of the ridership CSV: date, origin station, destination station,
 // number of trips recorded for that origin-destination pair on that date.
 class RidershipRecord {
@@ -17,8 +37,51 @@ class RidershipRecord {
   });
 }
 
+// =========================================================
+// API SERVICE CLASS
+// =========================================================
 class ApiService {
+  // --- FRIEND'S VARIABLES ---
   List<RidershipRecord>? _cache;
+
+  // =========================================================
+  // YOUR METHODS (Module 1 / Journey Planning)
+  // =========================================================
+
+  // 👇 MOVED THIS INSIDE THE CLASS! 👇
+  Future<List<StationModel>> loadAllStations() async {
+    // TODO: You will eventually write your code here to read the GTFS stops.txt files.
+    // For now, we are returning a mock list so your app can compile and run without errors!
+
+    // Simulating a brief network/loading delay
+    await Future.delayed(const Duration(milliseconds: 500));
+
+    return [
+      StationModel(
+        id: 'KJ15',
+        name: 'KL Sentral',
+        lines: {'Kelana Jaya Line'},
+        category: 'Rail',
+      ),
+      StationModel(
+        id: 'KG16',
+        name: 'Pasar Seni',
+        lines: {'Kelana Jaya Line', 'MRT Kajang Line'},
+        category: 'Rail',
+      ),
+      StationModel(
+        id: 'AG8',
+        name: 'Masjid Jamek',
+        lines: {'Ampang Line', 'Kelana Jaya Line'},
+        category: 'Rail',
+      ),
+    ];
+  }
+
+
+  // =========================================================
+  // FRIEND'S METHODS (Untouched)
+  // =========================================================
 
   // Parses assets/ridership.csv into a list of RidershipRecord.
   // Cached after the first successful load so we don't re-read the file

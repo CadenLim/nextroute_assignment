@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'screens/ai_crowd.dart';
+import 'screens/journey_planning.dart'; // Added the missing semicolon here!
 
 void main() {
   runApp(const NextRouteApp());
@@ -63,10 +64,13 @@ class _MainScaffoldState extends State<MainScaffold> {
 
   // Order MUST match the NavigationDestinations below:
   // 0 Journey, 1 Stations, 2 AI Crowd, 3 Profile, 4 Analytics
+
+  // NOTE: If your JourneyPlanningScreen does not use a 'const' constructor,
+  // you may need to remove the word 'const' right below here.
   final List<Widget> _modules = const [
-    PlaceholderModuleScreen(moduleName: 'Journey Planning'),   // Module 1 — teammate
+    JourneyPlanningScreen(),                                   // Module 1 — you
     PlaceholderModuleScreen(moduleName: 'Transport Data'),     // Module 2 — teammate
-    AiCrowdScreen(),                                           // Module 3 — you
+    AiCrowdScreen(),                                           // Module 3 — friend
     PlaceholderModuleScreen(moduleName: 'Personal Assistant'), // Module 4 — teammate
     PlaceholderModuleScreen(moduleName: 'Analytics Centre'),   // Module 5 — teammate
   ];

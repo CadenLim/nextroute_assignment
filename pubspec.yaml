@@ -16,3 +16,6 @@ flutter:
   uses-material-design: true
   assets:
     - assets/ridership.csv
+    - assets/gtfs/rail/
+    - assets/gtfs/bus/
+    - assets/gtfs/mrt_feeder/

@@ -1,11 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+
 import 'screens/ai_crowd.dart';
 import 'screens/journey_planning.dart'; // Added the missing semicolon here!
 
-void main() {
+Future<void> main() async {
+  // Ensure Flutter bindings are ready before initializing Supabase
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize Supabase
+  await Supabase.initialize(
+    url: 'https://kcsizfxjgbdrnkfcukun.supabase.co',
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtjc2l6ZnhqZ2Jkcm5rZmN1a3VuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcyOTMwMjMsImV4cCI6MjEwMjg2OTAyM30.GzTxmlIjKYvXHNV_c4oJ7mlVyczNhRk99WOZy9m1IjU',
+  );
+
   runApp(const NextRouteApp());
 }
+
+
 
 class NextRouteApp extends StatelessWidget {
   const NextRouteApp({super.key});

@@ -9,8 +9,10 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  http: ^1.1.0          # <--- Make sure this line exists
+  http: ^1.1.0
+  supabase_flutter: ^2.0.0
   google_fonts: ^8.2.1
+  csv: ^6.0.0
 
 flutter:
   uses-material-design: true

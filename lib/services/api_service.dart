@@ -1,5 +1,8 @@
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:csv/csv.dart';
 
 // =========================================================
 // YOUR CODE (Module 1 / Journey Planning)
@@ -41,41 +44,134 @@ class RidershipRecord {
 // API SERVICE CLASS
 // =========================================================
 class ApiService {
-  // --- FRIEND'S VARIABLES ---
+
+  final _supabase = Supabase.instance.client;
+
+  // --- FRIEND'S VARIABLES ---[cite: 1]
   List<RidershipRecord>? _cache;
+
+
 
   // =========================================================
   // YOUR METHODS (Module 1 / Journey Planning)
   // =========================================================
 
-  // 👇 MOVED THIS INSIDE THE CLASS! 👇
   Future<List<StationModel>> loadAllStations() async {
-    // TODO: You will eventually write your code here to read the GTFS stops.txt files.
-    // For now, we are returning a mock list so your app can compile and run without errors!
+    final parsedStations = <StationModel>[];
+    final Set<String> seenNames = {};
 
-    // Simulating a brief network/loading delay
-    await Future.delayed(const Duration(milliseconds: 500));
-
-    return [
-      StationModel(
-        id: 'KJ15',
-        name: 'KL Sentral',
-        lines: {'Kelana Jaya Line'},
-        category: 'Rail',
-      ),
-      StationModel(
-        id: 'KG16',
-        name: 'Pasar Seni',
-        lines: {'Kelana Jaya Line', 'MRT Kajang Line'},
-        category: 'Rail',
-      ),
-      StationModel(
-        id: 'AG8',
-        name: 'Masjid Jamek',
-        lines: {'Ampang Line', 'Kelana Jaya Line'},
-        category: 'Rail',
-      ),
+    // List all three of your GTFS folder paths
+    final filePaths = [
+      'assets/gtfs/rail/stops.txt',
+      'assets/gtfs/mrt_feeder/stops.txt',
+      'assets/gtfs/bus/stops.txt',
     ];
+
+    for (String path in filePaths) {
+      try {
+        final String raw = await rootBundle.loadString(path);
+        List<List<dynamic>> csvTable = const CsvToListConverter(eol: '\n').convert(raw);
+
+        if (csvTable.isEmpty) continue;
+
+        final header = csvTable[0].map((e) => e.toString().trim()).toList();
+        final idIndex = header.indexOf('stop_id');
+        final nameIndex = header.indexOf('stop_name');
+
+        if (idIndex == -1 || nameIndex == -1) continue;
+
+        // Determine category based on the folder name
+        String category = 'Bus';
+        if (path.contains('rail')) category = 'Rail';
+        if (path.contains('mrt_feeder')) category = 'MRT Feeder';
+
+        for (int i = 1; i < csvTable.length; i++) {
+          final row = csvTable[i];
+          if (row.length > nameIndex) {
+            final stopId = row[idIndex].toString().trim();
+            final stopName = row[nameIndex].toString().trim();
+
+            // Infer the line based on prefix, or default to the category
+            String inferredLine = category;
+            if (stopId.startsWith('KJ')) inferredLine = 'Kelana Jaya';
+            else if (stopId.startsWith('KG')) inferredLine = 'Kajang';
+            else if (stopId.startsWith('AG')) inferredLine = 'Ampang';
+            else if (stopId.startsWith('PY')) inferredLine = 'Putrajaya';
+            else if (stopId.startsWith('MR')) inferredLine = 'Monorail';
+            else if (stopId.startsWith('SP')) inferredLine = 'Sri Petaling';
+            else if (stopId.startsWith('KT')) inferredLine = 'KTM';
+
+            // Filter out duplicate station/stop names
+            if (!seenNames.contains(stopName)) {
+              seenNames.add(stopName);
+              parsedStations.add(StationModel(
+                id: stopId,
+                name: stopName,
+                lines: {inferredLine},
+                category: category,
+              ));
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('Failed to load $path: $e');
+      }
+    }
+
+    // Sort alphabetically at the very end
+    parsedStations.sort((a, b) => a.name.compareTo(b.name));
+    return parsedStations;
+  }
+
+  // =========================================================
+  // LOAD ROUTES FROM GTFS ASSETS
+  // =========================================================
+  Future<List<Map<String, dynamic>>> loadGtfsRoutes() async {
+    try {
+      // Load the actual routes.txt file from your rail folder
+      final String raw = await rootBundle.loadString('assets/gtfs/rail/routes.txt');
+      final lines = raw.split('\n').where((l) => l.trim().isNotEmpty).toList();
+
+      final parsedRoutes = <Map<String, dynamic>>[];
+
+      // Skip the first line (the CSV header)
+      for (final line in lines.skip(1)) {
+        // GTFS files are comma-separated
+        final parts = line.split(',');
+        if (parts.length < 3) continue;
+
+        // Extracting data based on standard GTFS format
+        final routeId = parts[0].trim().replaceAll('"', '');
+        final routeName = parts[2].trim().replaceAll('"', ''); // route_long_name
+
+        // Extract color if it exists in the file (usually at index 7)
+        final routeColorHex = parts.length > 7 ? parts[7].trim().replaceAll('"', '') : '';
+        Color routeColor = const Color(0xFF1E3A8A); // Default fallback color
+
+        if (routeColorHex.isNotEmpty) {
+          try {
+            // Convert GTFS hex string (e.g. "E02B20") to Flutter Color
+            routeColor = Color(int.parse('0xFF$routeColorHex'));
+          } catch (_) {}
+        }
+
+        parsedRoutes.add({
+          'id': routeId,
+          'name': routeName,
+          'duration': 'Est. 25 min',    // Placeholder: Requires routing engine
+          'fare': 'Standard Fare',      // Placeholder: Requires fare_attributes.txt
+          'walk': 'To platform',
+          'badge': 'Rail',
+          'badgeIcon': Icons.train,
+          'badgeColor': Colors.blueGrey,
+          'color': routeColor,
+        });
+      }
+      return parsedRoutes;
+    } catch (e) {
+      // If the file fails to load, return an empty list
+      return [];
+    }
   }
 
 

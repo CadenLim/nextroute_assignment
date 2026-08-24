@@ -4,15 +4,21 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  sdk: ^3.12.2
 
 dependencies:
   flutter:
     sdk: flutter
-  http: ^1.1.0
-  supabase_flutter: ^2.0.0
-  google_fonts: ^8.2.1
   csv: ^6.0.0
+  cupertino_icons: ^1.0.8
+  google_fonts: ^8.2.1
+  http: ^1.1.0
+  supabase_flutter: ^2.8.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true

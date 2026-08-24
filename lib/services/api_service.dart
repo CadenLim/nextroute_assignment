@@ -1,7 +1,6 @@
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:csv/csv.dart';
 
 // =========================================================
@@ -44,9 +43,6 @@ class RidershipRecord {
 // API SERVICE CLASS
 // =========================================================
 class ApiService {
-
-  final _supabase = Supabase.instance.client;
-
   // --- FRIEND'S VARIABLES ---[cite: 1]
   List<RidershipRecord>? _cache;
 

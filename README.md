@@ -1,17 +1,31 @@
-# nextroute_assignment
+# NextRoute
 
-A new Flutter project.
+## Supabase setup
 
-## Getting Started
+1. In the Supabase dashboard, open your project and select **Connect**.
+2. Copy `config/supabase.example.json` to `config/supabase.json`.
+3. Replace the placeholders with the project's **Project URL** and
+   **Publishable Key**. Never put a `service_role` or secret key in this app.
+4. Fetch dependencies and start Flutter with the local config:
 
-This project is a starting point for a Flutter application.
+```powershell
+flutter pub get
+flutter run --dart-define-from-file=config/supabase.json
+```
 
-A few resources to get you started if this is your first Flutter project:
+For a release build, pass the same option:
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+```powershell
+flutter build apk --dart-define-from-file=config/supabase.json
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+The initialized client is available through `Database.client` in
+`lib/services/database.dart`. For example:
+
+```dart
+final rows = await Database.client.from('your_table').select();
+```
+
+`config/supabase.json` is ignored by Git. The publishable key is intended for
+client applications, but database access must still be protected with Row Level
+Security (RLS) policies in Supabase.

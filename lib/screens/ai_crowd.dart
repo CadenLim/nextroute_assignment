@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../localization/app_language.dart';
 import '../services/api_service.dart';
 
 // ── Crowd levels & rule-based prediction ────────────────────────────────────
@@ -277,8 +278,13 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       length: 3,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('AI Crowd Intelligence',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          title: Text(
+            context.tr('AI Crowd Intelligence'),
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
           backgroundColor: const Color(0xFF1E3A8A),
           elevation: 0,
           bottom: PreferredSize(
@@ -290,19 +296,19 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   color: Colors.white.withValues(alpha: 0.2),
                   borderRadius: BorderRadius.circular(24),
                 ),
-                child: const TabBar(
-                  indicator: BoxDecoration(
+                child: TabBar(
+                  indicator: const BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.all(Radius.circular(24)),
                   ),
-                  labelColor: Color(0xFF1E3A8A),
+                  labelColor: const Color(0xFF1E3A8A),
                   unselectedLabelColor: Colors.white,
-                  labelStyle: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                  unselectedLabelStyle: TextStyle(fontSize: 11),
+                  labelStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                  unselectedLabelStyle: const TextStyle(fontSize: 11),
                   tabs: [
-                    Tab(text: 'Crowd Estimate', icon: Icon(Icons.bar_chart, size: 16)),
-                    Tab(text: 'Peak Hours', icon: Icon(Icons.schedule, size: 16)),
-                    Tab(text: 'History', icon: Icon(Icons.show_chart, size: 16)),
+                    Tab(text: context.tr('Crowd Estimate'), icon: const Icon(Icons.bar_chart, size: 16)),
+                    Tab(text: context.tr('Peak Hours'), icon: const Icon(Icons.schedule, size: 16)),
+                    Tab(text: context.tr('History'), icon: const Icon(Icons.show_chart, size: 16)),
                   ],
                 ),
               ),
@@ -360,8 +366,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Station Crowd Estimate',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
+          Text(context.tr('Station Crowd Estimate'),
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 4),
           const Text(
             'Modelled time-of-day pattern, scaled by each station\'s real average ridership.',
@@ -371,7 +377,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           DropdownButtonFormField<String>(
             value: _station,
             decoration: InputDecoration(
-                labelText: 'Station', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
+                labelText: context.tr('Station'), border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
             items: _stations.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
             onChanged: (val) => setState(() { _station = val!; _crowdResult = null; }),
           ),
@@ -379,8 +385,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           DropdownButtonFormField<String>(
             value: _day,
             decoration: InputDecoration(
-                labelText: 'Day', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-            items: _days.map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
+                labelText: context.tr('Day'), border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
+            items: _days.map((d) => DropdownMenuItem(value: d, child: Text(context.tr(d)))).toList(),
             onChanged: (val) => setState(() { _day = val!; _crowdResult = null; }),
           ),
           const SizedBox(height: 12),
@@ -388,7 +394,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             onTap: _pickTime,
             child: InputDecorator(
               decoration: InputDecoration(
-                  labelText: 'Time', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
+                  labelText: context.tr('Time'), border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
               child: Text(_time.format(context), style: const TextStyle(fontSize: 16)),
             ),
           ),
@@ -403,7 +409,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
             onPressed: (!_statsReady || _loadingCrowd) ? null : _runCrowdEstimate,
-            label: Text(_statsReady ? 'Predict Crowd' : 'Loading station data...',
+            label: Text(context.tr(_statsReady ? 'Predict Crowd' : 'Loading station data...'),
                 style: const TextStyle(color: Colors.white, fontSize: 16)),
           ),
           if (_crowdResult != null) ...[
@@ -414,8 +420,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('EXPECTED CROWD',
-                          style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
+                      Text(context.tr('EXPECTED CROWD'),
+                          style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.baseline,
                         textBaseline: TextBaseline.alphabetic,
@@ -429,7 +435,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                             decoration: BoxDecoration(
                                 color: _crowdResult!.level.color.withValues(alpha: 0.1),
                                 borderRadius: BorderRadius.circular(4)),
-                            child: Text(_crowdResult!.level.label,
+                            child: Text(context.tr(_crowdResult!.level.label),
                                 style: TextStyle(color: _crowdResult!.level.color, fontSize: 10, fontWeight: FontWeight.bold)),
                           ),
                         ],
@@ -446,8 +452,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('EST. QUEUE',
-                          style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
+                      Text(context.tr('EST. QUEUE'),
+                          style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
                       Text(_crowdResult!.level.queueEstimate,
                           style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.black87)),
                     ],
@@ -487,8 +493,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Peak Hour Pattern',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
+          Text(context.tr('Peak Hour Pattern'),
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 4),
           const Text(
             'Modelled time-of-day shape, scaled by this station\'s real average ridership — not live sensor data.',
@@ -498,7 +504,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           DropdownButtonFormField<String>(
             value: _peakStation,
             decoration: InputDecoration(
-                labelText: 'Station', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
+                labelText: context.tr('Station'), border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
             items: _stations.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
             onChanged: (val) => setState(() { _peakStation = val!; _peakSlots = null; }),
           ),
@@ -506,8 +512,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           DropdownButtonFormField<String>(
             value: _peakDay,
             decoration: InputDecoration(
-                labelText: 'Day', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-            items: _days.map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
+                labelText: context.tr('Day'), border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
+            items: _days.map((d) => DropdownMenuItem(value: d, child: Text(context.tr(d)))).toList(),
             onChanged: (val) => setState(() { _peakDay = val!; _peakSlots = null; }),
           ),
           const SizedBox(height: 16),
@@ -521,7 +527,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
             onPressed: (!_statsReady || _loadingPeak) ? null : _runPeakHours,
-            label: Text(_statsReady ? 'Show Peak Pattern' : 'Loading station data...',
+            label: Text(context.tr(_statsReady ? 'Show Peak Pattern' : 'Loading station data...'),
                 style: const TextStyle(color: Colors.white, fontSize: 16)),
           ),
           if (_peakSlots != null) ...[
@@ -587,8 +593,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Ridership History',
-              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
+          Text(context.tr('Ridership History'),
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 4),
           const Text(
             'Real daily ridership totals aggregated from the local dataset.',
@@ -598,7 +604,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           DropdownButtonFormField<String>(
             value: _historyStation,
             decoration: InputDecoration(
-                labelText: 'Station', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
+                labelText: context.tr('Station'), border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
             items: _stations.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
             onChanged: (val) => setState(() { _historyStation = val!; _historyData = null; }),
           ),
@@ -613,7 +619,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
             onPressed: _loadingHistory ? null : _runHistory,
-            label: const Text('Load History', style: TextStyle(color: Colors.white, fontSize: 16)),
+            label: Text(context.tr('Load History'), style: const TextStyle(color: Colors.white, fontSize: 16)),
           ),
           if (_historyError != null) ...[
             const SizedBox(height: 16),
@@ -621,8 +627,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           ],
           if (_historyData != null && _historyData!.isEmpty) ...[
             const SizedBox(height: 16),
-            const Text('No records found for this station in the local dataset.',
-                style: TextStyle(color: Colors.black54)),
+            Text(context.tr('No records found for this station in the local dataset.'),
+                style: const TextStyle(color: Colors.black54)),
           ],
           if (_historyData != null && _historyData!.isNotEmpty) ...[
             Builder(builder: (context) {
@@ -639,11 +645,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   const SizedBox(height: 24),
                   Row(
                     children: [
-                      Expanded(child: _statCard('AVERAGE', avg.round().toString())),
+                      Expanded(child: _statCard(context.tr('AVERAGE'), avg.round().toString())),
                       const SizedBox(width: 10),
-                      Expanded(child: _statCard('HIGHEST', maxEntry.value.toString())),
+                      Expanded(child: _statCard(context.tr('HIGHEST'), maxEntry.value.toString())),
                       const SizedBox(width: 10),
-                      Expanded(child: _statCard('LOWEST', minEntry.value.toString())),
+                      Expanded(child: _statCard(context.tr('LOWEST'), minEntry.value.toString())),
                     ],
                   ),
                   const SizedBox(height: 12),
@@ -655,7 +661,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('Daily totals', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
+                      Text(context.tr('Daily totals'), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
                       Text('${_historyData!.length} days — scrolled to most recent',
                           style: const TextStyle(fontSize: 11, color: Colors.black45)),
                     ],

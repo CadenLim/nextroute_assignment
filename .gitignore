@@ -33,9 +33,6 @@ migrate_working_dir/
 /build/
 /coverage/
 
-# Local Supabase build-time configuration
-/config/supabase.json
-
 # Symbolication related
 app.*.symbols
 

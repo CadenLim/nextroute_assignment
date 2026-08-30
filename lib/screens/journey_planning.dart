@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../localization/app_language.dart';
 import '../services/api_service.dart';
 
 class JourneyPlanningScreen extends StatefulWidget {
@@ -98,13 +99,17 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                       ),
                     ),
                     Text(
-                      isOrigin ? 'Select Starting Point' : 'Select Destination',
+                      context.tr(
+                        isOrigin
+                            ? 'Select Starting Point'
+                            : 'Select Destination',
+                      ),
                       style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF111827)),
                     ),
                     const SizedBox(height: 16),
                     TextField(
                       decoration: InputDecoration(
-                        hintText: 'Search station...',
+                        hintText: context.tr('Search station...'),
                         prefixIcon: const Icon(Icons.search, color: Colors.grey),
                         filled: true,
                         fillColor: Colors.grey[100],
@@ -176,7 +181,13 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
                         onPressed: () => Navigator.pop(context),
-                        child: const Text('Cancel', style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
+                        child: Text(
+                          context.tr('Cancel'),
+                          style: const TextStyle(
+                            color: Colors.grey,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     )
                   ],
@@ -207,12 +218,18 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
               color: Color(0xFF2A52BE), // Deep blue
               borderRadius: BorderRadius.only(bottomLeft: Radius.circular(24), bottomRight: Radius.circular(24)),
             ),
-            child: const Column(
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('ROUTE OPTIMIZATION', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1.2)),
-                SizedBox(height: 4),
-                Text('Journey Planning', style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+                Text(
+                  context.tr('ROUTE OPTIMIZATION'),
+                  style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 1.2),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  context.tr('Journey Planning'),
+                  style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+                ),
               ],
             ),
           ),
@@ -223,7 +240,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
               padding: const EdgeInsets.all(20),
               children: [
                 // Section Title
-                const Text('ROAD SEARCH', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
+                Text(context.tr('ROAD SEARCH'), style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
                 const SizedBox(height: 12),
 
                 // --- SEARCH CARD ---
@@ -242,7 +259,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                             children: [
                               const Icon(Icons.circle, color: Colors.blue, size: 12),
                               const SizedBox(width: 12),
-                              Text(_origin?.name ?? 'Select starting point', style: TextStyle(color: _origin == null ? Colors.grey : Colors.black, fontWeight: _origin == null ? FontWeight.normal : FontWeight.bold)),
+                              Text(_origin?.name ?? context.tr('Select starting point'), style: TextStyle(color: _origin == null ? Colors.grey : Colors.black, fontWeight: _origin == null ? FontWeight.normal : FontWeight.bold)),
                               const Spacer(),
                               const Icon(Icons.keyboard_arrow_down, color: Colors.grey),
                             ],
@@ -276,7 +293,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                             children: [
                               const Icon(Icons.circle, color: Colors.red, size: 12),
                               const SizedBox(width: 12),
-                              Text(_destination?.name ?? 'Select destination', style: TextStyle(color: _destination == null ? Colors.grey : Colors.black, fontWeight: _destination == null ? FontWeight.normal : FontWeight.bold)),
+                              Text(_destination?.name ?? context.tr('Select destination'), style: TextStyle(color: _destination == null ? Colors.grey : Colors.black, fontWeight: _destination == null ? FontWeight.normal : FontWeight.bold)),
                               const Spacer(),
                               const Icon(Icons.keyboard_arrow_down, color: Colors.grey),
                             ],
@@ -291,7 +308,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                         width: double.infinity,
                         child: ElevatedButton.icon(
                           icon: Icon(Icons.search, color: _origin != null && _destination != null ? Colors.white : Colors.indigo),
-                          label: Text('Find Routes', style: TextStyle(fontWeight: FontWeight.bold, color: _origin != null && _destination != null ? Colors.white : Colors.indigo)),
+                          label: Text(context.tr('Find Routes'), style: TextStyle(fontWeight: FontWeight.bold, color: _origin != null && _destination != null ? Colors.white : Colors.indigo)),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: _origin != null && _destination != null ? const Color(0xFF2A52BE) : const Color(0xFFE2E8F0),
                             padding: const EdgeInsets.symmetric(vertical: 16),
@@ -311,7 +328,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
 
                 if (_hasSearched) ...[
                   const SizedBox(height: 24),
-                  const Text('ROUTE COMPARISON', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
+                  Text(context.tr('ROUTE COMPARISON'), style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
                   const SizedBox(height: 12),
 
                   // --- ROUTES LIST ---
@@ -398,7 +415,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                   }),
 
                   const SizedBox(height: 24),
-                  const Text('JOURNEY SUMMARY', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
+                  Text(context.tr('JOURNEY SUMMARY'), style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
                   const SizedBox(height: 12),
 
                   // --- JOURNEY SUMMARY TICKET ---
@@ -441,7 +458,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                             if (_selectedRouteIndex == 0) ...[
                               const Icon(Icons.star, color: Colors.amber, size: 16),
                               const SizedBox(width: 4),
-                              const Text('Recommended Route', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 12)),
+                              Text(context.tr('Recommended Route'), style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 12)),
                             ]
                           ],
                         ),
@@ -450,17 +467,17 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                         // Stats Grid
                         Row(
                           children: [
-                            _buildSummaryBox('DEPART', '8:20 AM'), const SizedBox(width: 12),
-                            _buildSummaryBox('ARRIVE', '8:44 AM'), const SizedBox(width: 12),
-                            _buildSummaryBox('DURATION', _routes[_selectedRouteIndex]['duration']),
+                            _buildSummaryBox(context.tr('DEPART'), '8:20 AM'), const SizedBox(width: 12),
+                            _buildSummaryBox(context.tr('ARRIVE'), '8:44 AM'), const SizedBox(width: 12),
+                            _buildSummaryBox(context.tr('DURATION'), _routes[_selectedRouteIndex]['duration']),
                           ],
                         ),
                         const SizedBox(height: 12),
                         Row(
                           children: [
-                            Expanded(child: _buildSummaryBox('ESTIMATED FARE', _routes[_selectedRouteIndex]['fare'], icon: Icons.credit_card, iconColor: Colors.blue)),
+                            Expanded(child: _buildSummaryBox(context.tr('ESTIMATED FARE'), _routes[_selectedRouteIndex]['fare'], icon: Icons.credit_card, iconColor: Colors.blue)),
                             const SizedBox(width: 12),
-                            Expanded(child: _buildSummaryBox('WALK TO STATION', _routes[_selectedRouteIndex]['walk'], icon: Icons.directions_walk, iconColor: Colors.orange)),
+                            Expanded(child: _buildSummaryBox(context.tr('WALK TO STATION'), _routes[_selectedRouteIndex]['walk'], icon: Icons.directions_walk, iconColor: Colors.orange)),
                           ],
                         ),
                         const SizedBox(height: 20),
@@ -476,7 +493,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                             ),
                             onPressed: () => setState(() => _isJourneyConfirmed = true),
                             child: Text(
-                              _isJourneyConfirmed ? '✓ Journey Confirmed' : 'Start Journey',
+                              context.tr(_isJourneyConfirmed ? '✓ Journey Confirmed' : 'Start Journey'),
                               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
                             ),
                           ),

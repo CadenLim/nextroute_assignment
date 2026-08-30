@@ -184,17 +184,21 @@ class ApiService {
     final String raw = await rootBundle.loadString('assets/ridership.csv');
     final lines = raw.split('\n').where((l) => l.trim().isNotEmpty).toList();
 
-    // First line is the header (date,origin,destination,ridership) — skip it.
+    // First line is the header. IMPORTANT: the real government CSV's column
+    // order is "origin,destination,date,ridership" — NOT
+    // "date,origin,destination,ridership". Parsing it in the wrong order
+    // means DateTime.parse() gets a station name instead of a date, throws,
+    // and every row is silently skipped by the catch block below. Fixed here.
     final records = <RidershipRecord>[];
     for (final line in lines.skip(1)) {
       final parts = line.split(',');
-      if (parts.length < 4) continue; // skip malformed rows instead of crashing
+      if (parts.length < 4) continue; // skips malformed/truncated rows (e.g. a cut-off last line)
       try {
         records.add(RidershipRecord(
-          date: DateTime.parse(parts[0].trim()),
-          origin: parts[1].trim(),
-          destination: parts[2].trim(),
-          ridership: int.parse(parts[3].trim()),
+          origin: parts[0].trim(),
+          destination: parts[1].trim(),
+          date: DateTime.parse(parts[2].trim()),
+          ridership: double.parse(parts[3].trim()).round(),
         ));
       } catch (_) {
         // Skip any row that fails to parse (bad date/number) rather than
@@ -207,21 +211,46 @@ class ApiService {
     return records;
   }
 
-  // All records where the given station is either the origin or the
-  // destination — this is "how much ridership touched this station".
-  Future<List<RidershipRecord>> getRecordsForStation(String station) async {
+  // The dataset's marker row for "total across all origins/destinations".
+  static const String kAllStationsCode = 'A0: All Stations';
+
+  // ---------------------------------------------------------------------
+  // A0 "All Stations" rows = real total daily ridership recorded AT a
+  // station (across every origin). Used for Crowd Estimate / Peak Hours /
+  // History. NOTE: this intentionally does NOT also match rows where the
+  // station appears as an O-D origin or destination — mixing those in
+  // would double-count trips (the station's real daily total already
+  // includes them). O-D-specific rows are handled separately below.
+  // ---------------------------------------------------------------------
+
+  // All distinct stations that have an "A0: All Stations" total record —
+  // i.e. every real station in the dataset.
+  Future<List<String>> getStationList() async {
+    final all = await loadRidership();
+    final names = all
+        .where((r) => r.origin == kAllStationsCode)
+        .map((r) => r.destination)
+        .toSet()
+        .toList();
+    names.sort();
+    return names;
+  }
+
+  // A station's real total-ridership records, sorted chronologically.
+  Future<List<RidershipRecord>> getStationTotalRecords(String station) async {
     final all = await loadRidership();
     return all
-        .where((r) => r.origin == station || r.destination == station)
+        .where((r) => r.origin == kAllStationsCode && r.destination == station)
         .toList()
       ..sort((a, b) => a.date.compareTo(b.date));
   }
 
-  // Groups a station's records by date and sums ridership per day.
-  // Returns a list sorted chronologically: [(date, totalRidership), ...]
+  // Groups a station's total records by date. With this dataset there's
+  // already exactly one A0 row per day, but grouping+summing keeps this
+  // correct even if a fuller dataset later has more than one.
   Future<List<MapEntry<DateTime, int>>> getDailyTotalsForStation(
       String station) async {
-    final records = await getRecordsForStation(station);
+    final records = await getStationTotalRecords(station);
     final Map<DateTime, int> totals = {};
     for (final r in records) {
       final day = DateTime(r.date.year, r.date.month, r.date.day);
@@ -240,6 +269,116 @@ class ApiService {
     if (daily.isEmpty) return 0;
     final total = daily.fold<int>(0, (sum, e) => sum + e.value);
     return total / daily.length;
+  }
+
+  // Real historical average ridership for a station on one specific
+  // weekday (1 = Monday ... 7 = Sunday, Dart's DateTime.weekday convention).
+  // This is what drives the crowd-prediction magnitude with real data.
+  Future<double> getStationAverageForWeekday(String station, int weekday) async {
+    final daily = await getDailyTotalsForStation(station);
+    final matching = daily.where((e) => e.key.weekday == weekday).toList();
+    if (matching.isEmpty) return getStationAverageRidership(station);
+    final total = matching.fold<int>(0, (sum, e) => sum + e.value);
+    return total / matching.length;
+  }
+
+  // Network-wide average daily ridership across all stations/days — used
+  // as a neutral baseline so a station's magnitude can be expressed as
+  // "busier/quieter than the network average" rather than an absolute
+  // number that's hard to interpret in isolation.
+  Future<double> getNetworkAverageRidership() async {
+    final all = await loadRidership();
+    final totals = all.where((r) => r.origin == kAllStationsCode).toList();
+    if (totals.isEmpty) return 1;
+    final sum = totals.fold<int>(0, (s, r) => s + r.ridership);
+    return sum / totals.length;
+  }
+
+  // ---------------------------------------------------------------------
+  // Origin-Destination (O-D) ridership insights — REAL station-to-station
+  // trip data. Deliberately kept to simple filter/group/sum/sort logic:
+  // no path-finding, no multi-hop routes, no fare/ETA — that's Module 1's
+  // job. This only answers "how many people travelled between two named
+  // stations", never "how do I get from A to B".
+  // ---------------------------------------------------------------------
+
+  // Every station that has at least one real outgoing O-D record — lets
+  // the UI tell the user upfront which stations currently have connection
+  // data, instead of silently showing an empty result.
+  Future<List<String>> getStationsWithOutgoingData() async {
+    final all = await loadRidership();
+    final origins = all
+        .where((r) => r.origin != kAllStationsCode && r.destination != kAllStationsCode)
+        .map((r) => r.origin)
+        .toSet()
+        .toList();
+    origins.sort();
+    return origins;
+  }
+
+  // Top [limit] destinations reached from [station], by total real trips
+  // summed across every date on file. Pure group-by + sum + sort.
+  Future<List<MapEntry<String, int>>> getTopDestinationsFrom(
+      String station, {int limit = 5}) async {
+    final all = await loadRidership();
+    final Map<String, int> totals = {};
+    for (final r in all) {
+      if (r.origin == station && r.destination != kAllStationsCode) {
+        totals[r.destination] = (totals[r.destination] ?? 0) + r.ridership;
+      }
+    }
+    final entries = totals.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return entries.take(limit).toList();
+  }
+
+  // Top [limit] origins that trips into [station] came from, by total
+  // real trips summed across every date on file.
+  Future<List<MapEntry<String, int>>> getTopOriginsInto(
+      String station, {int limit = 5}) async {
+    final all = await loadRidership();
+    final Map<String, int> totals = {};
+    for (final r in all) {
+      if (r.destination == station && r.origin != kAllStationsCode) {
+        totals[r.origin] = (totals[r.origin] ?? 0) + r.ridership;
+      }
+    }
+    final entries = totals.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return entries.take(limit).toList();
+  }
+
+  // Total real outgoing trips recorded from [station] (sum across all
+  // real destinations and dates — excludes the A0 marker rows).
+  Future<int> getTotalOutgoing(String station) async {
+    final all = await loadRidership();
+    return all
+        .where((r) => r.origin == station && r.destination != kAllStationsCode)
+        .fold<int>(0, (s, r) => s + r.ridership);
+  }
+
+  // Total real incoming trips recorded into [station].
+  Future<int> getTotalIncoming(String station) async {
+    final all = await loadRidership();
+    return all
+        .where((r) => r.destination == station && r.origin != kAllStationsCode)
+        .fold<int>(0, (s, r) => s + r.ridership);
+  }
+
+  // Network-wide leaderboard: the busiest [limit] station-to-station
+  // connections by total real trips, regardless of which station the user
+  // is looking at. Group by (origin, destination) pair, sum, sort desc.
+  Future<List<MapEntry<String, int>>> getBusiestConnections({int limit = 10}) async {
+    final all = await loadRidership();
+    final Map<String, int> totals = {};
+    for (final r in all) {
+      if (r.origin == kAllStationsCode || r.destination == kAllStationsCode) continue;
+      final key = '${r.origin} → ${r.destination}';
+      totals[key] = (totals[key] ?? 0) + r.ridership;
+    }
+    final entries = totals.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return entries.take(limit).toList();
   }
 
   // Simple status line shown at the top of the AI Crowd screen so users

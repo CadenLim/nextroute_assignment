@@ -336,6 +336,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   String? _historyStation;
   List<RidershipRecord>? _historyData;
   DateTime? _historyMonthFilter; // null = show all months
+  int? _historyDayOfWeekFilter; // null = All, else DateTime.monday..DateTime.sunday
   final ScrollController _historyScrollController = ScrollController();
 
   // ── Tab 4: Connections (O-D) state ──
@@ -413,6 +414,54 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return ('Around Network Average', Colors.blueGrey, Icons.trending_flat);
   }
 
+  // Ridership Trend (Tab 3): compares the average of the more recent half
+  // of the currently-filtered records against the average of the earlier
+  // half. Purely derived from whatever real records are on screen after
+  // the month/day-of-week filters are applied — no modelling, no fixed
+  // window length, no hardcoded ridership figures. Assumes `records` is
+  // already in chronological (ascending date) order, matching how
+  // _historyData is loaded and rendered elsewhere in this tab.
+  ({double currentAvg, double previousAvg, double percentChange})? _computeRidershipTrend(
+      List<RidershipRecord> records) {
+    if (records.length < 2) return null; // not enough real data to compare two periods
+    final mid = records.length ~/ 2;
+    final previousPeriod = records.sublist(0, mid);
+    final currentPeriod = records.sublist(mid);
+    if (previousPeriod.isEmpty || currentPeriod.isEmpty) return null;
+    final previousAvg =
+        previousPeriod.map((e) => e.ridership).reduce((a, b) => a + b) / previousPeriod.length;
+    final currentAvg =
+        currentPeriod.map((e) => e.ridership).reduce((a, b) => a + b) / currentPeriod.length;
+    final percentChange = previousAvg == 0 ? 0.0 : ((currentAvg - previousAvg) / previousAvg) * 100;
+    return (currentAvg: currentAvg, previousAvg: previousAvg, percentChange: percentChange);
+  }
+
+  // Describes the trend above in words, mirroring the tone/threshold style
+  // of _demandInterpretation. Presentational only — does not alter the
+  // underlying averages or % change.
+  (String, Color, IconData) _ridershipInsight(
+      ({double currentAvg, double previousAvg, double percentChange}) trend) {
+    final pct = trend.percentChange;
+    if (pct > 5) {
+      return (
+      'Ridership has increased by ${pct.toStringAsFixed(1)}% versus the previous period, based on the real records shown above.',
+      Colors.red.shade700,
+      Icons.trending_up,
+      );
+    } else if (pct < -5) {
+      return (
+      'Ridership has decreased by ${pct.abs().toStringAsFixed(1)}% versus the previous period, based on the real records shown above.',
+      Colors.green.shade700,
+      Icons.trending_down,
+      );
+    }
+    return (
+    'Ridership has stayed roughly stable (${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%) versus the previous period, based on the real records shown above.',
+    Colors.blueGrey,
+    Icons.trending_flat,
+    );
+  }
+
   // Rapid KL rail services operate 6:00 AM to 12:00 AM (midnight) per the
   // official FAQ (see _baselineOccupancy comment). Times before 6:00 AM
   // are outside operating hours, so no crowd prediction is offered for
@@ -445,7 +494,13 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     if (station == null) return;
     final dayAvg = await _api.getStationAverageForWeekday(station, _peakWeekday);
     if (!mounted) return;
-    final hours = [6, 8, 10, 12, 14, 16, 18, 20, 22];
+    // Sample hours chosen to reflect Rapid KL's actual operating pattern:
+    // service runs 06:00–24:00 (00:00–06:00 excluded, matching Tab 1's
+    // _isOutsideOperatingHours cutoff), with the morning rush (07:00–09:00)
+    // and evening rush (17:00–19:30) given denser coverage since that's
+    // when demand swings the most, plus a couple of midday samples for
+    // off-peak contrast.
+    final hours = [6, 7, 8, 9, 12, 15, 17, 18, 19];
     final factor = _magnitudeFactor(dayAvg);
     final slots = hours
         .map((h) => MapEntry(h, predictCrowd(_peakWeekday, h * 60, factor)))
@@ -465,6 +520,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     setState(() {
       _historyData = data;
       _historyMonthFilter = null; // reset filter on fresh load
+      _historyDayOfWeekFilter = null; // reset filter on fresh load
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_historyScrollController.hasClients) {
@@ -1192,7 +1248,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           const SizedBox(height: 4),
           const Text(
             'Based on historical station ridership and a rule-based commuter demand pattern. '
-                'The dataset contains daily totals only, so hourly demand is estimated rather than directly observed.',
+                'The dataset contains daily totals only, so every hourly figure below is a modelled peak '
+                'estimate, not observed hourly ridership.',
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: _sectionGap),
@@ -1240,7 +1297,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
             // B. Peak Pattern
             _sectionCard(
-              title: 'PEAK PATTERN',
+              title: 'MODELLED PEAK PATTERN',
               icon: Icons.show_chart,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1423,8 +1480,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   const TextSpan(
                       text: 'Historical station ridership is used to scale a rule-based daily '
                           'commuter demand pattern. '),
+                  const TextSpan(text: 'No machine learning model is used.\n'),
                   TextSpan(
-                      text: 'No machine learning model is used.',
+                      text: 'These are modelled peak estimates, not observed hourly ridership: '
+                          'the source dataset only records daily totals, so the hourly shape shown '
+                          'here is inferred, not measured.',
                       style: TextStyle(fontWeight: FontWeight.w600, color: Colors.blue.shade900)),
                 ],
               ),
@@ -1458,9 +1518,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
   // Sections (mirrors the Connections tab pattern):
   //   A. Station selection
-  //   B. History filters
+  //   B. History filters (month + day-of-week)
   //   C. Summary statistics (Average / Highest / Lowest)
-  //   D. Daily totals chart
+  //   D. Ridership Trend (current-period vs previous-period average)
+  //   E. Ridership Insight (plain-language read of the trend)
+  //   F. Daily totals chart
   Widget _buildHistoryTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
@@ -1491,6 +1553,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     _historyStation = val;
                     _historyData = null;
                     _historyMonthFilter = null;
+                    _historyDayOfWeekFilter = null;
                   }),
                 ),
                 const SizedBox(height: 12),
@@ -1522,7 +1585,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 ..sort();
 
               // Apply the month filter (null = show everything).
-              final filtered = _historyMonthFilter == null
+              final byMonth = _historyMonthFilter == null
                   ? _historyData!
                   : _historyData!
                   .where((e) =>
@@ -1530,9 +1593,18 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   e.date.month == _historyMonthFilter!.month)
                   .toList();
 
+              final filtered = _historyDayOfWeekFilter == null
+                  ? byMonth
+                  : byMonth.where((e) => e.date.weekday == _historyDayOfWeekFilter).toList();
+
               const monthNames = [
                 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+              ];
+
+              const dayOfWeekNames = [
+                'Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                'Friday', 'Saturday', 'Sunday',
               ];
 
               // B. History filters — always shown once data is loaded, so the
@@ -1540,20 +1612,41 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               final filtersSection = _sectionCard(
                 title: 'HISTORY FILTERS',
                 icon: Icons.filter_alt_outlined,
-                child: DropdownButtonFormField<DateTime?>(
-                  value: _historyMonthFilter,
-                  decoration: InputDecoration(
-                      labelText: 'Filter by month',
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-                  items: [
-                    const DropdownMenuItem<DateTime?>(
-                        value: null, child: Text('All months')),
-                    ...months.map((m) => DropdownMenuItem<DateTime?>(
-                      value: m,
-                      child: Text('${monthNames[m.month - 1]} ${m.year}'),
-                    )),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    DropdownButtonFormField<DateTime?>(
+                      value: _historyMonthFilter,
+                      decoration: InputDecoration(
+                          labelText: 'Filter by month',
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
+                      items: [
+                        const DropdownMenuItem<DateTime?>(
+                            value: null, child: Text('All months')),
+                        ...months.map((m) => DropdownMenuItem<DateTime?>(
+                          value: m,
+                          child: Text('${monthNames[m.month - 1]} ${m.year}'),
+                        )),
+                      ],
+                      onChanged: (val) => setState(() => _historyMonthFilter = val),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<int?>(
+                      value: _historyDayOfWeekFilter,
+                      decoration: InputDecoration(
+                          labelText: 'Filter by day of week',
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
+                      items: [
+                        const DropdownMenuItem<int?>(
+                            value: null, child: Text('All days')),
+                        ...List.generate(7, (i) => i + 1).map((weekday) => DropdownMenuItem<int?>(
+                          value: weekday,
+                          child: Text(dayOfWeekNames[weekday - 1]),
+                        )),
+                      ],
+                      onChanged: (val) => setState(() => _historyDayOfWeekFilter = val),
+                    ),
                   ],
-                  onChanged: (val) => setState(() => _historyMonthFilter = val),
                 ),
               );
 
@@ -1564,7 +1657,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     const SizedBox(height: _sectionGap),
                     filtersSection,
                     const SizedBox(height: _sectionGap),
-                    _emptyState('No records for the selected month.'),
+                    _emptyState('No records for the selected month / day of week.'),
                   ],
                 );
               }
@@ -1575,6 +1668,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               final minRecord = filtered.reduce((a, b) => a.ridership <= b.ridership ? a : b);
               final maxVal = maxRecord.ridership.toDouble();
               final latest = filtered.last;
+              final trend = _computeRidershipTrend(filtered);
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1611,7 +1705,79 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   ),
                   const SizedBox(height: _sectionGap),
 
-                  // D. Daily totals chart
+                  // D. Ridership Trend — current-period vs previous-period
+                  // average, computed by splitting the currently-filtered
+                  // real records in half chronologically (earlier half vs
+                  // later half). No modelling, no fixed calendar window.
+                  _sectionCard(
+                    title: 'RIDERSHIP TREND',
+                    icon: Icons.trending_up,
+                    child: trend == null
+                        ? _emptyState('Need at least 2 records in the current filter to compute a trend.')
+                        : Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                                child: _statCard('PREVIOUS PERIOD AVG',
+                                    trend.previousAvg.round().toString())),
+                            const SizedBox(width: 10),
+                            Expanded(
+                                child: _statCard('CURRENT PERIOD AVG',
+                                    trend.currentAvg.round().toString())),
+                            const SizedBox(width: 10),
+                            Expanded(
+                                child: _statCard('% CHANGE',
+                                    '${trend.percentChange >= 0 ? '+' : ''}${trend.percentChange.toStringAsFixed(1)}%')),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Based on the ${filtered.length} record(s) currently shown, split chronologically into two equal halves.',
+                          style: const TextStyle(fontSize: 11, color: Colors.black45),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: _sectionGap),
+
+                  // E. Ridership Insight — plain-language read of the trend
+                  // above. Presentational only.
+                  if (trend != null) ...[
+                    Builder(builder: (context) {
+                      final (message, color, icon) = _ridershipInsight(trend);
+                      return _sectionCard(
+                        title: 'RIDERSHIP INSIGHT',
+                        icon: Icons.lightbulb_outline,
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.05),
+                            border: Border.all(color: color.withValues(alpha: 0.3)),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(icon, size: 16, color: color),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  message,
+                                  style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }),
+                    const SizedBox(height: _sectionGap),
+                  ],
+
+                  // F. Daily totals chart
                   _sectionCard(
                     title: 'DAILY TOTALS',
                     icon: Icons.bar_chart,

@@ -1,6 +1,89 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 
+// ── Type-to-search station picker ────────────────────────────────────────
+// Drop-in replacement for DropdownButtonFormField<String> when the list of
+// choices is long (station names). Lets the user either tap and scroll a
+// list, or start typing to filter it, while looking like a normal form
+// field. Built on Flutter's built-in Autocomplete widget (no extra
+// packages required).
+class StationSearchField extends StatelessWidget {
+  final String label;
+  final List<String> stations;
+  final String? value;
+  final ValueChanged<String?> onChanged;
+
+  const StationSearchField({
+    super.key,
+    required this.label,
+    required this.stations,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Keying on the *selected* value (not on keystrokes) means the field
+    // remounts with the right initial text whenever the selection changes
+    // programmatically (e.g. once stations finish loading), but stays put
+    // — preserving whatever the user is currently typing — while they're
+    // filtering the list.
+    return Autocomplete<String>(
+      key: ValueKey(value),
+      initialValue: TextEditingValue(text: value ?? ''),
+      optionsBuilder: (TextEditingValue textEditingValue) {
+        final query = textEditingValue.text.trim().toLowerCase();
+        if (query.isEmpty) return stations;
+        return stations.where((s) => s.toLowerCase().contains(query));
+      },
+      displayStringForOption: (s) => s,
+      onSelected: onChanged,
+      fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+        return TextFormField(
+          controller: controller,
+          focusNode: focusNode,
+          decoration: InputDecoration(
+            labelText: label,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            suffixIcon: const Icon(Icons.search, size: 20),
+          ),
+        );
+      },
+      optionsViewBuilder: (context, onSelected, options) {
+        final list = options.toList();
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            elevation: 4,
+            borderRadius: BorderRadius.circular(8),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 280, minWidth: 280),
+              child: list.isEmpty
+                  ? const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text('No matching stations', style: TextStyle(color: Colors.black45)),
+              )
+                  : ListView.builder(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                itemCount: list.length,
+                itemBuilder: (context, index) {
+                  final option = list[index];
+                  return ListTile(
+                    dense: true,
+                    title: Text(option),
+                    onTap: () => onSelected(option),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 // ── Crowd levels & rule-based prediction ────────────────────────────────────
 // This is NOT a trained ML model. It is a transparent, rule-based estimator:
 //   1. REAL: the station's historical average ridership for the selected
@@ -212,11 +295,14 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   CrowdResult? _crowdResult;
   double? _crowdResultDayAvg;
   double? _crowdResultFactor;
+  int? _crowdResultRecordCount;
 
   // ── Tab 2: Peak Hours state ──
   String? _peakStation;
   int _peakWeekday = DateTime.monday;
   List<MapEntry<int, CrowdResult>>? _peakSlots;
+  double? _peakDayAvg;
+  double? _peakFactor;
 
   // ── Tab 3: Ridership History state ──
   String? _historyStation;
@@ -232,6 +318,14 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   int? _connIncoming;
   List<MapEntry<String, int>>? _connBusiestNetwork;
   bool _loadingConnections = false;
+
+  // ── Connections tab — shared visual-hierarchy tokens ──
+  // Single source of truth for spacing/padding/radius on the Connections
+  // tab so every section (A–F) looks consistent. Only used by that tab —
+  // the rest of the app keeps its existing look untouched.
+  static const double _connSectionGap = 20.0;
+  static const double _connCardPadding = 16.0;
+  static const double _connCardRadius = 12.0;
 
   @override
   void initState() {
@@ -264,8 +358,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _loadError = 'Could not load the ridership dataset. Check that '
-          'assets/ridership.csv is declared in pubspec.yaml.');
+      // Shows the real exception instead of a canned message, so you can
+      // see exactly what Supabase/PostgREST is complaining about (missing
+      // view, RLS block, not-initialized client, etc.) rather than
+      // guessing from a generic string.
+      setState(() => _loadError = 'Could not load ridership data from Supabase:\n$e');
     }
   }
 
@@ -274,17 +371,35 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return ratio.clamp(0.4, 1.8);
   }
 
+  // Describes the existing Relative Station Factor in words. Purely
+  // presentational — does not affect the factor or occupancy calculation.
+  // This reflects the STATION's historical ridership vs the network
+  // average — it is unrelated to the predicted occupancy % shown above it.
+  (String, Color, IconData) _demandInterpretation(double factor) {
+    if (factor > 1.05) {
+      return ('Above Network Average', Colors.red.shade700, Icons.trending_up);
+    } else if (factor < 0.95) {
+      return ('Below Network Average', Colors.green.shade700, Icons.trending_down);
+    }
+    return ('Around Network Average', Colors.blueGrey, Icons.trending_flat);
+  }
+
   Future<void> _runCrowdEstimate() async {
     final station = _station;
     if (station == null) return;
     final dayAvg = await _api.getStationAverageForWeekday(station, _weekday);
+    // Reuses the same daily-totals lookup that getStationAverageForWeekday
+    // is built on, just to expose how many real records fed that average.
+    final dailyTotals = await _api.getDailyTotalsForStation(station);
     if (!mounted) return;
+    final recordCount = dailyTotals.where((e) => e.key.weekday == _weekday).length;
     final minutes = _time.hour * 60 + _time.minute;
     final factor = _magnitudeFactor(dayAvg);
     setState(() {
       _crowdResult = predictCrowd(_weekday, minutes, factor);
       _crowdResultDayAvg = dayAvg;
       _crowdResultFactor = factor;
+      _crowdResultRecordCount = recordCount;
     });
   }
 
@@ -298,7 +413,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     final slots = hours
         .map((h) => MapEntry(h, predictCrowd(_peakWeekday, h * 60, factor)))
         .toList();
-    setState(() => _peakSlots = slots);
+    setState(() {
+      _peakSlots = slots;
+      _peakDayAvg = dayAvg;
+      _peakFactor = factor;
+    });
   }
 
   Future<void> _runHistory() async {
@@ -368,8 +487,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       length: 4,
       child: Scaffold(
         appBar: AppBar(
+          toolbarHeight: 72,
+          titleSpacing: 20,
           title: const Text('AI Crowd & Ridership Insights',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 19, height: 1.2)),
           backgroundColor: const Color(0xFF1E3A8A),
           elevation: 0,
           bottom: PreferredSize(
@@ -457,11 +578,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
+          StationSearchField(
+            label: 'Station',
+            stations: _stations,
             value: _station,
-            decoration: InputDecoration(
-                labelText: 'Station', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-            items: _stations.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
             onChanged: (val) => setState(() { _station = val; _crowdResult = null; }),
           ),
           const SizedBox(height: 12),
@@ -575,6 +695,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               style: const TextStyle(fontSize: 11, color: Colors.black45),
             ),
             const SizedBox(height: 16),
+            _buildStationDemandProfile(),
+            const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -604,8 +726,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   Widget _buildCalculationBreakdown() {
     final dayAvg = _crowdResultDayAvg ?? 0;
     final factor = _crowdResultFactor ?? 0;
+    final recordCount = _crowdResultRecordCount ?? 0;
     final category = timeCategoryFor(_time.hour * 60 + _time.minute);
     final dayLabel = kWeekdayLabels[_weekday - 1];
+    final baseline = _baselineOccupancy(_weekday, _time.hour * 60 + _time.minute);
+    final occupancy = _crowdResult!.occupancy;
 
     return Container(
       width: double.infinity,
@@ -626,17 +751,108 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
             ],
           ),
-          const SizedBox(height: 10),
-          _breakdownRow('Historical $dayLabel Average', '${dayAvg.round()} trips/day'),
-          _breakdownRow('Network Average', '${_networkAverage.round()} trips/day'),
-          _breakdownRow('Relative Station Factor', '${factor.toStringAsFixed(2)}x'),
-          _breakdownRow('Selected Time Category', category.label),
+          const SizedBox(height: 4),
+          // Formula summary, always visible at a glance.
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(top: 6, bottom: 12),
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF4F46E5).withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFF4F46E5).withValues(alpha: 0.2)),
+            ),
+            child: const Text(
+              'Estimated Occupancy = Time Category Baseline × Relative Station Factor',
+              style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF4F46E5)),
+            ),
+          ),
+
+          _breakdownStep(
+            step: 1,
+            title: 'Historical Station Average',
+            lines: [
+              '$dayLabel average: ${dayAvg.round()} trips/day',
+              '($recordCount historical records analysed)',
+            ],
+          ),
+          _breakdownStep(
+            step: 2,
+            title: 'Relative Station Factor',
+            lines: [
+              '${dayAvg.round()} ÷ ${_networkAverage.round()} = ${factor.toStringAsFixed(2)}x',
+              'This station is ${(factor * 100).round()}% as busy as the network average.',
+            ],
+          ),
+          _breakdownStep(
+            step: 3,
+            title: 'Time Category Baseline',
+            lines: [
+              'Time: ${_time.format(context)}',
+              'Baseline Occupancy: $baseline%',
+              '(${category.label} category, ${category.rangeLabel})',
+              'Baseline varies by exact time within a category to reflect the real rush-hour shape.',
+            ],
+          ),
+          _breakdownStep(
+            step: 4,
+            title: 'Final Estimation',
+            lines: [
+              '$baseline% × ${factor.toStringAsFixed(2)} = $occupancy%',
+            ],
+            isLast: true,
+          ),
+
           const Divider(height: 18),
           _breakdownRow(
             'Final Estimated Occupancy',
-            '${_crowdResult!.occupancy}%',
+            '$occupancy%',
             emphasize: true,
             valueColor: _crowdResult!.level.color,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _breakdownStep({
+    required int step,
+    required String title,
+    required List<String> lines,
+    bool isLast = false,
+  }) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: isLast ? 0 : 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 20,
+            height: 20,
+            margin: const EdgeInsets.only(top: 1),
+            decoration: BoxDecoration(
+              color: const Color(0xFF4F46E5).withValues(alpha: 0.12),
+              shape: BoxShape.circle,
+            ),
+            child: Center(
+              child: Text('$step',
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5))),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Step $step — $title',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black87)),
+                const SizedBox(height: 2),
+                ...lines.map((l) => Padding(
+                  padding: const EdgeInsets.only(top: 1),
+                  child: Text(l, style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                )),
+              ],
+            ),
           ),
         ],
       ),
@@ -664,6 +880,56 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
+  // Station Demand Profile — describes the station's real historical
+  // ridership relative to the network average (the existing Relative
+  // Station Factor). Deliberately separate from the occupancy result
+  // above it, since this reflects the STATION's typical demand level,
+  // not the predicted occupancy for the selected time.
+  Widget _buildStationDemandProfile() {
+    final factor = _crowdResultFactor ?? 1.0;
+    final dayAvg = _crowdResultDayAvg ?? 0;
+    final dayLabel = kWeekdayLabels[_weekday - 1];
+    final (status, color, icon) = _demandInterpretation(factor);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.insights_outlined, size: 16, color: Colors.black54),
+              SizedBox(width: 6),
+              Text('Station Demand Profile',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Icon(icon, size: 15, color: color),
+              const SizedBox(width: 6),
+              Text('$status (${factor.toStringAsFixed(2)}x)',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Based on historical ridership data: $_station averages ${dayAvg.round()} trips/day '
+                'on ${dayLabel}s, vs the network-wide average.',
+            style: const TextStyle(fontSize: 11, color: Colors.black54),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildMethodologyCard() {
     return Container(
       width: double.infinity,
@@ -681,12 +947,17 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           Expanded(
             child: RichText(
               text: TextSpan(
-                style: TextStyle(fontSize: 12, color: Colors.blue.shade900, height: 1.4),
+                style: TextStyle(fontSize: 12, color: Colors.blue.shade900, height: 1.5),
                 children: [
-                  const TextSpan(text: 'Methodology: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const TextSpan(text: 'Data Source: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const TextSpan(text: 'Rapid Rail historical ridership dataset.\n'),
+                  const TextSpan(text: 'Method: ', style: TextStyle(fontWeight: FontWeight.bold)),
                   const TextSpan(
-                      text: 'Uses real historical ridership from the dataset and applies a '
-                          'rule-based time-of-day crowd estimation model. No machine learning model is used.'),
+                      text: 'Real daily ridership averages are combined with a rule-based '
+                          'commuter demand pattern to estimate crowd levels at different times of day. '),
+                  TextSpan(
+                      text: 'No machine learning model is used.',
+                      style: TextStyle(fontWeight: FontWeight.w600, color: Colors.blue.shade900)),
                 ],
               ),
             ),
@@ -750,20 +1021,20 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Peak Hour Pattern',
+          const Text('Peak Demand Analysis',
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 4),
           const Text(
-            'Modelled hourly shape (the dataset has no hourly column), scaled by this station\'s real day-of-week average.',
+            'Based on historical station ridership and a rule-based commuter demand pattern. '
+                'The dataset contains daily totals only, so hourly demand is estimated rather than directly observed.',
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
+          StationSearchField(
+            label: 'Station',
+            stations: _stations,
             value: _peakStation,
-            decoration: InputDecoration(
-                labelText: 'Station', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-            items: _stations.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-            onChanged: (val) => setState(() { _peakStation = val; _peakSlots = null; }),
+            onChanged: (val) => setState(() { _peakStation = val; _peakSlots = null; _peakDayAvg = null; _peakFactor = null; }),
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<int>(
@@ -773,7 +1044,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             items: List.generate(7, (i) => i + 1)
                 .map((w) => DropdownMenuItem(value: w, child: Text(kWeekdayLabels[w - 1])))
                 .toList(),
-            onChanged: (val) => setState(() { _peakWeekday = val!; _peakSlots = null; }),
+            onChanged: (val) => setState(() { _peakWeekday = val!; _peakSlots = null; _peakDayAvg = null; _peakFactor = null; }),
           ),
           const SizedBox(height: 16),
           ElevatedButton.icon(
@@ -816,7 +1087,192 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 style: const TextStyle(fontSize: 12, color: Colors.black54),
               );
             }),
+            const SizedBox(height: 20),
+            _buildPeakSummaryCard(),
+            const SizedBox(height: 20),
+            _buildTopPeakPeriods(),
+            const SizedBox(height: 20),
+            _buildPeakVsOffPeak(),
+            const SizedBox(height: 20),
+            _buildPeakMethodologyCard(),
           ],
+        ],
+      ),
+    );
+  }
+
+  String _hourLabel(int hour) =>
+      hour == 12 ? '12pm' : hour > 12 ? '${hour - 12}pm' : hour == 0 ? '12am' : '${hour}am';
+
+  // Peak Analysis Summary — all values reused directly from _peakSlots,
+  // _peakDayAvg and _peakFactor. No new calculation performed here.
+  Widget _buildPeakSummaryCard() {
+    final peak = _peakSlots!.reduce((a, b) => a.value.occupancy >= b.value.occupancy ? a : b);
+    final category = timeCategoryFor(peak.key * 60);
+    final dayAvg = _peakDayAvg ?? 0;
+    final factor = _peakFactor ?? 0;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.summarize_outlined, size: 16, color: Colors.black54),
+              SizedBox(width: 6),
+              Text('Peak Analysis Summary',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _breakdownRow('Peak Period', category.label),
+          _breakdownRow('Peak Time', _hourLabel(peak.key)),
+          _breakdownRow('Peak Occupancy', '${peak.value.occupancy}%',
+              valueColor: peak.value.level.color),
+          _breakdownRow('Crowd Level', peak.value.level.label,
+              valueColor: peak.value.level.color),
+          _breakdownRow('Historical Day Average', '${dayAvg.round()} trips/day'),
+          _breakdownRow('Relative Station Factor', '${factor.toStringAsFixed(2)}x'),
+        ],
+      ),
+    );
+  }
+
+  // Top 3 Predicted Time Periods — sorted from the existing _peakSlots list.
+  Widget _buildTopPeakPeriods() {
+    final sorted = [..._peakSlots!]
+      ..sort((a, b) => b.value.occupancy.compareTo(a.value.occupancy));
+    final top3 = sorted.take(3).toList();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.leaderboard_outlined, size: 16, color: Colors.black54),
+              SizedBox(width: 6),
+              Text('Top 3 Predicted Time Periods',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ...top3.asMap().entries.map((e) {
+            final rank = e.key + 1;
+            final entry = e.value;
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: [
+                  Container(
+                    width: 20,
+                    height: 20,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF4F46E5).withValues(alpha: 0.12),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Center(
+                      child: Text('$rank',
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5))),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(_hourLabel(entry.key), style: const TextStyle(fontSize: 13, color: Colors.black87)),
+                  const Spacer(),
+                  Text('${entry.value.occupancy}%',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: entry.value.level.color)),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  // Peak vs Off-Peak Comparison — derived only from existing _peakSlots values.
+  Widget _buildPeakVsOffPeak() {
+    final peak = _peakSlots!.reduce((a, b) => a.value.occupancy >= b.value.occupancy ? a : b);
+    final offPeak = _peakSlots!.reduce((a, b) => a.value.occupancy <= b.value.occupancy ? a : b);
+    final diff = peak.value.occupancy - offPeak.value.occupancy;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.compare_arrows, size: 16, color: Colors.black54),
+              SizedBox(width: 6),
+              Text('Peak vs Off-Peak Comparison',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _breakdownRow('Peak Occupancy (${_hourLabel(peak.key)})', '${peak.value.occupancy}%',
+              valueColor: peak.value.level.color),
+          _breakdownRow('Off-Peak Occupancy (${_hourLabel(offPeak.key)})', '${offPeak.value.occupancy}%',
+              valueColor: offPeak.value.level.color),
+          const Divider(height: 18),
+          _breakdownRow('Difference', '+$diff%', emphasize: true, valueColor: const Color(0xFF4F46E5)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPeakMethodologyCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.blue.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.blue.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline, size: 16, color: Colors.blue.shade700),
+          const SizedBox(width: 8),
+          Expanded(
+            child: RichText(
+              text: TextSpan(
+                style: TextStyle(fontSize: 12, color: Colors.blue.shade900, height: 1.5),
+                children: [
+                  const TextSpan(text: 'Data Source: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const TextSpan(text: 'Rapid Rail historical ridership dataset.\n'),
+                  const TextSpan(text: 'Method: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const TextSpan(
+                      text: 'Historical station ridership is used to scale a rule-based daily '
+                          'commuter demand pattern. '),
+                  TextSpan(
+                      text: 'No machine learning model is used.',
+                      style: TextStyle(fontWeight: FontWeight.w600, color: Colors.blue.shade900)),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -857,11 +1313,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
+          StationSearchField(
+            label: 'Station',
+            stations: _stations,
             value: _historyStation,
-            decoration: InputDecoration(
-                labelText: 'Station', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-            items: _stations.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
             onChanged: (val) => setState(() {
               _historyStation = val;
               _historyData = null;
@@ -1014,6 +1469,92 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   }
 
   // ── Tab 4 UI (NEW) ────────────────────────────────────────────────────
+  //
+  // The Connections tab is broken into six visually distinct sections:
+  //   A. Station selection
+  //   B. Connection summary
+  //   C. Connection insight
+  //   D. Top destinations
+  //   E. Top origins
+  //   F. Busiest network-wide connections
+  // Each section is rendered by _connSection() so they all share the same
+  // heading style, card padding, corner radius, and spacing.
+
+  // Consistent section heading: small label + optional icon + optional
+  // italic subtitle, matching the style already used elsewhere in this file.
+  Widget _connSectionHeading(String title, {IconData? icon, String? subtitle}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            if (icon != null) ...[
+              Icon(icon, size: 15, color: Colors.black54),
+              const SizedBox(width: 6),
+            ],
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(
+                    fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87, letterSpacing: 0.4),
+              ),
+            ),
+          ],
+        ),
+        if (subtitle != null) ...[
+          const SizedBox(height: 4),
+          Text(subtitle, style: const TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic)),
+        ],
+      ],
+    );
+  }
+
+  // Consistent section card wrapper: same padding/radius/border for every
+  // section (A–F) on this tab, so the page reads as clearly separated
+  // blocks instead of one long scroll of mixed content.
+  Widget _connSection({required String title, IconData? icon, String? subtitle, required Widget child}) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(_connCardPadding),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.03),
+        borderRadius: BorderRadius.circular(_connCardRadius),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _connSectionHeading(title, icon: icon, subtitle: subtitle),
+          const SizedBox(height: 12),
+          child,
+        ],
+      ),
+    );
+  }
+
+  // Consistent empty-state row: used instead of leaving a section blank
+  // when a station genuinely has no recorded connections in a direction.
+  Widget _connEmptyState(String message) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.info_outline, size: 16, color: Colors.black38),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(message,
+                style: const TextStyle(fontSize: 12.5, color: Colors.black54, fontStyle: FontStyle.italic)),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildConnectionsTab() {
     final hasOdData = _connStation != null && _stationsWithOdData.contains(_connStation);
@@ -1029,40 +1570,51 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             'Real origin-destination trip counts — where riders actually travel to/from. Trip counts only, not routes.',
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
-          const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
-            value: _connStation,
-            decoration: InputDecoration(
-                labelText: 'Station', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-            items: _stations.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-            onChanged: (val) => setState(() {
-              _connStation = val;
-              _connTopDestinations = null;
-              _connTopOrigins = null;
-            }),
-          ),
-          const SizedBox(height: 16),
-          ElevatedButton.icon(
-            icon: _loadingConnections
-                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                : const Icon(Icons.alt_route, color: Colors.white),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF4F46E5),
-              minimumSize: const Size(double.infinity, 48),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          const SizedBox(height: _connSectionGap),
+
+          // A. Station selection
+          _connSection(
+            title: 'STATION SELECTION',
+            icon: Icons.pin_drop_outlined,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                StationSearchField(
+                  label: 'Station',
+                  stations: _stations,
+                  value: _connStation,
+                  onChanged: (val) => setState(() {
+                    _connStation = val;
+                    _connTopDestinations = null;
+                    _connTopOrigins = null;
+                  }),
+                ),
+                const SizedBox(height: 12),
+                ElevatedButton.icon(
+                  icon: _loadingConnections
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : const Icon(Icons.alt_route, color: Colors.white),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF4F46E5),
+                    minimumSize: const Size(double.infinity, 48),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  onPressed: _loadingConnections ? null : _runConnections,
+                  label: const Text('Show Connections', style: TextStyle(color: Colors.white, fontSize: 16)),
+                ),
+              ],
             ),
-            onPressed: _loadingConnections ? null : _runConnections,
-            label: const Text('Show Connections', style: TextStyle(color: Colors.white, fontSize: 16)),
           ),
 
           if (_connTopDestinations != null) ...[
-            const SizedBox(height: 24),
+            const SizedBox(height: _connSectionGap),
             if (!hasOdData) ...[
               Container(
-                padding: const EdgeInsets.all(12),
+                width: double.infinity,
+                padding: const EdgeInsets.all(_connCardPadding),
                 decoration: BoxDecoration(
                   color: Colors.orange.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(_connCardRadius),
                   border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
                 ),
                 child: const Text(
@@ -1073,56 +1625,206 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 ),
               ),
             ] else ...[
-              Row(
-                children: [
-                  Expanded(child: _statCard('OUTGOING TRIPS', '${_connOutgoing ?? 0}')),
-                  const SizedBox(width: 10),
-                  Expanded(child: _statCard('INCOMING TRIPS', '${_connIncoming ?? 0}')),
-                ],
+              // B. Connection summary
+              _connSection(
+                title: 'CONNECTION SUMMARY',
+                icon: Icons.swap_horiz,
+                child: Row(
+                  children: [
+                    Expanded(child: _connectionSummaryCard('OUTGOING TRIPS', _connOutgoing ?? 0,
+                        icon: Icons.north_east, color: const Color(0xFF4F46E5))),
+                    const SizedBox(width: 12),
+                    Expanded(child: _connectionSummaryCard('INCOMING TRIPS', _connIncoming ?? 0,
+                        icon: Icons.south_west, color: const Color(0xFF16A34A))),
+                  ],
+                ),
               ),
-              const SizedBox(height: 20),
-              const Text('Top destinations from this station',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.black87)),
-              const SizedBox(height: 8),
-              ..._connTopDestinations!.map((e) => _connectionRow(e.key, e.value,
-                  _connTopDestinations!.first.value, const Color(0xFF4F46E5))),
-              if (_connTopOrigins!.isNotEmpty) ...[
-                const SizedBox(height: 20),
-                const Text('Top origins into this station',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.black87)),
-                const SizedBox(height: 8),
-                ..._connTopOrigins!.map((e) => _connectionRow(e.key, e.value,
-                    _connTopOrigins!.first.value, const Color(0xFF16A34A))),
-              ],
+              const SizedBox(height: _connSectionGap),
+
+              // C. Connection insight
+              _connSection(
+                title: 'CONNECTION INSIGHT',
+                icon: Icons.insights,
+                child: _connectionInsightCard(_connOutgoing ?? 0, _connIncoming ?? 0),
+              ),
+              const SizedBox(height: _connSectionGap),
+
+              // D. Top destinations
+              _connSection(
+                title: 'TOP DESTINATIONS',
+                icon: Icons.north_east,
+                subtitle: 'Top 5 destinations from ${_connStation ?? ''}',
+                child: (_connTopDestinations!.isEmpty)
+                    ? _connEmptyState('No recorded outgoing connections for this station.')
+                    : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: _connTopDestinations!
+                      .map((e) => _connectionRow(
+                      e.key, e.value, _connTopDestinations!.first.value, const Color(0xFF4F46E5)))
+                      .toList(),
+                ),
+              ),
+              const SizedBox(height: _connSectionGap),
+
+              // E. Top origins
+              _connSection(
+                title: 'TOP ORIGINS',
+                icon: Icons.south_west,
+                subtitle: 'Top 5 origins to ${_connStation ?? ''}',
+                child: ((_connTopOrigins ?? const []).isEmpty)
+                    ? _connEmptyState('No recorded incoming connections for this station.')
+                    : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: _connTopOrigins!
+                      .map((e) => _connectionRow(
+                      e.key, e.value, _connTopOrigins!.first.value, const Color(0xFF16A34A)))
+                      .toList(),
+                ),
+              ),
             ],
-            const SizedBox(height: 24),
-            const Divider(),
-            const SizedBox(height: 8),
-            const Text('Busiest connections network-wide',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.black87)),
-            const SizedBox(height: 4),
-            const Text('Top station-to-station links by total real trips recorded, across the whole dataset.',
-                style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic)),
-            const SizedBox(height: 8),
-            if (_connBusiestNetwork != null)
-              ..._connBusiestNetwork!.asMap().entries.map((entry) {
-                final rank = entry.key + 1;
-                final e = entry.value;
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        width: 22,
-                        child: Text('#$rank', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black45, fontSize: 12)),
-                      ),
-                      Expanded(child: Text(e.key, style: const TextStyle(fontSize: 12))),
-                      Text('${e.value}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                    ],
-                  ),
-                );
-              }),
+            const SizedBox(height: _connSectionGap),
+
+            // F. Busiest network-wide connections
+            _connSection(
+              title: 'BUSIEST CONNECTIONS NETWORK-WIDE',
+              icon: Icons.leaderboard,
+              subtitle: 'Top station-to-station links by total real trips recorded, across the whole dataset.',
+              child: (_connBusiestNetwork == null || _connBusiestNetwork!.isEmpty)
+                  ? _connEmptyState('No recorded connections found network-wide.')
+                  : Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: _connBusiestNetwork!.asMap().entries.map((entry) {
+                  final rank = entry.key + 1;
+                  final e = entry.value;
+                  return _busiestConnectionRow(rank, e.key, e.value);
+                }).toList(),
+              ),
+            ),
           ],
+        ],
+      ),
+    );
+  }
+
+  // Simple derived insight — no new data source, just incoming - outgoing
+  // from the two totals already fetched for the summary cards above.
+  Widget _connectionInsightCard(int outgoing, int incoming) {
+    final diff = incoming - outgoing;
+    const accent = Color(0xFF4F46E5);
+    final String message;
+    final String? diffLabel;
+    if (diff == 0) {
+      message = 'Incoming and outgoing trips are evenly balanced for this station.';
+      diffLabel = null;
+    } else if (diff > 0) {
+      message = 'More trips are recorded entering this station than leaving it.';
+      diffLabel = '${_formatNumber(diff)} more incoming trips';
+    } else {
+      message = 'More trips are recorded leaving this station than entering it.';
+      diffLabel = '${_formatNumber(diff.abs())} more outgoing trips';
+    }
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: accent.withValues(alpha: 0.15)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.insights, size: 18, color: accent),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(message, style: const TextStyle(fontSize: 12.5, color: Colors.black87)),
+                if (diffLabel != null) ...[
+                  const SizedBox(height: 4),
+                  Text(diffLabel, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: accent)),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _busiestConnectionRow(int rank, String label, int trips) {
+    final isTop = rank == 1;
+    const accent = Color(0xFF4F46E5);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: EdgeInsets.symmetric(vertical: isTop ? 12 : 8, horizontal: isTop ? 10 : 4),
+      decoration: isTop
+          ? BoxDecoration(
+        color: accent.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: accent.withValues(alpha: 0.2)),
+      )
+          : null,
+      child: Row(
+        children: [
+          SizedBox(
+            width: 28,
+            child: Text('#$rank',
+                style: TextStyle(
+                    fontWeight: FontWeight.bold, fontSize: isTop ? 13 : 12, color: isTop ? accent : Colors.black45)),
+          ),
+          Expanded(
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: isTop ? 13 : 12, fontWeight: isTop ? FontWeight.bold : FontWeight.normal, color: Colors.black87)),
+          ),
+          const SizedBox(width: 8),
+          Text(_formatNumber(trips),
+              style: TextStyle(fontSize: isTop ? 13 : 12, fontWeight: FontWeight.bold, color: isTop ? accent : Colors.black87)),
+        ],
+      ),
+    );
+  }
+
+  // Adds thousands separators to a whole number, e.g. 708230 -> "708,230".
+  // Purely a display helper — never touches the underlying numeric value.
+  String _formatNumber(num n) {
+    final s = n.round().toString();
+    final negative = s.startsWith('-');
+    final digits = negative ? s.substring(1) : s;
+    final buffer = StringBuffer();
+    for (int i = 0; i < digits.length; i++) {
+      if (i > 0 && (digits.length - i) % 3 == 0) buffer.write(',');
+      buffer.write(digits[i]);
+    }
+    return (negative ? '-' : '') + buffer.toString();
+  }
+
+  Widget _connectionSummaryCard(String label, int value, {required IconData icon, required Color color}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 15, color: color),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(label,
+                    style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: color, letterSpacing: 0.4)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(_formatNumber(value), style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87)),
+          const SizedBox(height: 2),
+          const Text('trips', style: TextStyle(fontSize: 11, color: Colors.black45)),
         ],
       ),
     );
@@ -1131,26 +1833,31 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   Widget _connectionRow(String stationName, int trips, int maxTrips, Color color) {
     final factor = maxTrips == 0 ? 0.0 : trips / maxTrips;
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          SizedBox(
-            width: 110,
-            child: Text(stationName, style: const TextStyle(fontSize: 11), overflow: TextOverflow.ellipsis),
-          ),
-          Expanded(
-            child: Container(
-              height: 14,
-              decoration: BoxDecoration(color: Colors.grey.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(4)),
-              child: FractionallySizedBox(
-                alignment: Alignment.centerLeft,
-                widthFactor: factor.clamp(0.03, 1.0),
-                child: Container(decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4))),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(stationName,
+                    style: const TextStyle(fontSize: 12.5, color: Colors.black87), maxLines: 2, overflow: TextOverflow.ellipsis),
               ),
+              const SizedBox(width: 8),
+              Text(_formatNumber(trips), style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: color)),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Container(
+            height: 12,
+            decoration: BoxDecoration(color: Colors.grey.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(4)),
+            child: FractionallySizedBox(
+              alignment: Alignment.centerLeft,
+              widthFactor: factor.clamp(0.03, 1.0),
+              child: Container(decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4))),
             ),
           ),
-          const SizedBox(width: 8),
-          SizedBox(width: 40, child: Text('$trips', textAlign: TextAlign.right, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold))),
         ],
       ),
     );

@@ -114,7 +114,7 @@ class _MainScaffoldState extends State<MainScaffold> {
 
   final List<Widget> _modules = const [
     JourneyPlanningScreen(),
-    TransportDataScreen(),
+
     AiCrowdScreen(),
     PersonalTravelScreen(),
     AnalyticsCentreScreen(),

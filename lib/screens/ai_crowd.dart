@@ -1,6 +1,89 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 
+// ── Type-to-search station picker ────────────────────────────────────────
+// Drop-in replacement for DropdownButtonFormField<String> when the list of
+// choices is long (station names). Lets the user either tap and scroll a
+// list, or start typing to filter it, while looking like a normal form
+// field. Built on Flutter's built-in Autocomplete widget (no extra
+// packages required).
+class StationSearchField extends StatelessWidget {
+  final String label;
+  final List<String> stations;
+  final String? value;
+  final ValueChanged<String?> onChanged;
+
+  const StationSearchField({
+    super.key,
+    required this.label,
+    required this.stations,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Keying on the *selected* value (not on keystrokes) means the field
+    // remounts with the right initial text whenever the selection changes
+    // programmatically (e.g. once stations finish loading), but stays put
+    // — preserving whatever the user is currently typing — while they're
+    // filtering the list.
+    return Autocomplete<String>(
+      key: ValueKey(value),
+      initialValue: TextEditingValue(text: value ?? ''),
+      optionsBuilder: (TextEditingValue textEditingValue) {
+        final query = textEditingValue.text.trim().toLowerCase();
+        if (query.isEmpty) return stations;
+        return stations.where((s) => s.toLowerCase().contains(query));
+      },
+      displayStringForOption: (s) => s,
+      onSelected: onChanged,
+      fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+        return TextFormField(
+          controller: controller,
+          focusNode: focusNode,
+          decoration: InputDecoration(
+            labelText: label,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            suffixIcon: const Icon(Icons.search, size: 20),
+          ),
+        );
+      },
+      optionsViewBuilder: (context, onSelected, options) {
+        final list = options.toList();
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            elevation: 4,
+            borderRadius: BorderRadius.circular(8),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 280, minWidth: 280),
+              child: list.isEmpty
+                  ? const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text('No matching stations', style: TextStyle(color: Colors.black45)),
+              )
+                  : ListView.builder(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                itemCount: list.length,
+                itemBuilder: (context, index) {
+                  final option = list[index];
+                  return ListTile(
+                    dense: true,
+                    title: Text(option),
+                    onTap: () => onSelected(option),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 // ── Crowd levels & rule-based prediction ────────────────────────────────────
 // This is NOT a trained ML model. It is a transparent, rule-based estimator:
 //   1. REAL: the station's historical average ridership for the selected
@@ -485,11 +568,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
+          StationSearchField(
+            label: 'Station',
+            stations: _stations,
             value: _station,
-            decoration: InputDecoration(
-                labelText: 'Station', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-            items: _stations.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
             onChanged: (val) => setState(() { _station = val; _crowdResult = null; }),
           ),
           const SizedBox(height: 12),
@@ -938,11 +1020,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
+          StationSearchField(
+            label: 'Station',
+            stations: _stations,
             value: _peakStation,
-            decoration: InputDecoration(
-                labelText: 'Station', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-            items: _stations.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
             onChanged: (val) => setState(() { _peakStation = val; _peakSlots = null; _peakDayAvg = null; _peakFactor = null; }),
           ),
           const SizedBox(height: 12),
@@ -1222,11 +1303,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
+          StationSearchField(
+            label: 'Station',
+            stations: _stations,
             value: _historyStation,
-            decoration: InputDecoration(
-                labelText: 'Station', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-            items: _stations.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
             onChanged: (val) => setState(() {
               _historyStation = val;
               _historyData = null;
@@ -1395,11 +1475,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
+          StationSearchField(
+            label: 'Station',
+            stations: _stations,
             value: _connStation,
-            decoration: InputDecoration(
-                labelText: 'Station', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-            items: _stations.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
             onChanged: (val) => setState(() {
               _connStation = val;
               _connTopDestinations = null;

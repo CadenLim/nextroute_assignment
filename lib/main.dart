@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:nextroute_assignment/screens/transport_data.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'config/supabase_config.dart';
@@ -112,7 +113,7 @@ class _MainScaffoldState extends State<MainScaffold> {
 
   final List<Widget> _modules = const [
     JourneyPlanningScreen(),
-    PlaceholderModuleScreen(moduleName: 'Transport Data'),
+    TransportDataScreen(),
     AiCrowdScreen(),
     PersonalTravelScreen(),
     PlaceholderModuleScreen(moduleName: 'Analytics Centre'),

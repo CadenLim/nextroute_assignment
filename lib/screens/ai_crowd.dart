@@ -211,24 +211,52 @@ const List<String> kWeekdayLabels = [
   'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
 ];
 
-// Baseline intraday shape for an "average" station across the day.
-// MODELLED, not from the CSV — see file header comment.
+// Rule-based intraday demand profile.
+// Time-of-day boundaries are informed by Rapid KL's published
+// operating hours (6am-12am) and weekday rush hours
+// (7am-9am and 5pm-7pm).
+// See: https://myrapid.com.my/resources/faqs/
+//
+// Exact baseline values are modelling assumptions.
+// They are not directly derived from the dataset because
+// the available dataset contains daily ridership totals,
+// not hourly ridership data.
+//
+// Only ever called for times within operating hours (06:00-23:59) —
+// times before 06:00 are blocked in the Crowd Prediction UI before this
+// function is reached, so there is no pre-6AM bucket here.
 int _baselineOccupancy(int weekday, int minutesOfDay) {
-  final isWeekend = weekday == DateTime.saturday || weekday == DateTime.sunday;
-  if (isWeekend) return 24;
-
+  final isWeekend =
+      weekday == DateTime.saturday || weekday == DateTime.sunday;
   final h = minutesOfDay / 60.0;
-  if (h < 6.0) return 8;
-  if (h < 7.0) return 16;
-  if (h < 7.5) return 46;
-  if (h < 8.0) return 84;
-  if (h < 8.25) return 60;
-  if (h < 9.0) return 42;
-  if (h < 17.0) return 40;
-  if (h < 17.5) return 58;
-  if (h < 19.5) return 80;
-  if (h < 21.0) return 32;
-  return 14;
+  // Weekend: flatter demand pattern without strong commuter peaks
+  if (isWeekend) {
+    if (h < 9.0) return 15;
+    if (h < 12.0) return 25;
+    if (h < 15.0) return 32;
+    if (h < 18.0) return 38;
+    if (h < 20.0) return 35;
+    if (h < 22.0) return 25;
+    return 15;
+  }
+  // Weekday morning rush hour: 07:00–09:00
+  if (h < 7.0) return 15;
+  if (h < 7.5) return 35;
+  if (h < 8.0) return 55;
+  if (h < 8.5) return 70;
+  if (h < 9.0) return 65;
+  // Weekday daytime / non-peak
+  if (h < 12.0) return 45;
+  if (h < 15.0) return 42;
+  if (h < 17.0) return 45;
+  // Weekday evening rush hour: 17:00–19:00
+  if (h < 17.5) return 55;
+  if (h < 18.0) return 65;
+  if (h < 19.0) return 75;
+  // Evening / night
+  if (h < 21.0) return 45;
+  if (h < 22.0) return 30;
+  return 15;
 }
 
 CrowdLevel _levelForOccupancy(int occupancy) {
@@ -385,9 +413,17 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return ('Around Network Average', Colors.blueGrey, Icons.trending_flat);
   }
 
+  // Rapid KL rail services operate 6:00 AM to 12:00 AM (midnight) per the
+  // official FAQ (see _baselineOccupancy comment). Times before 6:00 AM
+  // are outside operating hours, so no crowd prediction is offered for
+  // them — this only gates the Crowd Prediction tab's UI/flow; it does
+  // not touch any calculation or dataset value.
+  bool get _isOutsideOperatingHours => _time.hour < 6;
+
   Future<void> _runCrowdEstimate() async {
     final station = _station;
     if (station == null) return;
+    if (_isOutsideOperatingHours) return; // no service — nothing to predict
     final dayAvg = await _api.getStationAverageForWeekday(station, _weekday);
     // Reuses the same daily-totals lookup that getStationAverageForWeekday
     // is built on, just to expose how many real records fed that average.
@@ -727,16 +763,42 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   );
                 }),
                 const SizedBox(height: 16),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.analytics, color: Colors.white),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF4F46E5),
-                    minimumSize: const Size(double.infinity, 48),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                if (_isOutsideOperatingHours) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.red.withValues(alpha: 0.25)),
+                    ),
+                    child: const Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.do_not_disturb_on_outlined, size: 18, color: Colors.red),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Service Unavailable — Rapid KL rail services operate from 6:00 AM to 12:00 AM. '
+                                'Choose a time within operating hours to get a crowd prediction.',
+                            style: TextStyle(fontSize: 12.5, color: Colors.red, fontWeight: FontWeight.w500),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  onPressed: _runCrowdEstimate,
-                  label: const Text('Predict Crowd', style: TextStyle(color: Colors.white, fontSize: 16)),
-                ),
+                ] else ...[
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.analytics, color: Colors.white),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF4F46E5),
+                      minimumSize: const Size(double.infinity, 48),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    onPressed: _runCrowdEstimate,
+                    label: const Text('Predict Crowd', style: TextStyle(color: Colors.white, fontSize: 16)),
+                  ),
+                ],
               ],
             ),
           ),

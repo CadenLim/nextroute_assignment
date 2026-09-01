@@ -60,6 +60,70 @@ class CrowdResult {
   CrowdResult(this.level, this.occupancy);
 }
 
+// ── Time-of-day category (display-only; does not affect the prediction) ────
+// A labelling layer over the existing exact time selection, matching the
+// bucket boundaries requested for the UI. Purely descriptive.
+enum TimeCategory { earlyMorning, morningPeak, midday, eveningPeak, night }
+
+extension TimeCategoryX on TimeCategory {
+  String get label {
+    switch (this) {
+      case TimeCategory.earlyMorning:
+        return 'Early Morning';
+      case TimeCategory.morningPeak:
+        return 'Morning Peak';
+      case TimeCategory.midday:
+        return 'Midday';
+      case TimeCategory.eveningPeak:
+        return 'Evening Peak';
+      case TimeCategory.night:
+        return 'Night';
+    }
+  }
+
+  String get rangeLabel {
+    switch (this) {
+      case TimeCategory.earlyMorning:
+        return '06:00–07:00';
+      case TimeCategory.morningPeak:
+        return '07:00–09:00';
+      case TimeCategory.midday:
+        return '09:00–17:00';
+      case TimeCategory.eveningPeak:
+        return '17:00–19:30';
+      case TimeCategory.night:
+        return '19:30–06:00';
+    }
+  }
+
+  Color get color {
+    switch (this) {
+      case TimeCategory.earlyMorning:
+        return const Color(0xFF0EA5E9);
+      case TimeCategory.morningPeak:
+        return const Color(0xFFDC2626);
+      case TimeCategory.midday:
+        return const Color(0xFFD97706);
+      case TimeCategory.eveningPeak:
+        return const Color(0xFF991B1B);
+      case TimeCategory.night:
+        return const Color(0xFF4338CA);
+    }
+  }
+}
+
+/// Maps a time-of-day (minutes since midnight) to its display category.
+/// This is purely descriptive for the UI — the underlying prediction in
+/// [predictCrowd] uses its own finer-grained rule table and is unaffected.
+TimeCategory timeCategoryFor(int minutesOfDay) {
+  final h = minutesOfDay / 60.0;
+  if (h >= 6.0 && h < 7.0) return TimeCategory.earlyMorning;
+  if (h >= 7.0 && h < 9.0) return TimeCategory.morningPeak;
+  if (h >= 9.0 && h < 17.0) return TimeCategory.midday;
+  if (h >= 17.0 && h < 19.5) return TimeCategory.eveningPeak;
+  return TimeCategory.night; // 19:30–23:59 and 00:00–06:00
+}
+
 const List<String> kWeekdayLabels = [
   'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
 ];
@@ -147,6 +211,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   TimeOfDay _time = const TimeOfDay(hour: 7, minute: 30);
   CrowdResult? _crowdResult;
   double? _crowdResultDayAvg;
+  double? _crowdResultFactor;
 
   // ── Tab 2: Peak Hours state ──
   String? _peakStation;
@@ -156,6 +221,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   // ── Tab 3: Ridership History state ──
   String? _historyStation;
   List<RidershipRecord>? _historyData;
+  DateTime? _historyMonthFilter; // null = show all months
   final ScrollController _historyScrollController = ScrollController();
 
   // ── Tab 4: Connections (O-D) state ──
@@ -218,6 +284,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     setState(() {
       _crowdResult = predictCrowd(_weekday, minutes, factor);
       _crowdResultDayAvg = dayAvg;
+      _crowdResultFactor = factor;
     });
   }
 
@@ -239,7 +306,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     if (station == null) return;
     final data = await _api.getStationTotalRecords(station);
     if (!mounted) return;
-    setState(() => _historyData = data);
+    setState(() {
+      _historyData = data;
+      _historyMonthFilter = null; // reset filter on fresh load
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_historyScrollController.hasClients) {
         _historyScrollController.jumpTo(_historyScrollController.position.maxScrollExtent);
@@ -313,6 +383,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 ),
                 child: const TabBar(
                   isScrollable: false,
+                  indicatorSize: TabBarIndicatorSize.tab,
+                  indicatorPadding: EdgeInsets.all(4),
                   indicator: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.all(Radius.circular(24)),
@@ -411,6 +483,31 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               child: Text(_time.format(context), style: const TextStyle(fontSize: 16)),
             ),
           ),
+          const SizedBox(height: 8),
+          Builder(builder: (context) {
+            final category = timeCategoryFor(_time.hour * 60 + _time.minute);
+            return Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: category.color.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: category.color.withValues(alpha: 0.25)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.schedule, size: 14, color: category.color),
+                  const SizedBox(width: 6),
+                  Text('Time Category: ',
+                      style: TextStyle(fontSize: 12, color: category.color, fontWeight: FontWeight.w500)),
+                  Text(category.label,
+                      style: TextStyle(fontSize: 12, color: category.color, fontWeight: FontWeight.bold)),
+                  const SizedBox(width: 6),
+                  Text('(${category.rangeLabel})',
+                      style: TextStyle(fontSize: 11, color: category.color.withValues(alpha: 0.75))),
+                ],
+              ),
+            );
+          }),
           const SizedBox(height: 16),
           ElevatedButton.icon(
             icon: const Icon(Icons.analytics, color: Colors.white),
@@ -490,7 +587,156 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 style: TextStyle(color: _crowdResult!.level.color, fontSize: 13, fontWeight: FontWeight.w500),
               ),
             ),
+            const SizedBox(height: 20),
+            _buildCalculationBreakdown(),
           ],
+          const SizedBox(height: 20),
+          _buildMethodologyCard(),
+          const SizedBox(height: 16),
+          _buildCrowdLegend(),
+        ],
+      ),
+    );
+  }
+
+  // ── Calculation breakdown / methodology / legend (explainability) ──────
+
+  Widget _buildCalculationBreakdown() {
+    final dayAvg = _crowdResultDayAvg ?? 0;
+    final factor = _crowdResultFactor ?? 0;
+    final category = timeCategoryFor(_time.hour * 60 + _time.minute);
+    final dayLabel = kWeekdayLabels[_weekday - 1];
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.calculate_outlined, size: 16, color: Colors.black54),
+              SizedBox(width: 6),
+              Text('Calculation Breakdown',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _breakdownRow('Historical $dayLabel Average', '${dayAvg.round()} trips/day'),
+          _breakdownRow('Network Average', '${_networkAverage.round()} trips/day'),
+          _breakdownRow('Relative Station Factor', '${factor.toStringAsFixed(2)}x'),
+          _breakdownRow('Selected Time Category', category.label),
+          const Divider(height: 18),
+          _breakdownRow(
+            'Final Estimated Occupancy',
+            '${_crowdResult!.occupancy}%',
+            emphasize: true,
+            valueColor: _crowdResult!.level.color,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _breakdownRow(String label, String value, {bool emphasize = false, Color? valueColor}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label,
+              style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.black87,
+                  fontWeight: emphasize ? FontWeight.bold : FontWeight.normal)),
+          Text(value,
+              style: TextStyle(
+                  fontSize: 12,
+                  color: valueColor ?? Colors.black87,
+                  fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMethodologyCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.blue.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.blue.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline, size: 16, color: Colors.blue.shade700),
+          const SizedBox(width: 8),
+          Expanded(
+            child: RichText(
+              text: TextSpan(
+                style: TextStyle(fontSize: 12, color: Colors.blue.shade900, height: 1.4),
+                children: [
+                  const TextSpan(text: 'Methodology: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const TextSpan(
+                      text: 'Uses real historical ridership from the dataset and applies a '
+                          'rule-based time-of-day crowd estimation model. No machine learning model is used.'),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCrowdLegend() {
+    final entries = [
+      ('Low', '0–27%', CrowdLevel.low.color),
+      ('Moderate', '28–54%', CrowdLevel.moderate.color),
+      ('High', '55–79%', CrowdLevel.high.color),
+      ('Critical', '80–100%', CrowdLevel.critical.color),
+    ];
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Crowd Level Legend',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black87)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 14,
+            runSpacing: 8,
+            children: entries.map((e) {
+              final (name, range, color) = e;
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+                  ),
+                  const SizedBox(width: 6),
+                  Text('$name: ', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black87)),
+                  Text(range, style: const TextStyle(fontSize: 11, color: Colors.black54)),
+                ],
+              );
+            }).toList(),
+          ),
         ],
       ),
     );
@@ -576,14 +822,18 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  Widget _buildTrendBar(String label, double heightFactor, Color color) {
+  Widget _buildTrendBar(String label, double heightFactor, Color color, {String? tooltip}) {
     return Column(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
-        Container(
-          width: 22,
-          height: 100 * heightFactor.clamp(0.05, 1.0),
-          decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4)),
+        Tooltip(
+          message: tooltip ?? label,
+          waitDuration: const Duration(milliseconds: 200),
+          child: Container(
+            width: 22,
+            height: 100 * heightFactor.clamp(0.05, 1.0),
+            decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4)),
+          ),
         ),
         const SizedBox(height: 8),
         Text(label, style: const TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
@@ -612,7 +862,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             decoration: InputDecoration(
                 labelText: 'Station', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
             items: _stations.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-            onChanged: (val) => setState(() { _historyStation = val; _historyData = null; }),
+            onChanged: (val) => setState(() {
+              _historyStation = val;
+              _historyData = null;
+              _historyMonthFilter = null;
+            }),
           ),
           const SizedBox(height: 16),
           ElevatedButton.icon(
@@ -632,24 +886,71 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           ],
           if (_historyData != null && _historyData!.isNotEmpty) ...[
             Builder(builder: (context) {
-              final values = _historyData!.map((e) => e.ridership).toList();
+              // Distinct months present in the loaded data, sorted chronologically.
+              final months = _historyData!
+                  .map((e) => DateTime(e.date.year, e.date.month))
+                  .toSet()
+                  .toList()
+                ..sort();
+
+              // Apply the month filter (null = show everything).
+              final filtered = _historyMonthFilter == null
+                  ? _historyData!
+                  : _historyData!
+                  .where((e) =>
+              e.date.year == _historyMonthFilter!.year &&
+                  e.date.month == _historyMonthFilter!.month)
+                  .toList();
+
+              if (filtered.isEmpty) {
+                return const Padding(
+                  padding: EdgeInsets.only(top: 16),
+                  child: Text('No records for the selected month.',
+                      style: TextStyle(color: Colors.black54)),
+                );
+              }
+
+              final values = filtered.map((e) => e.ridership).toList();
               final avg = values.reduce((a, b) => a + b) / values.length;
-              final maxRecord = _historyData!.reduce((a, b) => a.ridership >= b.ridership ? a : b);
-              final minRecord = _historyData!.reduce((a, b) => a.ridership <= b.ridership ? a : b);
+              final maxRecord = filtered.reduce((a, b) => a.ridership >= b.ridership ? a : b);
+              final minRecord = filtered.reduce((a, b) => a.ridership <= b.ridership ? a : b);
               final maxVal = maxRecord.ridership.toDouble();
-              final latest = _historyData!.last;
+              final latest = filtered.last;
+
+              const monthNames = [
+                'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+              ];
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   const SizedBox(height: 24),
+                  DropdownButtonFormField<DateTime?>(
+                    value: _historyMonthFilter,
+                    decoration: InputDecoration(
+                        labelText: 'Filter by month',
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
+                    items: [
+                      const DropdownMenuItem<DateTime?>(
+                          value: null, child: Text('All months')),
+                      ...months.map((m) => DropdownMenuItem<DateTime?>(
+                        value: m,
+                        child: Text('${monthNames[m.month - 1]} ${m.year}'),
+                      )),
+                    ],
+                    onChanged: (val) => setState(() => _historyMonthFilter = val),
+                  ),
+                  const SizedBox(height: 16),
                   Row(
                     children: [
                       Expanded(child: _statCard('AVERAGE', avg.round().toString())),
                       const SizedBox(width: 10),
-                      Expanded(child: _statCard('HIGHEST', maxRecord.ridership.toString())),
+                      Expanded(child: _statCard('HIGHEST', maxRecord.ridership.toString(),
+                          subtitle: '${maxRecord.date.day}/${maxRecord.date.month}/${maxRecord.date.year}')),
                       const SizedBox(width: 10),
-                      Expanded(child: _statCard('LOWEST', minRecord.ridership.toString())),
+                      Expanded(child: _statCard('LOWEST', minRecord.ridership.toString(),
+                          subtitle: '${minRecord.date.day}/${minRecord.date.month}/${minRecord.date.year}')),
                     ],
                   ),
                   const SizedBox(height: 12),
@@ -662,7 +963,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text('Daily totals', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
-                      Text('${_historyData!.length} days — scrolled to most recent',
+                      Text('${filtered.length} days — scrolled to most recent',
                           style: const TextStyle(fontSize: 11, color: Colors.black45)),
                     ],
                   ),
@@ -680,15 +981,23 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                       scrollDirection: Axis.horizontal,
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.end,
-                        children: _historyData!.map((record) {
+                        children: filtered.map((record) {
                           final factor = maxVal == 0 ? 0.0 : record.ridership / maxVal;
                           final isMax = record.ridership == maxRecord.ridership;
+                          final isMin = record.ridership == minRecord.ridership;
+                          final barColor = isMax
+                              ? const Color(0xFF4F46E5) // highest — purple
+                              : isMin
+                              ? const Color(0xFFDC2626) // lowest — red
+                              : Colors.blueGrey;
                           return Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 4),
                             child: _buildTrendBar(
                               '${record.date.day}/${record.date.month}',
                               factor,
-                              isMax ? const Color(0xFF4F46E5) : Colors.blueGrey,
+                              barColor,
+                              tooltip: '${record.date.day}/${record.date.month}/${record.date.year}\n${record.ridership} trips'
+                                  '${isMax ? ' (highest)' : isMin ? ' (lowest)' : ''}',
                             ),
                           );
                         }).toList(),
@@ -847,7 +1156,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  Widget _statCard(String label, String value) {
+  Widget _statCard(String label, String value, {String? subtitle}) {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
       decoration: BoxDecoration(
@@ -859,6 +1168,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           Text(label, style: const TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
           const SizedBox(height: 4),
           Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87)),
+          if (subtitle != null) ...[
+            const SizedBox(height: 2),
+            Text(subtitle, style: const TextStyle(fontSize: 10, color: Colors.black45)),
+          ],
         ],
       ),
     );

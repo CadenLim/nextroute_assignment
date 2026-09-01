@@ -212,11 +212,14 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   CrowdResult? _crowdResult;
   double? _crowdResultDayAvg;
   double? _crowdResultFactor;
+  int? _crowdResultRecordCount;
 
   // ── Tab 2: Peak Hours state ──
   String? _peakStation;
   int _peakWeekday = DateTime.monday;
   List<MapEntry<int, CrowdResult>>? _peakSlots;
+  double? _peakDayAvg;
+  double? _peakFactor;
 
   // ── Tab 3: Ridership History state ──
   String? _historyStation;
@@ -274,17 +277,35 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return ratio.clamp(0.4, 1.8);
   }
 
+  // Describes the existing Relative Station Factor in words. Purely
+  // presentational — does not affect the factor or occupancy calculation.
+  // This reflects the STATION's historical ridership vs the network
+  // average — it is unrelated to the predicted occupancy % shown above it.
+  (String, Color, IconData) _demandInterpretation(double factor) {
+    if (factor > 1.05) {
+      return ('Above Network Average', Colors.red.shade700, Icons.trending_up);
+    } else if (factor < 0.95) {
+      return ('Below Network Average', Colors.green.shade700, Icons.trending_down);
+    }
+    return ('Around Network Average', Colors.blueGrey, Icons.trending_flat);
+  }
+
   Future<void> _runCrowdEstimate() async {
     final station = _station;
     if (station == null) return;
     final dayAvg = await _api.getStationAverageForWeekday(station, _weekday);
+    // Reuses the same daily-totals lookup that getStationAverageForWeekday
+    // is built on, just to expose how many real records fed that average.
+    final dailyTotals = await _api.getDailyTotalsForStation(station);
     if (!mounted) return;
+    final recordCount = dailyTotals.where((e) => e.key.weekday == _weekday).length;
     final minutes = _time.hour * 60 + _time.minute;
     final factor = _magnitudeFactor(dayAvg);
     setState(() {
       _crowdResult = predictCrowd(_weekday, minutes, factor);
       _crowdResultDayAvg = dayAvg;
       _crowdResultFactor = factor;
+      _crowdResultRecordCount = recordCount;
     });
   }
 
@@ -298,7 +319,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     final slots = hours
         .map((h) => MapEntry(h, predictCrowd(_peakWeekday, h * 60, factor)))
         .toList();
-    setState(() => _peakSlots = slots);
+    setState(() {
+      _peakSlots = slots;
+      _peakDayAvg = dayAvg;
+      _peakFactor = factor;
+    });
   }
 
   Future<void> _runHistory() async {
@@ -575,6 +600,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               style: const TextStyle(fontSize: 11, color: Colors.black45),
             ),
             const SizedBox(height: 16),
+            _buildStationDemandProfile(),
+            const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -604,8 +631,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   Widget _buildCalculationBreakdown() {
     final dayAvg = _crowdResultDayAvg ?? 0;
     final factor = _crowdResultFactor ?? 0;
+    final recordCount = _crowdResultRecordCount ?? 0;
     final category = timeCategoryFor(_time.hour * 60 + _time.minute);
     final dayLabel = kWeekdayLabels[_weekday - 1];
+    final baseline = _baselineOccupancy(_weekday, _time.hour * 60 + _time.minute);
+    final occupancy = _crowdResult!.occupancy;
 
     return Container(
       width: double.infinity,
@@ -626,17 +656,108 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
             ],
           ),
-          const SizedBox(height: 10),
-          _breakdownRow('Historical $dayLabel Average', '${dayAvg.round()} trips/day'),
-          _breakdownRow('Network Average', '${_networkAverage.round()} trips/day'),
-          _breakdownRow('Relative Station Factor', '${factor.toStringAsFixed(2)}x'),
-          _breakdownRow('Selected Time Category', category.label),
+          const SizedBox(height: 4),
+          // Formula summary, always visible at a glance.
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(top: 6, bottom: 12),
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF4F46E5).withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFF4F46E5).withValues(alpha: 0.2)),
+            ),
+            child: const Text(
+              'Estimated Occupancy = Time Category Baseline × Relative Station Factor',
+              style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF4F46E5)),
+            ),
+          ),
+
+          _breakdownStep(
+            step: 1,
+            title: 'Historical Station Average',
+            lines: [
+              '$dayLabel average: ${dayAvg.round()} trips/day',
+              '($recordCount historical records analysed)',
+            ],
+          ),
+          _breakdownStep(
+            step: 2,
+            title: 'Relative Station Factor',
+            lines: [
+              '${dayAvg.round()} ÷ ${_networkAverage.round()} = ${factor.toStringAsFixed(2)}x',
+              'This station is ${(factor * 100).round()}% as busy as the network average.',
+            ],
+          ),
+          _breakdownStep(
+            step: 3,
+            title: 'Time Category Baseline',
+            lines: [
+              'Time: ${_time.format(context)}',
+              'Baseline Occupancy: $baseline%',
+              '(${category.label} category, ${category.rangeLabel})',
+              'Baseline varies by exact time within a category to reflect the real rush-hour shape.',
+            ],
+          ),
+          _breakdownStep(
+            step: 4,
+            title: 'Final Estimation',
+            lines: [
+              '$baseline% × ${factor.toStringAsFixed(2)} = $occupancy%',
+            ],
+            isLast: true,
+          ),
+
           const Divider(height: 18),
           _breakdownRow(
             'Final Estimated Occupancy',
-            '${_crowdResult!.occupancy}%',
+            '$occupancy%',
             emphasize: true,
             valueColor: _crowdResult!.level.color,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _breakdownStep({
+    required int step,
+    required String title,
+    required List<String> lines,
+    bool isLast = false,
+  }) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: isLast ? 0 : 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 20,
+            height: 20,
+            margin: const EdgeInsets.only(top: 1),
+            decoration: BoxDecoration(
+              color: const Color(0xFF4F46E5).withValues(alpha: 0.12),
+              shape: BoxShape.circle,
+            ),
+            child: Center(
+              child: Text('$step',
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5))),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Step $step — $title',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black87)),
+                const SizedBox(height: 2),
+                ...lines.map((l) => Padding(
+                  padding: const EdgeInsets.only(top: 1),
+                  child: Text(l, style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                )),
+              ],
+            ),
           ),
         ],
       ),
@@ -664,6 +785,56 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
+  // Station Demand Profile — describes the station's real historical
+  // ridership relative to the network average (the existing Relative
+  // Station Factor). Deliberately separate from the occupancy result
+  // above it, since this reflects the STATION's typical demand level,
+  // not the predicted occupancy for the selected time.
+  Widget _buildStationDemandProfile() {
+    final factor = _crowdResultFactor ?? 1.0;
+    final dayAvg = _crowdResultDayAvg ?? 0;
+    final dayLabel = kWeekdayLabels[_weekday - 1];
+    final (status, color, icon) = _demandInterpretation(factor);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.insights_outlined, size: 16, color: Colors.black54),
+              SizedBox(width: 6),
+              Text('Station Demand Profile',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Icon(icon, size: 15, color: color),
+              const SizedBox(width: 6),
+              Text('$status (${factor.toStringAsFixed(2)}x)',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Based on historical ridership data: $_station averages ${dayAvg.round()} trips/day '
+                'on ${dayLabel}s, vs the network-wide average.',
+            style: const TextStyle(fontSize: 11, color: Colors.black54),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildMethodologyCard() {
     return Container(
       width: double.infinity,
@@ -681,12 +852,17 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           Expanded(
             child: RichText(
               text: TextSpan(
-                style: TextStyle(fontSize: 12, color: Colors.blue.shade900, height: 1.4),
+                style: TextStyle(fontSize: 12, color: Colors.blue.shade900, height: 1.5),
                 children: [
-                  const TextSpan(text: 'Methodology: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const TextSpan(text: 'Data Source: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const TextSpan(text: 'Rapid Rail historical ridership dataset.\n'),
+                  const TextSpan(text: 'Method: ', style: TextStyle(fontWeight: FontWeight.bold)),
                   const TextSpan(
-                      text: 'Uses real historical ridership from the dataset and applies a '
-                          'rule-based time-of-day crowd estimation model. No machine learning model is used.'),
+                      text: 'Real daily ridership averages are combined with a rule-based '
+                          'commuter demand pattern to estimate crowd levels at different times of day. '),
+                  TextSpan(
+                      text: 'No machine learning model is used.',
+                      style: TextStyle(fontWeight: FontWeight.w600, color: Colors.blue.shade900)),
                 ],
               ),
             ),
@@ -750,11 +926,12 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Peak Hour Pattern',
+          const Text('Peak Demand Analysis',
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 4),
           const Text(
-            'Modelled hourly shape (the dataset has no hourly column), scaled by this station\'s real day-of-week average.',
+            'Based on historical station ridership and a rule-based commuter demand pattern. '
+                'The dataset contains daily totals only, so hourly demand is estimated rather than directly observed.',
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: 16),
@@ -763,7 +940,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             decoration: InputDecoration(
                 labelText: 'Station', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
             items: _stations.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-            onChanged: (val) => setState(() { _peakStation = val; _peakSlots = null; }),
+            onChanged: (val) => setState(() { _peakStation = val; _peakSlots = null; _peakDayAvg = null; _peakFactor = null; }),
           ),
           const SizedBox(height: 12),
           DropdownButtonFormField<int>(
@@ -773,7 +950,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             items: List.generate(7, (i) => i + 1)
                 .map((w) => DropdownMenuItem(value: w, child: Text(kWeekdayLabels[w - 1])))
                 .toList(),
-            onChanged: (val) => setState(() { _peakWeekday = val!; _peakSlots = null; }),
+            onChanged: (val) => setState(() { _peakWeekday = val!; _peakSlots = null; _peakDayAvg = null; _peakFactor = null; }),
           ),
           const SizedBox(height: 16),
           ElevatedButton.icon(
@@ -816,7 +993,192 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 style: const TextStyle(fontSize: 12, color: Colors.black54),
               );
             }),
+            const SizedBox(height: 20),
+            _buildPeakSummaryCard(),
+            const SizedBox(height: 20),
+            _buildTopPeakPeriods(),
+            const SizedBox(height: 20),
+            _buildPeakVsOffPeak(),
+            const SizedBox(height: 20),
+            _buildPeakMethodologyCard(),
           ],
+        ],
+      ),
+    );
+  }
+
+  String _hourLabel(int hour) =>
+      hour == 12 ? '12pm' : hour > 12 ? '${hour - 12}pm' : hour == 0 ? '12am' : '${hour}am';
+
+  // Peak Analysis Summary — all values reused directly from _peakSlots,
+  // _peakDayAvg and _peakFactor. No new calculation performed here.
+  Widget _buildPeakSummaryCard() {
+    final peak = _peakSlots!.reduce((a, b) => a.value.occupancy >= b.value.occupancy ? a : b);
+    final category = timeCategoryFor(peak.key * 60);
+    final dayAvg = _peakDayAvg ?? 0;
+    final factor = _peakFactor ?? 0;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.summarize_outlined, size: 16, color: Colors.black54),
+              SizedBox(width: 6),
+              Text('Peak Analysis Summary',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _breakdownRow('Peak Period', category.label),
+          _breakdownRow('Peak Time', _hourLabel(peak.key)),
+          _breakdownRow('Peak Occupancy', '${peak.value.occupancy}%',
+              valueColor: peak.value.level.color),
+          _breakdownRow('Crowd Level', peak.value.level.label,
+              valueColor: peak.value.level.color),
+          _breakdownRow('Historical Day Average', '${dayAvg.round()} trips/day'),
+          _breakdownRow('Relative Station Factor', '${factor.toStringAsFixed(2)}x'),
+        ],
+      ),
+    );
+  }
+
+  // Top 3 Predicted Time Periods — sorted from the existing _peakSlots list.
+  Widget _buildTopPeakPeriods() {
+    final sorted = [..._peakSlots!]
+      ..sort((a, b) => b.value.occupancy.compareTo(a.value.occupancy));
+    final top3 = sorted.take(3).toList();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.leaderboard_outlined, size: 16, color: Colors.black54),
+              SizedBox(width: 6),
+              Text('Top 3 Predicted Time Periods',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ...top3.asMap().entries.map((e) {
+            final rank = e.key + 1;
+            final entry = e.value;
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: [
+                  Container(
+                    width: 20,
+                    height: 20,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF4F46E5).withValues(alpha: 0.12),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Center(
+                      child: Text('$rank',
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5))),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(_hourLabel(entry.key), style: const TextStyle(fontSize: 13, color: Colors.black87)),
+                  const Spacer(),
+                  Text('${entry.value.occupancy}%',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: entry.value.level.color)),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  // Peak vs Off-Peak Comparison — derived only from existing _peakSlots values.
+  Widget _buildPeakVsOffPeak() {
+    final peak = _peakSlots!.reduce((a, b) => a.value.occupancy >= b.value.occupancy ? a : b);
+    final offPeak = _peakSlots!.reduce((a, b) => a.value.occupancy <= b.value.occupancy ? a : b);
+    final diff = peak.value.occupancy - offPeak.value.occupancy;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.compare_arrows, size: 16, color: Colors.black54),
+              SizedBox(width: 6),
+              Text('Peak vs Off-Peak Comparison',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _breakdownRow('Peak Occupancy (${_hourLabel(peak.key)})', '${peak.value.occupancy}%',
+              valueColor: peak.value.level.color),
+          _breakdownRow('Off-Peak Occupancy (${_hourLabel(offPeak.key)})', '${offPeak.value.occupancy}%',
+              valueColor: offPeak.value.level.color),
+          const Divider(height: 18),
+          _breakdownRow('Difference', '+$diff%', emphasize: true, valueColor: const Color(0xFF4F46E5)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPeakMethodologyCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.blue.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.blue.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline, size: 16, color: Colors.blue.shade700),
+          const SizedBox(width: 8),
+          Expanded(
+            child: RichText(
+              text: TextSpan(
+                style: TextStyle(fontSize: 12, color: Colors.blue.shade900, height: 1.5),
+                children: [
+                  const TextSpan(text: 'Data Source: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const TextSpan(text: 'Rapid Rail historical ridership dataset.\n'),
+                  const TextSpan(text: 'Method: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const TextSpan(
+                      text: 'Historical station ridership is used to scale a rule-based daily '
+                          'commuter demand pattern. '),
+                  TextSpan(
+                      text: 'No machine learning model is used.',
+                      style: TextStyle(fontWeight: FontWeight.w600, color: Colors.blue.shade900)),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );

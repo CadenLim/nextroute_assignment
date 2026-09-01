@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/supabase_config.dart';
 import 'localization/app_language.dart';
 import 'screens/ai_crowd.dart';
+import 'screens/analytics_centre.dart';
 import 'screens/auth_gate.dart';
 import 'screens/journey_planning.dart';
 import 'screens/personal_travel.dart';
@@ -116,7 +117,7 @@ class _MainScaffoldState extends State<MainScaffold> {
     TransportDataScreen(),
     AiCrowdScreen(),
     PersonalTravelScreen(),
-    PlaceholderModuleScreen(moduleName: 'Analytics Centre'),
+    AnalyticsCentreScreen(),
   ];
 
   @override

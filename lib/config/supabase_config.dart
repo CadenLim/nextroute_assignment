@@ -8,13 +8,13 @@ abstract final class SupabaseConfig {
     final uri = Uri.tryParse(url);
     final hasValidUrl =
         uri != null &&
-        (uri.scheme == 'https' || uri.scheme == 'http') &&
-        uri.host.isNotEmpty;
+            (uri.scheme == 'https' || uri.scheme == 'http') &&
+            uri.host.isNotEmpty;
 
     if (!hasValidUrl || publishableKey.isEmpty) {
       throw StateError(
         'Supabase is not configured. Start Flutter with '
-        '--dart-define-from-file=config/supabase.json. See README.md.',
+            '--dart-define-from-file=config/supabase.json. See README.md.',
       );
     }
   }

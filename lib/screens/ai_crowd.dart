@@ -267,8 +267,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _loadError = 'Could not load the ridership dataset. Check that '
-          'assets/ridership.csv is declared in pubspec.yaml.');
+      // Shows the real exception instead of a canned message, so you can
+      // see exactly what Supabase/PostgREST is complaining about (missing
+      // view, RLS block, not-initialized client, etc.) rather than
+      // guessing from a generic string.
+      setState(() => _loadError = 'Could not load ridership data from Supabase:\n$e');
     }
   }
 

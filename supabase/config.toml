@@ -1,0 +1,2 @@
+[functions.collect-analytics]
+verify_jwt = false

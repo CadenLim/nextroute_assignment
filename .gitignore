@@ -43,3 +43,12 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Ignore macOS metadata folders
+**/__MACOSX/
+
+# Ignore macOS hidden metadata files such as ._stops.txt
+**/._*
+
+# Ignore GTFS backup folders
+assets/gtfs/*_backup_*/

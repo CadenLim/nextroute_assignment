@@ -48,8 +48,12 @@ class RidershipRecord {
 // API SERVICE CLASS
 // =========================================================
 class ApiService {
-  // --- FRIEND'S VARIABLES ---
-  List<RidershipRecord>? _cache;
+  // --- FRIEND'S VARIABLES (Module 3) --- Small, targeted caches — never
+  // the whole 3.9M-row table, and never the whole 16K-row od_totals view.
+  final Map<String, List<RidershipRecord>> _stationRecordsCache = {};
+  List<String>? _stationListCache;
+  List<String>? _odOriginsCache; // from the tiny od_origins view (~146 rows)
+  double? _networkAverageCache;
 
   // --- YOUR VARIABLES (Module 1) ---
   List<StationModel> _cachedStations = [];
@@ -582,223 +586,198 @@ class ApiService {
   // FRIEND'S CODE (Module 3 / Crowd AI / Ridership)
   // =========================================================
 
-  // Parses assets/ridership.csv into a list of RidershipRecord.
-  // Cached after the first successful load so we don't re-read the file
-  // every time a screen asks for data.
-  Future<List<RidershipRecord>> loadRidership() async {
-    if (_cache != null) return _cache!;
+  // ---------------------------------------------------------------------
+  // NOTE ON SCALE: the "ridership" table has ~3.9 MILLION rows in
+  // Supabase. Pulling the whole table (or the whole od_totals view) into
+  // the app is not viable at this size — instead:
+  //   - Per-station queries fetch only ~236 rows at a time (one station's
+  //     real daily history), not the whole table.
+  //   - Small Postgres VIEWS (station_list, od_totals, od_origins,
+  //     network_average) do the heavy GROUP BY / SUM / AVG work inside
+  //     the database. O-D methods below query od_totals with a targeted
+  //     filter + sort + limit rather than loading it wholesale.
+  // ---------------------------------------------------------------------
 
-    final String raw = await rootBundle.loadString('assets/ridership.csv');
-    final lines = raw.split('\n').where((l) => l.trim().isNotEmpty).toList();
-
-    // First line is the header. IMPORTANT: the real government CSV's column
-    // order is "origin,destination,date,ridership" — NOT
-    // "date,origin,destination,ridership". Parsing it in the wrong order
-    // means DateTime.parse() gets a station name instead of a date, throws,
-    // and every row is silently skipped by the catch block below. Fixed here.
-    final records = <RidershipRecord>[];
-    for (final line in lines.skip(1)) {
-      final parts = line.split(',');
-      if (parts.length < 4) continue; // skips malformed/truncated rows (e.g. a cut-off last line)
-      try {
-        records.add(RidershipRecord(
-          origin: parts[0].trim(),
-          destination: parts[1].trim(),
-          date: DateTime.parse(parts[2].trim()),
-          ridership: double.parse(parts[3].trim()).round(),
-        ));
-      } catch (_) {
-        // Skip any row that fails to parse (bad date/number) rather than
-        // crashing the whole screen.
-        continue;
-      }
-    }
-
-    _cache = records;
-    return records;
-  }
-
-  // The dataset's marker row for "total across all origins/destinations".
   static const String kAllStationsCode = 'A0: All Stations';
 
-  // ---------------------------------------------------------------------
-  // A0 "All Stations" rows = real total daily ridership recorded AT a
-  // station (across every origin). Used for Crowd Estimate / Peak Hours /
-  // History. NOTE: this intentionally does NOT also match rows where the
-  // station appears as an O-D origin or destination — mixing those in
-  // would double-count trips (the station's real daily total already
-  // includes them). O-D-specific rows are handled separately below.
-  // ---------------------------------------------------------------------
-
-  // All distinct stations that have an "A0: All Stations" total record —
-  // i.e. every real station in the dataset.
+  // Every real station — from the small "station_list" view.
   Future<List<String>> getStationList() async {
-    final all = await loadRidership();
-    final names = all
-        .where((r) => r.origin == kAllStationsCode)
-        .map((r) => r.destination)
-        .toSet()
-        .toList();
-    names.sort();
+    if (_stationListCache != null) return _stationListCache!;
+    final response = await Supabase.instance.client
+        .from('station_list')
+        .select('station')
+        .order('station');
+    final names = response.map((row) => row['station'] as String).toList();
+    _stationListCache = names;
     return names;
   }
 
-  // A station's real total-ridership records, sorted chronologically.
+  // A single station's real daily total-ridership records — a targeted
+  // query (~236 rows max), sorted chronologically, cached per station.
   Future<List<RidershipRecord>> getStationTotalRecords(String station) async {
-    final all = await loadRidership();
-    return all
-        .where((r) => r.origin == kAllStationsCode && r.destination == station)
-        .toList()
-      ..sort((a, b) => a.date.compareTo(b.date));
-  }
-
-  // Groups a station's total records by date. With this dataset there's
-  // already exactly one A0 row per day, but grouping+summing keeps this
-  // correct even if a fuller dataset later has more than one.
-  Future<List<MapEntry<DateTime, int>>> getDailyTotalsForStation(
-      String station) async {
-    final records = await getStationTotalRecords(station);
-    final Map<DateTime, int> totals = {};
-    for (final r in records) {
-      final day = DateTime(r.date.year, r.date.month, r.date.day);
-      totals[day] = (totals[day] ?? 0) + r.ridership;
+    if (_stationRecordsCache.containsKey(station)) {
+      return _stationRecordsCache[station]!;
     }
-    final entries = totals.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
-    return entries;
+    final response = await Supabase.instance.client
+        .from('ridership')
+        .select('origin, destination, date, ridership')
+        .eq('origin', kAllStationsCode)
+        .eq('destination', station)
+        .order('date');
+
+    final records = <RidershipRecord>[];
+    for (final row in response) {
+      try {
+        records.add(RidershipRecord(
+          origin: row['origin'] as String,
+          destination: row['destination'] as String,
+          date: DateTime.parse(row['date'] as String),
+          ridership: (row['ridership'] as num).round(),
+        ));
+      } catch (_) {
+        continue; // skip any row that fails to parse
+      }
+    }
+    _stationRecordsCache[station] = records;
+    return records;
   }
 
-  // Real average daily ridership for a station, computed from the actual
-  // dataset. Used to scale the rule-based crowd prediction so busier real
-  // stations genuinely produce higher estimates than quieter ones.
+  Future<List<MapEntry<DateTime, int>>> getDailyTotalsForStation(String station) async {
+    final records = await getStationTotalRecords(station);
+    return records.map((r) => MapEntry(r.date, r.ridership)).toList();
+  }
+
+  // Real average daily ridership for a station.
   Future<double> getStationAverageRidership(String station) async {
-    final daily = await getDailyTotalsForStation(station);
-    if (daily.isEmpty) return 0;
-    final total = daily.fold<int>(0, (sum, e) => sum + e.value);
-    return total / daily.length;
+    final records = await getStationTotalRecords(station);
+    if (records.isEmpty) return 0;
+    final total = records.fold<int>(0, (sum, r) => sum + r.ridership);
+    return total / records.length;
   }
 
   // Real historical average ridership for a station on one specific
-  // weekday (1 = Monday ... 7 = Sunday, Dart's DateTime.weekday convention).
-  // This is what drives the crowd-prediction magnitude with real data.
+  // weekday (1 = Monday ... 7 = Sunday). Drives the crowd-prediction
+  // magnitude with real data.
   Future<double> getStationAverageForWeekday(String station, int weekday) async {
-    final daily = await getDailyTotalsForStation(station);
-    final matching = daily.where((e) => e.key.weekday == weekday).toList();
+    final records = await getStationTotalRecords(station);
+    final matching = records.where((r) => r.date.weekday == weekday).toList();
     if (matching.isEmpty) return getStationAverageRidership(station);
-    final total = matching.fold<int>(0, (sum, e) => sum + e.value);
+    final total = matching.fold<int>(0, (sum, r) => sum + r.ridership);
     return total / matching.length;
   }
 
-  // Network-wide average daily ridership across all stations/days — used
-  // as a neutral baseline so a station's magnitude can be expressed as
-  // "busier/quieter than the network average" rather than an absolute
-  // number that's hard to interpret in isolation.
+  // Network-wide average daily ridership — from the "network_average"
+  // view (a single pre-computed row), not by scanning the whole table.
   Future<double> getNetworkAverageRidership() async {
-    final all = await loadRidership();
-    final totals = all.where((r) => r.origin == kAllStationsCode).toList();
-    if (totals.isEmpty) return 1;
-    final sum = totals.fold<int>(0, (s, r) => s + r.ridership);
-    return sum / totals.length;
+    if (_networkAverageCache != null) return _networkAverageCache!;
+    final response = await Supabase.instance.client
+        .from('network_average')
+        .select('avg_ridership')
+        .single();
+    final avg = (response['avg_ridership'] as num).toDouble();
+    _networkAverageCache = avg;
+    return avg;
   }
 
   // ---------------------------------------------------------------------
-  // Origin-Destination (O-D) ridership insights — REAL station-to-station
-  // trip data. Deliberately kept to simple filter/group/sum/sort logic:
-  // no path-finding, no multi-hop routes, no fare/ETA — that's Module 1's
-  // job. This only answers "how many people travelled between two named
-  // stations", never "how do I get from A to B".
+  // Origin-Destination (O-D) ridership insights — backed by the
+  // "od_totals" view (~16.6K pre-summed origin,destination,total_ridership
+  // rows). Every method below sends a targeted query (filter, sort,
+  // limit) and lets Postgres do the work — never loads the whole view.
+  // Deliberately kept to simple filter/sort logic: no path-finding, no
+  // multi-hop routes, no fare/ETA — that's Module 1's job (findRoutes,
+  // above). This only answers "how many people travelled between two
+  // named stations", never "how do I get from A to B".
   // ---------------------------------------------------------------------
 
-  // Every station that has at least one real outgoing O-D record — lets
-  // the UI tell the user upfront which stations currently have connection
-  // data, instead of silently showing an empty result.
+  // Every station that has at least one real outgoing O-D record — from
+  // the tiny "od_origins" view (~146 rows), never from od_totals itself.
   Future<List<String>> getStationsWithOutgoingData() async {
-    final all = await loadRidership();
-    final origins = all
-        .where((r) => r.origin != kAllStationsCode && r.destination != kAllStationsCode)
-        .map((r) => r.origin)
-        .toSet()
-        .toList();
-    origins.sort();
+    if (_odOriginsCache != null) return _odOriginsCache!;
+    final response = await Supabase.instance.client
+        .from('od_origins')
+        .select('origin')
+        .order('origin');
+    final origins = response.map((row) => row['origin'] as String).toList();
+    _odOriginsCache = origins;
     return origins;
   }
 
-  // Top [limit] destinations reached from [station], by total real trips
-  // summed across every date on file. Pure group-by + sum + sort.
+  // Top [limit] destinations reached from [station] — filtered, sorted,
+  // and limited entirely by Postgres. Only ever returns [limit] rows.
   Future<List<MapEntry<String, int>>> getTopDestinationsFrom(
       String station, {int limit = 5}) async {
-    final all = await loadRidership();
-    final Map<String, int> totals = {};
-    for (final r in all) {
-      if (r.origin == station && r.destination != kAllStationsCode) {
-        totals[r.destination] = (totals[r.destination] ?? 0) + r.ridership;
-      }
-    }
-    final entries = totals.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    return entries.take(limit).toList();
+    final response = await Supabase.instance.client
+        .from('od_totals')
+        .select('destination, total_ridership')
+        .eq('origin', station)
+        .order('total_ridership', ascending: false)
+        .limit(limit);
+    return response
+        .map((row) => MapEntry(row['destination'] as String, (row['total_ridership'] as num).round()))
+        .toList();
   }
 
-  // Top [limit] origins that trips into [station] came from, by total
-  // real trips summed across every date on file.
+  // Top [limit] origins that trips into [station] came from — same
+  // pattern, filtered on destination instead.
   Future<List<MapEntry<String, int>>> getTopOriginsInto(
       String station, {int limit = 5}) async {
-    final all = await loadRidership();
-    final Map<String, int> totals = {};
-    for (final r in all) {
-      if (r.destination == station && r.origin != kAllStationsCode) {
-        totals[r.origin] = (totals[r.origin] ?? 0) + r.ridership;
-      }
-    }
-    final entries = totals.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    return entries.take(limit).toList();
+    final response = await Supabase.instance.client
+        .from('od_totals')
+        .select('origin, total_ridership')
+        .eq('destination', station)
+        .order('total_ridership', ascending: false)
+        .limit(limit);
+    return response
+        .map((row) => MapEntry(row['origin'] as String, (row['total_ridership'] as num).round()))
+        .toList();
   }
 
-  // Total real outgoing trips recorded from [station] (sum across all
-  // real destinations and dates — excludes the A0 marker rows).
+  // Total real outgoing trips from [station] — fetches only this
+  // station's own rows (at most ~114, never the whole view), sums
+  // client-side.
   Future<int> getTotalOutgoing(String station) async {
-    final all = await loadRidership();
-    return all
-        .where((r) => r.origin == station && r.destination != kAllStationsCode)
-        .fold<int>(0, (s, r) => s + r.ridership);
+    final response = await Supabase.instance.client
+        .from('od_totals')
+        .select('total_ridership')
+        .eq('origin', station);
+    return response.fold<int>(0, (sum, row) => sum + (row['total_ridership'] as num).round());
   }
 
-  // Total real incoming trips recorded into [station].
+  // Total real incoming trips into [station].
   Future<int> getTotalIncoming(String station) async {
-    final all = await loadRidership();
-    return all
-        .where((r) => r.destination == station && r.origin != kAllStationsCode)
-        .fold<int>(0, (s, r) => s + r.ridership);
+    final response = await Supabase.instance.client
+        .from('od_totals')
+        .select('total_ridership')
+        .eq('destination', station);
+    return response.fold<int>(0, (sum, row) => sum + (row['total_ridership'] as num).round());
   }
 
-  // Network-wide leaderboard: the busiest [limit] station-to-station
-  // connections by total real trips, regardless of which station the user
-  // is looking at. Group by (origin, destination) pair, sum, sort desc.
+  // Network-wide leaderboard: busiest [limit] station-to-station
+  // connections — one targeted query, sorted and limited by Postgres.
   Future<List<MapEntry<String, int>>> getBusiestConnections({int limit = 10}) async {
-    final all = await loadRidership();
-    final Map<String, int> totals = {};
-    for (final r in all) {
-      if (r.origin == kAllStationsCode || r.destination == kAllStationsCode) continue;
-      final key = '${r.origin} → ${r.destination}';
-      totals[key] = (totals[key] ?? 0) + r.ridership;
-    }
-    final entries = totals.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    return entries.take(limit).toList();
+    final response = await Supabase.instance.client
+        .from('od_totals')
+        .select('origin, destination, total_ridership')
+        .order('total_ridership', ascending: false)
+        .limit(limit);
+    return response
+        .map((row) => MapEntry('${row['origin']} → ${row['destination']}', (row['total_ridership'] as num).round()))
+        .toList();
   }
 
   // Simple status line shown at the top of the AI Crowd screen so users
   // can see the dataset actually loaded, instead of a fake "syncing" text.
   Future<String> getDatasetStatus() async {
     try {
-      final records = await loadRidership();
-      if (records.isEmpty) {
-        return 'No ridership records found in local dataset.';
+      final stations = await getStationList();
+      final odOrigins = await getStationsWithOutgoingData();
+      if (stations.isEmpty) {
+        return 'No ridership records found.';
       }
-      return 'Local dataset loaded: ${records.length} ridership records';
+      return 'Loaded ${stations.length} stations, ${odOrigins.length} with O-D data from Supabase';
     } catch (e) {
-      return 'Could not load local ridership dataset.';
+      return 'Could not load ridership data from Supabase.';
     }
   }
 

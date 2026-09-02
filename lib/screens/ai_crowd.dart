@@ -348,6 +348,15 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   List<MapEntry<String, int>>? _connBusiestNetwork;
   bool _loadingConnections = false;
 
+  // ── Tab 5: Station Crowd Ranking state ──
+  // Real per-station ridership pulled straight from Supabase (the same
+  // per-station records the History tab uses), aggregated client-side.
+  // No hardcoded ridership, no modelling.
+  bool _loadingRanking = false;
+  String? _rankingError;
+  int _rankingLoadedCount = 0; // progress indicator while batches load
+  List<({String station, double avgRidership, int totalRidership, int recordCount})>? _rankingData;
+
   // ── Shared visual-hierarchy tokens (all four tabs) ──
   // Single source of truth for section spacing/padding/radius, so the
   // Crowd, Peak, History and Connections tabs all read as the same
@@ -462,6 +471,54 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
+  // Weekly Ridership Pattern (Tab 3): groups whatever real records are
+  // currently on screen (month-filtered, but NOT day-of-week filtered, so
+  // all seven days can be compared side by side) by day-of-week and
+  // averages the real ridership for each day. Purely derived from actual
+  // records — no modelling, no fixed/hardcoded ridership figures. Days
+  // with no records in the current month filter simply don't appear.
+  List<({int weekday, double avg, int count})> _computeWeeklyPattern(
+      List<RidershipRecord> records) {
+    final Map<int, List<num>> byWeekday = {};
+    for (final r in records) {
+      byWeekday.putIfAbsent(r.date.weekday, () => []).add(r.ridership);
+    }
+    final result = byWeekday.entries.map((e) {
+      final avg = e.value.reduce((a, b) => a + b) / e.value.length;
+      return (weekday: e.key, avg: avg, count: e.value.length);
+    }).toList()
+      ..sort((a, b) => a.weekday.compareTo(b.weekday));
+    return result;
+  }
+
+  // Describes the weekly pattern above in words — names the real
+  // highest/lowest average day. Presentational only.
+  (String, Color, IconData) _weeklyPatternInsight(
+      List<({int weekday, double avg, int count})> pattern) {
+    const dayNames = [
+      'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+    ];
+    if (pattern.isEmpty) {
+      return ('No records available to compute a weekly pattern.', Colors.blueGrey, Icons.info_outline);
+    }
+    final sorted = [...pattern]..sort((a, b) => b.avg.compareTo(a.avg));
+    final highest = sorted.first;
+    final lowest = sorted.last;
+    if (highest.weekday == lowest.weekday) {
+      return (
+      '${dayNames[highest.weekday - 1]} is the only day with data for the selected month.',
+      Colors.blueGrey,
+      Icons.info_outline,
+      );
+    }
+    return (
+    '${dayNames[highest.weekday - 1]} has the highest average ridership (${highest.avg.round()} trips/day). '
+        '${dayNames[lowest.weekday - 1]} has the lowest (${lowest.avg.round()} trips/day).',
+    Colors.indigo,
+    Icons.calendar_view_week,
+    );
+  }
+
   // Rapid KL rail services operate 6:00 AM to 12:00 AM (midnight) per the
   // official FAQ (see _baselineOccupancy comment). Times before 6:00 AM
   // are outside operating hours, so no crowd prediction is offered for
@@ -549,6 +606,56 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     });
   }
 
+  // Station Crowd Ranking (Tab 5): fetches each station's real ridership
+  // records the same way the History tab fetches one station's records —
+  // just for every station — and aggregates totals/averages client-side.
+  // Pure real data, no hardcoded ridership, no modelling.
+  //
+  // Fetched in small concurrent batches (not all ~100+ stations at once):
+  // firing every station's query simultaneously overwhelms Supabase's
+  // connection pool and trips its statement timeout (PostgrestException
+  // 57014). Batching keeps concurrent load modest while still being much
+  // faster than one station at a time.
+  static const int _rankingBatchSize = 8;
+
+  Future<void> _runStationRanking() async {
+    if (_stations.isEmpty) return;
+    setState(() {
+      _loadingRanking = true;
+      _rankingError = null;
+      _rankingLoadedCount = 0;
+    });
+    try {
+      final aggregated = <({String station, double avgRidership, int totalRidership, int recordCount})>[];
+      for (var i = 0; i < _stations.length; i += _rankingBatchSize) {
+        final batch = _stations.skip(i).take(_rankingBatchSize);
+        final batchResults = await Future.wait(batch.map((station) async {
+          final records = await _api.getStationTotalRecords(station);
+          if (records.isEmpty) {
+            return (station: station, avgRidership: 0.0, totalRidership: 0, recordCount: 0);
+          }
+          final total = records.fold<num>(0, (sum, r) => sum + r.ridership);
+          final avg = total / records.length;
+          return (station: station, avgRidership: avg, totalRidership: total.round(), recordCount: records.length);
+        }));
+        aggregated.addAll(batchResults);
+        if (!mounted) return;
+        setState(() => _rankingLoadedCount = aggregated.length);
+      }
+      if (!mounted) return;
+      setState(() {
+        _rankingData = aggregated.where((r) => r.recordCount > 0).toList();
+        _loadingRanking = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _rankingError = 'Could not load station ranking from Supabase:\n$e';
+        _loadingRanking = false;
+      });
+    }
+  }
+
   Future<void> _pickTime() async {
     final picked = await showTimePicker(context: context, initialTime: _time);
     if (picked != null) {
@@ -577,7 +684,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     }
 
     return DefaultTabController(
-      length: 4,
+      length: 5,
       child: Scaffold(
         appBar: AppBar(
           toolbarHeight: 72,
@@ -610,8 +717,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   tabs: [
                     Tab(text: 'Crowd', icon: Icon(Icons.bar_chart, size: 15)),
                     Tab(text: 'Peak', icon: Icon(Icons.schedule, size: 15)),
-                    Tab(text: 'History', icon: Icon(Icons.show_chart, size: 15)),
                     Tab(text: 'Connections', icon: Icon(Icons.alt_route, size: 15)),
+                    Tab(text: 'History', icon: Icon(Icons.show_chart, size: 15)),
+                    Tab(text: 'Ranking', icon: Icon(Icons.leaderboard, size: 15)),
                   ],
                 ),
               ),
@@ -644,8 +752,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 children: [
                   _buildCrowdEstimateTab(),
                   _buildPeakHoursTab(),
-                  _buildHistoryTab(),
                   _buildConnectionsTab(),
+                  _buildHistoryTab(),
+                  _buildStationRankingTab(),
                 ],
               ),
             ),
@@ -1523,6 +1632,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   //   D. Ridership Trend (current-period vs previous-period average)
   //   E. Ridership Insight (plain-language read of the trend)
   //   F. Daily totals chart
+  //   G. Weekly Ridership Pattern (Monday–Sunday averages)
   Widget _buildHistoryTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
@@ -1650,6 +1760,15 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 ),
               );
 
+              // Weekly Ridership Pattern data — grouped by day-of-week from
+              // `byMonth` (respects the month filter, but deliberately
+              // ignores the day-of-week filter so Monday–Sunday can all be
+              // compared at once). Real data only, no modelling. Rendered
+              // at the bottom of the tab (see below), not gated by the
+              // day-of-week filter that `filtered` below is subject to.
+              final weeklyPattern = _computeWeeklyPattern(byMonth);
+              final weeklyPatternSection = _buildWeeklyPatternSection(weeklyPattern);
+
               if (filtered.isEmpty) {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1658,6 +1777,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     filtersSection,
                     const SizedBox(height: _sectionGap),
                     _emptyState('No records for the selected month / day of week.'),
+                    const SizedBox(height: _sectionGap),
+                    weeklyPatternSection,
                   ],
                 );
               }
@@ -1819,9 +1940,144 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                       ),
                     ),
                   ),
+                  const SizedBox(height: _sectionGap),
+
+                  // G. Weekly Ridership Pattern (Monday–Sunday averages)
+                  weeklyPatternSection,
                 ],
               );
             }),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // Weekly Ridership Pattern section card (Tab 3 / History). Renders one
+  // bar per day-of-week present in the real, month-filtered data, with the
+  // highest/lowest day highlighted, plus a plain-language insight line.
+  Widget _buildWeeklyPatternSection(List<({int weekday, double avg, int count})> pattern) {
+    const dayNames = [
+      'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+    ];
+    final (message, color, icon) = _weeklyPatternInsight(pattern);
+
+    if (pattern.isEmpty) {
+      return _sectionCard(
+        title: 'WEEKLY RIDERSHIP PATTERN',
+        icon: Icons.calendar_view_week,
+        subtitle: 'Average ridership by day of week, from real records for the selected month.',
+        child: _emptyState('No records available to compute a weekly pattern.'),
+      );
+    }
+
+    final sorted = [...pattern]..sort((a, b) => b.avg.compareTo(a.avg));
+    final highest = sorted.first;
+    final lowest = sorted.last;
+    final maxAvg = highest.avg;
+
+    return _sectionCard(
+      title: 'WEEKLY RIDERSHIP PATTERN',
+      icon: Icons.calendar_view_week,
+      subtitle: 'Average ridership by day of week (Mon–Sun), from real records for the selected month.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ...pattern.map((p) {
+            final isMax = p.weekday == highest.weekday;
+            final isMin = p.weekday == lowest.weekday && lowest.weekday != highest.weekday;
+            final barColor = isMax
+                ? const Color(0xFF4F46E5) // highest — purple, matches Daily Totals chart
+                : isMin
+                ? const Color(0xFFDC2626) // lowest — red, matches Daily Totals chart
+                : Colors.blueGrey;
+            return _weekdayRow(
+              dayNames[p.weekday - 1],
+              p.avg,
+              maxAvg,
+              color: barColor,
+              isMax: isMax,
+              isMin: isMin,
+            );
+          }),
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.05),
+              border: Border.all(color: color.withValues(alpha: 0.3)),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(icon, size: 16, color: color),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(message, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500)),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // One day-of-week bar row for the Weekly Ridership Pattern section.
+  // Mirrors the bar-with-value style already used by _connectionRow, with
+  // an extra "Highest"/"Lowest" tag under the standout day(s).
+  Widget _weekdayRow(String dayLabel, double avg, double maxAvg,
+      {required Color color, required bool isMax, required bool isMin}) {
+    final factor = maxAvg == 0 ? 0.0 : avg / maxAvg;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              SizedBox(
+                width: 92,
+                child: Text(
+                  dayLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: (isMax || isMin) ? FontWeight.bold : FontWeight.normal,
+                      color: Colors.black87),
+                ),
+              ),
+              Expanded(
+                child: Container(
+                  height: 12,
+                  decoration:
+                  BoxDecoration(color: Colors.grey.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(4)),
+                  child: FractionallySizedBox(
+                    alignment: Alignment.centerLeft,
+                    widthFactor: factor.clamp(0.03, 1.0),
+                    child: Container(decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4))),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 56,
+                child: Text(
+                  avg.round().toString(),
+                  textAlign: TextAlign.right,
+                  style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: color),
+                ),
+              ),
+            ],
+          ),
+          if (isMax || isMin) ...[
+            Padding(
+              padding: const EdgeInsets.only(left: 92, top: 2),
+              child: Text(isMax ? 'Highest' : 'Lowest', style: TextStyle(fontSize: 10, color: color)),
+            ),
           ],
         ],
       ),
@@ -2162,6 +2418,194 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             const SizedBox(height: 2),
             Text(subtitle, style: const TextStyle(fontSize: 10, color: Colors.black45)),
           ],
+        ],
+      ),
+    );
+  }
+
+  // ── Tab 5 UI ───────────────────────────────────────────────────────────
+  //
+  // Station Crowd Ranking — real per-station ridership averages/totals
+  // (pulled from Supabase via the same per-station endpoint the History
+  // tab uses, one call per station, aggregated client-side). No hardcoded
+  // ridership, no modelling.
+  // Sections (mirrors the other tabs' pattern):
+  //   A. Load control
+  //   B. Ranking insight (busiest / least-busy station, in plain language)
+  //   C. Top 5 busiest stations
+  //   D. Top 5 least-busy stations
+  Widget _buildStationRankingTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text('Station Crowd Ranking',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
+          const SizedBox(height: 4),
+          const Text(
+            'Real ridership averages per station, pulled from the local dataset — no modelling, no hardcoded figures.',
+            style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
+          ),
+          const SizedBox(height: _sectionGap),
+
+          // A. Load control
+          _sectionCard(
+            title: 'NETWORK-WIDE RANKING',
+            icon: Icons.leaderboard,
+            subtitle: 'Ranks all ${_stations.length} stations by real average daily ridership.',
+            child: ElevatedButton.icon(
+              icon: _loadingRanking
+                  ? const SizedBox(
+                  width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                  : const Icon(Icons.leaderboard, color: Colors.white),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4F46E5),
+                minimumSize: const Size(double.infinity, 48),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: _loadingRanking ? null : _runStationRanking,
+              label: Text(
+                  _loadingRanking
+                      ? 'Loading Ranking… ($_rankingLoadedCount/${_stations.length})'
+                      : 'Load Station Ranking',
+                  style: const TextStyle(color: Colors.white, fontSize: 16)),
+            ),
+          ),
+
+          if (_rankingError != null) ...[
+            const SizedBox(height: _sectionGap),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(_sectionCardPadding),
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(_sectionCardRadius),
+                border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+              ),
+              child: Text(_rankingError!, style: const TextStyle(fontSize: 12, color: Colors.black87)),
+            ),
+          ],
+
+          if (_rankingData != null) ...[
+            const SizedBox(height: _sectionGap),
+            Builder(builder: (context) {
+              if (_rankingData!.isEmpty) {
+                return _emptyState('No ridership records found for any station.');
+              }
+
+              final sortedDesc = [..._rankingData!]..sort((a, b) => b.avgRidership.compareTo(a.avgRidership));
+              final busiest = sortedDesc.take(5).toList();
+              final leastBusy = sortedDesc.reversed.take(5).toList();
+              final top = sortedDesc.first;
+              final bottom = sortedDesc.last;
+              const accent = Color(0xFF4F46E5);
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // B. Ranking insight
+                  _sectionCard(
+                    title: 'RANKING INSIGHT',
+                    icon: Icons.insights,
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: accent.withValues(alpha: 0.05),
+                        border: Border.all(color: accent.withValues(alpha: 0.3)),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.lightbulb_outline, size: 16, color: accent),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Busiest station: ${top.station} (${top.avgRidership.round()} avg trips/day). '
+                                  'Least-busy station: ${bottom.station} (${bottom.avgRidership.round()} avg trips/day).',
+                              style: const TextStyle(color: accent, fontSize: 13, fontWeight: FontWeight.w500),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: _sectionGap),
+
+                  // C. Top 5 busiest stations
+                  _sectionCard(
+                    title: 'TOP 5 BUSIEST STATIONS',
+                    icon: Icons.trending_up,
+                    subtitle: 'Ranked by real average daily ridership, across ${_rankingData!.length} stations with data.',
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: busiest.asMap().entries.map((entry) {
+                        final rank = entry.key + 1;
+                        final r = entry.value;
+                        return _rankingRow(rank, r.station, r.avgRidership.round(), const Color(0xFF4F46E5));
+                      }).toList(),
+                    ),
+                  ),
+                  const SizedBox(height: _sectionGap),
+
+                  // D. Top 5 least-busy stations
+                  _sectionCard(
+                    title: 'TOP 5 LEAST-BUSY STATIONS',
+                    icon: Icons.trending_down,
+                    subtitle: 'Ranked by real average daily ridership, across ${_rankingData!.length} stations with data.',
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: leastBusy.asMap().entries.map((entry) {
+                        final rank = entry.key + 1;
+                        final r = entry.value;
+                        return _rankingRow(rank, r.station, r.avgRidership.round(), const Color(0xFF16A34A));
+                      }).toList(),
+                    ),
+                  ),
+                ],
+              );
+            }),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // One ranked-station row for the Station Crowd Ranking tab. Mirrors
+  // _busiestConnectionRow's rank/label/value layout and top-row highlight
+  // treatment, with a ridership-per-day suffix instead of a bare trip count.
+  Widget _rankingRow(int rank, String station, int avgRidership, Color color) {
+    final isTop = rank == 1;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: EdgeInsets.symmetric(vertical: isTop ? 12 : 8, horizontal: isTop ? 10 : 4),
+      decoration: isTop
+          ? BoxDecoration(
+        color: color.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
+      )
+          : null,
+      child: Row(
+        children: [
+          SizedBox(
+            width: 28,
+            child: Text('#$rank',
+                style: TextStyle(
+                    fontWeight: FontWeight.bold, fontSize: isTop ? 13 : 12, color: isTop ? color : Colors.black45)),
+          ),
+          Expanded(
+            child: Text(station,
+                style: TextStyle(
+                    fontSize: isTop ? 13 : 12, fontWeight: isTop ? FontWeight.bold : FontWeight.normal, color: Colors.black87),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+          ),
+          const SizedBox(width: 8),
+          Text('${_formatNumber(avgRidership)}/day',
+              style: TextStyle(fontSize: isTop ? 13 : 12, fontWeight: FontWeight.bold, color: isTop ? color : Colors.black87)),
         ],
       ),
     );

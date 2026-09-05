@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 
 // ── Type-to-search station picker ────────────────────────────────────────
@@ -349,13 +350,14 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   bool _loadingConnections = false;
 
   // ── Tab 5: Station Crowd Ranking state ──
-  // Real per-station ridership pulled straight from Supabase (the same
-  // per-station records the History tab uses), aggregated client-side.
-  // No hardcoded ridership, no modelling.
+  // Real per-station ridership from Supabase's "station_ridership_totals"
+  // view — one grouped query for every station, no hardcoded ridership,
+  // no modelling.
   bool _loadingRanking = false;
+  bool _rankingCompletedOnce = false; // true once a load has finished at least once
   String? _rankingError;
-  int _rankingLoadedCount = 0; // progress indicator while batches load
-  List<({String station, double avgRidership, int totalRidership, int recordCount})>? _rankingData;
+  List<({String station, double avgRidership, int totalRidership, int recordCount, DateTime? minDate, DateTime? maxDate})>?
+  _rankingData;
 
   // ── Shared visual-hierarchy tokens (all four tabs) ──
   // Single source of truth for section spacing/padding/radius, so the
@@ -395,6 +397,13 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         _statsReady = stations.isNotEmpty;
         if (stations.isEmpty) _loadError = 'No station records found in the local dataset.';
       });
+      // Kick off the Station Crowd Ranking fetch in the background as soon
+      // as the station list is known, instead of waiting for the user to
+      // open the Ranking tab and tap the button — by the time they get
+      // there it's often already finished, or well underway.
+      if (stations.isNotEmpty) {
+        _runStationRanking();
+      }
     } catch (e) {
       if (!mounted) return;
       // Shows the real exception instead of a canned message, so you can
@@ -606,51 +615,33 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     });
   }
 
-  // Station Crowd Ranking (Tab 5): fetches each station's real ridership
-  // records the same way the History tab fetches one station's records —
-  // just for every station — and aggregates totals/averages client-side.
-  // Pure real data, no hardcoded ridership, no modelling.
+  // Station Crowd Ranking (Tab 5): a single query to the
+  // "station_ridership_totals" Supabase view, which computes real
+  // average/total ridership per station with a GROUP BY directly in
+  // Postgres. One round-trip for all stations — no per-station looping,
+  // no batching, no modelling, no hardcoded ridership.
   //
-  // Fetched in small concurrent batches (not all ~100+ stations at once):
-  // firing every station's query simultaneously overwhelms Supabase's
-  // connection pool and trips its statement timeout (PostgrestException
-  // 57014). Batching keeps concurrent load modest while still being much
-  // faster than one station at a time.
-  static const int _rankingBatchSize = 8;
-
-  Future<void> _runStationRanking() async {
-    if (_stations.isEmpty) return;
+  // forceRefresh: true bypasses ApiService's in-memory cache so the
+  // refresh icon in the Ranking tab actually re-queries Supabase instead
+  // of just re-showing the same cached numbers.
+  Future<void> _runStationRanking({bool forceRefresh = false}) async {
+    if (_loadingRanking) return;
     setState(() {
       _loadingRanking = true;
       _rankingError = null;
-      _rankingLoadedCount = 0;
     });
     try {
-      final aggregated = <({String station, double avgRidership, int totalRidership, int recordCount})>[];
-      for (var i = 0; i < _stations.length; i += _rankingBatchSize) {
-        final batch = _stations.skip(i).take(_rankingBatchSize);
-        final batchResults = await Future.wait(batch.map((station) async {
-          final records = await _api.getStationTotalRecords(station);
-          if (records.isEmpty) {
-            return (station: station, avgRidership: 0.0, totalRidership: 0, recordCount: 0);
-          }
-          final total = records.fold<num>(0, (sum, r) => sum + r.ridership);
-          final avg = total / records.length;
-          return (station: station, avgRidership: avg, totalRidership: total.round(), recordCount: records.length);
-        }));
-        aggregated.addAll(batchResults);
-        if (!mounted) return;
-        setState(() => _rankingLoadedCount = aggregated.length);
-      }
+      final results = await _api.getStationRidershipTotals(forceRefresh: forceRefresh);
       if (!mounted) return;
       setState(() {
-        _rankingData = aggregated.where((r) => r.recordCount > 0).toList();
+        _rankingData = results.where((r) => r.recordCount > 0).toList();
         _loadingRanking = false;
+        _rankingCompletedOnce = true;
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _rankingError = 'Could not load station ranking from Supabase:\n$e';
+        _rankingError = 'Could not load the station ranking right now:\n$e';
         _loadingRanking = false;
       });
     }
@@ -2425,51 +2416,95 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
   // ── Tab 5 UI ───────────────────────────────────────────────────────────
   //
-  // Station Crowd Ranking — real per-station ridership averages/totals
-  // (pulled from Supabase via the same per-station endpoint the History
-  // tab uses, one call per station, aggregated client-side). No hardcoded
-  // ridership, no modelling.
+  // Station Ridership Ranking — real per-station ridership averages/totals
+  // from the "station_ridership_totals" view (one grouped query for every
+  // station). No hardcoded ridership, no modelling.
   // Sections (mirrors the other tabs' pattern):
   //   A. Load control
   //   B. Ranking insight (busiest / least-busy station, in plain language)
   //   C. Top 5 busiest stations
   //   D. Top 5 least-busy stations
+
+  // Real earliest–latest date across every station's data (from the
+  // min_date/max_date the ranking query already returns per station) —
+  // shown as "Based on Jan–Mar 2026 data" when available. Not a fixed
+  // label; simply not shown if the range isn't known yet.
+  String? _rankingPeriodLabel() {
+    final data = _rankingData;
+    if (data == null || data.isEmpty) return null;
+    DateTime? minDate;
+    DateTime? maxDate;
+    for (final r in data) {
+      if (r.minDate != null && (minDate == null || r.minDate!.isBefore(minDate))) minDate = r.minDate;
+      if (r.maxDate != null && (maxDate == null || r.maxDate!.isAfter(maxDate))) maxDate = r.maxDate;
+    }
+    if (minDate == null || maxDate == null) return null;
+    if (minDate.year == maxDate.year) {
+      if (minDate.month == maxDate.month) return DateFormat('MMM yyyy').format(minDate);
+      return '${DateFormat('MMM').format(minDate)}–${DateFormat('MMM yyyy').format(maxDate)}';
+    }
+    return '${DateFormat('MMM yyyy').format(minDate)} – ${DateFormat('MMM yyyy').format(maxDate)}';
+  }
+
   Widget _buildStationRankingTab() {
+    final periodLabel = _rankingPeriodLabel();
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Station Crowd Ranking',
+          const Text('Station Ridership Ranking',
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 4),
           const Text(
-            'Real ridership averages per station, pulled from the local dataset — no modelling, no hardcoded figures.',
+            'Compare stations by their typical daily ridership.',
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
+          if (periodLabel != null) ...[
+            const SizedBox(height: 2),
+            Text(
+              'Based on $periodLabel data.',
+              style: const TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
+            ),
+          ],
           const SizedBox(height: _sectionGap),
 
-          // A. Load control
+          // A. Network-wide ranking header — auto-loads in the background
+          // (kicked off as soon as the station list is ready), so there's
+          // no "press Load to get output" step; a small icon button just
+          // lets you manually re-pull the latest data.
           _sectionCard(
             title: 'NETWORK-WIDE RANKING',
             icon: Icons.leaderboard,
-            subtitle: 'Ranks all ${_stations.length} stations by real average daily ridership.',
-            child: ElevatedButton.icon(
-              icon: _loadingRanking
-                  ? const SizedBox(
-                  width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                  : const Icon(Icons.leaderboard, color: Colors.white),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF4F46E5),
-                minimumSize: const Size(double.infinity, 48),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              onPressed: _loadingRanking ? null : _runStationRanking,
-              label: Text(
-                  _loadingRanking
-                      ? 'Loading Ranking… ($_rankingLoadedCount/${_stations.length})'
-                      : 'Load Station Ranking',
-                  style: const TextStyle(color: Colors.white, fontSize: 16)),
+            subtitle: 'Typical daily ridership for every station on the network.',
+            child: Row(
+              children: [
+                Expanded(
+                  child: _loadingRanking
+                      ? Row(
+                    children: [
+                      const SizedBox(
+                          width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5))),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          !_rankingCompletedOnce ? 'Loading ranking…' : 'Refreshing ranking…',
+                          style: const TextStyle(fontSize: 12.5, color: Colors.black54),
+                        ),
+                      ),
+                    ],
+                  )
+                      : Text(
+                    _rankingData != null ? 'Up to date.' : 'Not loaded yet.',
+                    style: const TextStyle(fontSize: 12.5, color: Colors.black54),
+                  ),
+                ),
+                IconButton(
+                  onPressed: _loadingRanking ? null : () => _runStationRanking(forceRefresh: true),
+                  icon: const Icon(Icons.refresh, color: Color(0xFF4F46E5)),
+                  tooltip: 'Refresh ranking',
+                ),
+              ],
             ),
           ),
 
@@ -2489,6 +2524,30 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
           if (_rankingData != null) ...[
             const SizedBox(height: _sectionGap),
+            if (_loadingRanking) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                decoration: BoxDecoration(
+                  color: Colors.blueGrey.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    const SizedBox(
+                        width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blueGrey)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Refreshing in the background — the ranking below is the last completed result and won\'t change until the refresh finishes.',
+                        style: const TextStyle(fontSize: 11, color: Colors.black54, fontStyle: FontStyle.italic),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: _sectionGap),
+            ],
             Builder(builder: (context) {
               if (_rankingData!.isEmpty) {
                 return _emptyState('No ridership records found for any station.');
@@ -2500,6 +2559,13 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               final top = sortedDesc.first;
               final bottom = sortedDesc.last;
               const accent = Color(0xFF4F46E5);
+              // Real "X.XX× network average" comparison — station avg ÷
+              // _networkAverage, both sourced from Supabase. Guarded
+              // against a zero network average rather than dividing by it.
+              double vsNetworkAvg(double stationAvg) =>
+                  _networkAverage > 0 ? stationAvg / _networkAverage : 0.0;
+              final topVsAvg = vsNetworkAvg(top.avgRidership);
+              final bottomVsAvg = vsNetworkAvg(bottom.avgRidership);
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2523,8 +2589,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              'Busiest station: ${top.station} (${top.avgRidership.round()} avg trips/day). '
-                                  'Least-busy station: ${bottom.station} (${bottom.avgRidership.round()} avg trips/day).',
+                              'Busiest station: ${top.station} (${top.avgRidership.round()} avg trips/day, '
+                                  '${topVsAvg.toStringAsFixed(2)}× the network average). '
+                                  'Least-busy station: ${bottom.station} (${bottom.avgRidership.round()} avg trips/day, '
+                                  '${bottomVsAvg.toStringAsFixed(2)}× the network average).',
                               style: const TextStyle(color: accent, fontSize: 13, fontWeight: FontWeight.w500),
                             ),
                           ),
@@ -2538,13 +2606,14 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   _sectionCard(
                     title: 'TOP 5 BUSIEST STATIONS',
                     icon: Icons.trending_up,
-                    subtitle: 'Ranked by real average daily ridership, across ${_rankingData!.length} stations with data.',
+                    subtitle:
+                    'Ranked by typical daily ridership vs the network average of ${_networkAverage.round()}/day.',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: busiest.asMap().entries.map((entry) {
                         final rank = entry.key + 1;
                         final r = entry.value;
-                        return _rankingRow(rank, r.station, r.avgRidership.round(), const Color(0xFF4F46E5));
+                        return _rankingRow(rank, r.station, r.avgRidership.round(), vsNetworkAvg(r.avgRidership), const Color(0xFF4F46E5));
                       }).toList(),
                     ),
                   ),
@@ -2554,13 +2623,14 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   _sectionCard(
                     title: 'TOP 5 LEAST-BUSY STATIONS',
                     icon: Icons.trending_down,
-                    subtitle: 'Ranked by real average daily ridership, across ${_rankingData!.length} stations with data.',
+                    subtitle:
+                    'Ranked by typical daily ridership vs the network average of ${_networkAverage.round()}/day.',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: leastBusy.asMap().entries.map((entry) {
                         final rank = entry.key + 1;
                         final r = entry.value;
-                        return _rankingRow(rank, r.station, r.avgRidership.round(), const Color(0xFF16A34A));
+                        return _rankingRow(rank, r.station, r.avgRidership.round(), vsNetworkAvg(r.avgRidership), const Color(0xFF16A34A));
                       }).toList(),
                     ),
                   ),
@@ -2575,8 +2645,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
   // One ranked-station row for the Station Crowd Ranking tab. Mirrors
   // _busiestConnectionRow's rank/label/value layout and top-row highlight
-  // treatment, with a ridership-per-day suffix instead of a bare trip count.
-  Widget _rankingRow(int rank, String station, int avgRidership, Color color) {
+  // treatment, with a ridership-per-day value plus a real "X.XX× network
+  // avg" comparison underneath (station avg ÷ _networkAverage, both from
+  // Supabase — no modelling, no hardcoded ridership).
+  Widget _rankingRow(int rank, String station, int avgRidership, double vsNetworkAvg, Color color) {
     final isTop = rank == 1;
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -2604,8 +2676,16 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 overflow: TextOverflow.ellipsis),
           ),
           const SizedBox(width: 8),
-          Text('${_formatNumber(avgRidership)}/day',
-              style: TextStyle(fontSize: isTop ? 13 : 12, fontWeight: FontWeight.bold, color: isTop ? color : Colors.black87)),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text('${_formatNumber(avgRidership)}/day',
+                  style: TextStyle(fontSize: isTop ? 13 : 12, fontWeight: FontWeight.bold, color: isTop ? color : Colors.black87)),
+              const SizedBox(height: 1),
+              Text('${vsNetworkAvg.toStringAsFixed(2)}× avg',
+                  style: TextStyle(fontSize: 10, color: isTop ? color : Colors.black45)),
+            ],
+          ),
         ],
       ),
     );

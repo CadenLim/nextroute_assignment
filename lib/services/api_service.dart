@@ -54,6 +54,8 @@ class ApiService {
   List<String>? _stationListCache;
   List<String>? _odOriginsCache; // from the tiny od_origins view (~146 rows)
   double? _networkAverageCache;
+  List<({String station, double avgRidership, int totalRidership, int recordCount, DateTime? minDate, DateTime? maxDate})>?
+  _stationRidershipTotalsCache;
 
   // --- YOUR VARIABLES (Module 1) ---
   List<StationModel> _cachedStations = [];
@@ -677,6 +679,38 @@ class ApiService {
     final avg = (response['avg_ridership'] as num).toDouble();
     _networkAverageCache = avg;
     return avg;
+  }
+
+  // Per-station real average/total ridership for every station at once —
+  // from the "station_ridership_totals" view, which does the GROUP BY
+  // AVG/SUM/COUNT work for all stations directly in Postgres. One query,
+  // one round-trip — replaces the old approach of calling
+  // getStationTotalRecords() once per station (which meant 100+ separate
+  // requests and could trip Supabase's statement timeout). See the SQL to
+  // create this view in the accompanying note.
+  //
+  // Cached after the first successful call, like the other small-view
+  // methods above — pass forceRefresh: true (e.g. from a manual "refresh"
+  // action) to bypass the cache and actually re-query Supabase.
+  Future<List<({String station, double avgRidership, int totalRidership, int recordCount, DateTime? minDate, DateTime? maxDate})>>
+  getStationRidershipTotals({bool forceRefresh = false}) async {
+    if (!forceRefresh && _stationRidershipTotalsCache != null) return _stationRidershipTotalsCache!;
+    final response = await Supabase.instance.client
+        .from('station_ridership_totals')
+        .select('station, avg_ridership, total_ridership, record_count, min_date, max_date')
+        .order('avg_ridership', ascending: false);
+    final results = response
+        .map((row) => (
+    station: row['station'] as String,
+    avgRidership: (row['avg_ridership'] as num).toDouble(),
+    totalRidership: (row['total_ridership'] as num).round(),
+    recordCount: (row['record_count'] as num).round(),
+    minDate: row['min_date'] != null ? DateTime.tryParse(row['min_date'] as String) : null,
+    maxDate: row['max_date'] != null ? DateTime.tryParse(row['max_date'] as String) : null,
+    ))
+        .toList();
+    _stationRidershipTotalsCache = results;
+    return results;
   }
 
   // ---------------------------------------------------------------------

@@ -52,3 +52,5 @@ app.*.map.json
 
 # Ignore GTFS backup folders
 assets/gtfs/*_backup_*/
+
+nextroute_assignment_for_gpt.zip

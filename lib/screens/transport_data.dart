@@ -13,6 +13,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:location/location.dart' as loc;
 import 'package:permission_handler/permission_handler.dart' as handler;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 const _blue = Color(0xFF2563EB);
@@ -90,15 +91,27 @@ class TransitRoute {
     required this.stopIds,
   });
 
-  String get displayName => shortName.isEmpty ? id : shortName;
+  String get displayName {
+    if (shortName.trim().isNotEmpty) return shortName.trim();
+    final fallback = longName.trim();
+    if (RegExp(r'^[A-Za-z]*\d+[A-Za-z]?$').hasMatch(fallback)) {
+      return fallback;
+    }
+    return id;
+  }
+
+  String get description {
+    final value = longName.trim();
+    return value == displayName ? '' : value;
+  }
 }
 
-class BusRouteRepository {
-  static List<TransitRoute>? _cache;
+class TransitRouteRepository {
+  static final Map<String, List<TransitRoute>> _cache = {};
 
-  static Future<List<TransitRoute>> load() async {
-    if (_cache != null) return _cache!;
-    const base = 'assets/gtfs/bus';
+  static Future<List<TransitRoute>> load(String base) async {
+    final cached = _cache[base];
+    if (cached != null) return cached;
 
     final routeRows = (await rootBundle.loadString(
       '$base/routes.txt',
@@ -176,7 +189,7 @@ class BusRouteRepository {
     )
         .toList()
       ..sort((a, b) => _compareRouteNames(a.displayName, b.displayName));
-    _cache = routes;
+    _cache[base] = routes;
     return routes;
   }
 
@@ -193,6 +206,132 @@ class BusRouteRepository {
       return leftNumber.compareTo(rightNumber);
     }
     return left.toUpperCase().compareTo(right.toUpperCase());
+  }
+}
+
+class RailShape {
+  final String routeId;
+  final Color color;
+  final List<LatLng> points;
+
+  const RailShape({
+    required this.routeId,
+    required this.color,
+    required this.points,
+  });
+}
+
+class RailShapeRepository {
+  static List<RailShape>? _cache;
+
+  static Future<List<RailShape>> load() async {
+    if (_cache != null) return _cache!;
+    const base = 'assets/gtfs/rail';
+
+    final routeRows = (await rootBundle.loadString(
+      '$base/routes.txt',
+    )).split(RegExp(r'\r?\n'));
+    final tripRows = (await rootBundle.loadString(
+      '$base/trips.txt',
+    )).split(RegExp(r'\r?\n'));
+
+    final colorsByRoute = <String, Color>{};
+    if (routeRows.isNotEmpty) {
+      final header = _csvRow(routeRows.first);
+      final idIndex = header.indexOf('route_id');
+      final colorIndex = header.indexOf('route_color');
+      final required = math.max(idIndex, colorIndex);
+      for (final row in routeRows.skip(1)) {
+        if (row.trim().isEmpty) continue;
+        final values = _csvRow(row);
+        if (required < 0 || values.length <= required) continue;
+        colorsByRoute[values[idIndex].trim()] = _parseGtfsColor(
+          values[colorIndex].trim(),
+        );
+      }
+    }
+
+    final routeByShape = <String, String>{};
+    final preferredShapeByRoute = <String, String>{};
+    if (tripRows.isNotEmpty) {
+      final header = _csvRow(tripRows.first);
+      final routeIndex = header.indexOf('route_id');
+      final shapeIndex = header.indexOf('shape_id');
+      final directionIndex = header.indexOf('direction_id');
+      final required = math.max(routeIndex, shapeIndex);
+      for (final row in tripRows.skip(1)) {
+        if (row.trim().isEmpty) continue;
+        final values = _csvRow(row);
+        if (required < 0 || values.length <= required) continue;
+        final routeId = values[routeIndex].trim();
+        final shapeId = values[shapeIndex].trim();
+        if (routeId.isEmpty || shapeId.isEmpty) continue;
+        routeByShape[shapeId] = routeId;
+        final isFirstDirection =
+            directionIndex < 0 ||
+                values.length <= directionIndex ||
+                values[directionIndex].trim() == '0';
+        if (isFirstDirection) {
+          preferredShapeByRoute.putIfAbsent(routeId, () => shapeId);
+        }
+      }
+    }
+
+    final preferredShapeIds = preferredShapeByRoute.values.toSet();
+    final pointsByShape = <String, List<(int, LatLng)>>{};
+    final shapeRows = (await rootBundle.loadString(
+      '$base/shapes.txt',
+    )).split(RegExp(r'\r?\n'));
+    if (shapeRows.isNotEmpty) {
+      final header = _csvRow(shapeRows.first);
+      final idIndex = header.indexOf('shape_id');
+      final latitudeIndex = header.indexOf('shape_pt_lat');
+      final longitudeIndex = header.indexOf('shape_pt_lon');
+      final sequenceIndex = header.indexOf('shape_pt_sequence');
+      final required = [
+        idIndex,
+        latitudeIndex,
+        longitudeIndex,
+        sequenceIndex,
+      ].reduce(math.max);
+      for (final row in shapeRows.skip(1)) {
+        if (row.trim().isEmpty) continue;
+        final values = _csvRow(row);
+        if (required < 0 || values.length <= required) continue;
+        final shapeId = values[idIndex].trim();
+        if (!preferredShapeIds.contains(shapeId)) continue;
+        final latitude = double.tryParse(values[latitudeIndex].trim());
+        final longitude = double.tryParse(values[longitudeIndex].trim());
+        final sequence = int.tryParse(values[sequenceIndex].trim());
+        if (latitude == null || longitude == null || sequence == null) continue;
+        pointsByShape.putIfAbsent(shapeId, () => []).add((
+        sequence,
+        LatLng(latitude, longitude),
+        ));
+      }
+    }
+
+    final result = <RailShape>[];
+    for (final entry in pointsByShape.entries) {
+      final routeId = routeByShape[entry.key];
+      if (routeId == null) continue;
+      entry.value.sort((a, b) => a.$1.compareTo(b.$1));
+      result.add(
+        RailShape(
+          routeId: routeId,
+          color: colorsByRoute[routeId] ?? _blue,
+          points: entry.value.map((point) => point.$2).toList(),
+        ),
+      );
+    }
+    _cache = result;
+    return result;
+  }
+
+  static Color _parseGtfsColor(String value) {
+    final cleaned = value.replaceFirst('#', '').trim();
+    final parsed = int.tryParse(cleaned, radix: 16);
+    return parsed == null ? _blue : Color(0xFF000000 | parsed);
   }
 }
 
@@ -318,12 +457,15 @@ List<String> _csvRow(String row) {
 }
 
 class RealtimeVehicleService {
-  static final Uri _rapidKlUrl = Uri.parse(
-    'https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana?category=rapid-bus-kl',
-  );
-
-  static Future<List<LiveVehicle>> loadRapidKlVehicles() async {
-    final response = await http.get(_rapidKlUrl);
+  static Future<List<LiveVehicle>> loadPrasaranaVehicles(
+      String category,
+      ) async {
+    final url = Uri.https(
+      'api.data.gov.my',
+      '/gtfs-realtime/vehicle-position/prasarana',
+      {'category': category},
+    );
+    final response = await http.get(url);
     if (response.statusCode != 200) {
       throw Exception('Live API returned HTTP ${response.statusCode}.');
     }
@@ -830,6 +972,66 @@ class AddressService {
   }
 }
 
+class RecentStationService {
+  static const int maximumItems = 5;
+
+  static String get _storageKey {
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    return userId == null
+        ? 'transport_recent_stations_guest_v1'
+        : 'transport_recent_stations_user_${userId}_v1';
+  }
+
+  static Future<List<Station>> load() async {
+    final preferences = await SharedPreferences.getInstance();
+    final names = preferences.getStringList(_storageKey) ?? const [];
+    if (names.isEmpty) return [];
+
+    final stations = await StationRepository.instance.loadAll();
+    final byName = {
+      for (final station in stations) _stationKey(station): station,
+    };
+    return names
+        .map((name) => byName[name])
+        .whereType<Station>()
+        .take(maximumItems)
+        .toList();
+  }
+
+  static Future<void> add(Station station) async {
+    final preferences = await SharedPreferences.getInstance();
+    final key = _stationKey(station);
+    final current = preferences.getStringList(_storageKey) ?? <String>[];
+    final updated = <String>[
+      key,
+      ...current.where((item) => item != key),
+    ].take(maximumItems).toList();
+    await preferences.setStringList(_storageKey, updated);
+  }
+
+  static Future<void> clear() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.remove(_storageKey);
+  }
+
+  static String _stationKey(Station station) {
+    return station.name.trim().toUpperCase();
+  }
+}
+
+Future<void> openStationDetails(BuildContext context, Station station) async {
+  try {
+    await RecentStationService.add(station);
+  } catch (_) {
+    // Local history must never prevent the user from opening station details.
+  }
+  if (!context.mounted) return;
+  await Navigator.push(
+    context,
+    MaterialPageRoute(builder: (_) => StationDetailScreen(station: station)),
+  );
+}
+
 Future<void> openGoogleMaps(Station station) async {
   final position = await DeviceLocationService.currentLocation();
   final latitude = position.latitude;
@@ -1060,13 +1262,36 @@ class TransportDataScreen extends StatefulWidget {
 
 class _TransportDataScreenState extends State<TransportDataScreen> {
   List<Station> nearbyPreview = [];
+  List<Station> recentSearches = [];
   bool loadingPreview = true;
+  bool loadingRecentSearches = true;
   String? previewMessage;
 
   @override
   void initState() {
     super.initState();
     _loadNearbyPreview();
+    _loadRecentSearches();
+  }
+
+  Future<void> _loadRecentSearches() async {
+    try {
+      final loaded = await RecentStationService.load();
+      if (!mounted) return;
+      setState(() {
+        recentSearches = loaded;
+        loadingRecentSearches = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => loadingRecentSearches = false);
+    }
+  }
+
+  Future<void> _clearRecentSearches() async {
+    await RecentStationService.clear();
+    if (!mounted) return;
+    setState(() => recentSearches = []);
   }
 
   Future<void> _loadNearbyPreview() async {
@@ -1118,8 +1343,10 @@ class _TransportDataScreenState extends State<TransportDataScreen> {
     }
   }
 
-  void open(Widget page) =>
-      Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
+  Future<void> open(Widget page) async {
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
+    await _loadRecentSearches();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1213,6 +1440,31 @@ class _TransportDataScreenState extends State<TransportDataScreen> {
                           actionLabel: 'Try again',
                           onAction: _loadNearbyPreview,
                         ),
+                    if (!loadingRecentSearches &&
+                        recentSearches.isNotEmpty) ...[
+                      const SizedBox(height: 24),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'RECENT SEARCHES',
+                            style: TextStyle(
+                              color: Color(0xFF71839E),
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: .8,
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: _clearRecentSearches,
+                            child: const Text('Clear all'),
+                          ),
+                        ],
+                      ),
+                      StationListCard(
+                        items: recentSearches,
+                        onHistoryChanged: _loadRecentSearches,
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -1320,7 +1572,13 @@ class _SoftIcon extends StatelessWidget {
 
 class StationListCard extends StatelessWidget {
   final List<Station> items;
-  const StationListCard({super.key, required this.items});
+  final Future<void> Function()? onHistoryChanged;
+
+  const StationListCard({
+    super.key,
+    required this.items,
+    this.onHistoryChanged,
+  });
   @override
   Widget build(BuildContext context) => Container(
     decoration: BoxDecoration(
@@ -1376,12 +1634,10 @@ class StationListCard extends StatelessWidget {
                   const Icon(Icons.chevron_right, color: Color(0xFFCBD5E1)),
                 ],
               ),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => StationDetailScreen(station: station),
-                ),
-              ),
+              onTap: () async {
+                await openStationDetails(context, station);
+                await onHistoryChanged?.call();
+              },
             ),
             if (index != items.length - 1)
               const Divider(height: 1, indent: 18, endIndent: 18),
@@ -1897,26 +2153,22 @@ class _SimpleHeader extends StatelessWidget {
   );
 }
 
-enum _BusRoutePickerAction { all }
-
-const _allBusRoutesChoice = _BusRoutePickerAction.all;
-
-class _BusRoutePicker extends StatefulWidget {
+class _TransitRoutePicker extends StatefulWidget {
+  final String serviceName;
   final List<TransitRoute> routes;
   final TransitRoute? selectedRoute;
-  final bool allRoutesSelected;
 
-  const _BusRoutePicker({
+  const _TransitRoutePicker({
+    required this.serviceName,
     required this.routes,
     required this.selectedRoute,
-    required this.allRoutesSelected,
   });
 
   @override
-  State<_BusRoutePicker> createState() => _BusRoutePickerState();
+  State<_TransitRoutePicker> createState() => _TransitRoutePickerState();
 }
 
-class _BusRoutePickerState extends State<_BusRoutePicker> {
+class _TransitRoutePickerState extends State<_TransitRoutePicker> {
   String query = '';
 
   @override
@@ -1925,7 +2177,7 @@ class _BusRoutePickerState extends State<_BusRoutePicker> {
     final filtered = widget.routes.where((route) {
       if (normalizedQuery.isEmpty) return true;
       return route.displayName.toLowerCase().contains(normalizedQuery) ||
-          route.longName.toLowerCase().contains(normalizedQuery);
+          route.description.toLowerCase().contains(normalizedQuery);
     }).toList();
 
     return Dialog(
@@ -1939,9 +2191,9 @@ class _BusRoutePickerState extends State<_BusRoutePicker> {
             children: [
               Row(
                 children: [
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      'Choose a bus route',
+                      'Choose a ${widget.serviceName} route',
                       style: TextStyle(
                         color: _ink,
                         fontSize: 20,
@@ -1957,7 +2209,7 @@ class _BusRoutePickerState extends State<_BusRoutePicker> {
                 ],
               ),
               const Text(
-                'The map will show stops and live buses for the selected route.',
+                'The map will show stops and live vehicles for the selected route.',
                 style: TextStyle(color: Color(0xFF64748B)),
               ),
               const SizedBox(height: 14),
@@ -1966,25 +2218,11 @@ class _BusRoutePickerState extends State<_BusRoutePicker> {
                 onChanged: (value) => setState(() => query = value),
                 decoration: const InputDecoration(
                   prefixIcon: Icon(Icons.search),
-                  hintText: 'Search route, for example 250 or T250',
+                  hintText: 'Search by route number or destination',
                   border: OutlineInputBorder(),
                 ),
               ),
               const SizedBox(height: 10),
-              ListTile(
-                selected: widget.allRoutesSelected,
-                leading: const CircleAvatar(child: Icon(Icons.route)),
-                title: const Text(
-                  'All bus routes',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-                subtitle: const Text('May show many overlapping stops'),
-                trailing: widget.allRoutesSelected
-                    ? const Icon(Icons.check, color: _blue)
-                    : null,
-                onTap: () => Navigator.pop(context, _allBusRoutesChoice),
-              ),
-              const Divider(),
               Expanded(
                 child: filtered.isEmpty
                     ? const Center(child: Text('No matching bus route found.'))
@@ -2018,9 +2256,9 @@ class _BusRoutePickerState extends State<_BusRoutePicker> {
                         ),
                       ),
                       title: Text(
-                        route.longName.isEmpty
-                            ? 'Bus route ${route.displayName}'
-                            : route.longName,
+                        route.description.isEmpty
+                            ? '${widget.serviceName} route ${route.displayName}'
+                            : route.description,
                         style: const TextStyle(
                           fontWeight: FontWeight.w600,
                         ),
@@ -2042,6 +2280,35 @@ class _BusRoutePickerState extends State<_BusRoutePicker> {
   }
 }
 
+enum _RoadService { rapidKlBus, mrtFeeder }
+
+extension on _RoadService {
+  String get label => switch (this) {
+    _RoadService.rapidKlBus => 'Rapid KL Bus',
+    _RoadService.mrtFeeder => 'MRT Feeder',
+  };
+
+  String get stationSource => switch (this) {
+    _RoadService.rapidKlBus => 'bus',
+    _RoadService.mrtFeeder => 'mrt_feeder',
+  };
+
+  String get assetPath => switch (this) {
+    _RoadService.rapidKlBus => 'assets/gtfs/bus',
+    _RoadService.mrtFeeder => 'assets/gtfs/mrt_feeder',
+  };
+
+  String get realtimeCategory => switch (this) {
+    _RoadService.rapidKlBus => 'rapid-bus-kl',
+    _RoadService.mrtFeeder => 'rapid-bus-mrtfeeder',
+  };
+
+  Color get color => switch (this) {
+    _RoadService.rapidKlBus => const Color(0xFF2563EB),
+    _RoadService.mrtFeeder => const Color(0xFF0891B2),
+  };
+}
+
 class TransitMapScreen extends StatefulWidget {
   const TransitMapScreen({super.key});
 
@@ -2053,16 +2320,18 @@ class _TransitMapScreenState extends State<TransitMapScreen> {
   final MapController mapController = MapController();
   List<Station> visibleStations = [];
   List<LiveVehicle> vehicles = [];
-  List<TransitRoute> busRoutes = [];
-  TransitRoute? selectedBusRoute;
+  List<TransitRoute> rapidBusRoutes = [];
+  List<TransitRoute> feederRoutes = [];
+  List<RailShape> railShapes = [];
+  TransitRoute? selectedRoadRoute;
+  _RoadService? selectedRoadService;
   loc.LocationData? position;
   StreamSubscription<loc.LocationData>? locationSubscription;
+  Timer? vehicleRefreshTimer;
   bool loading = true;
   bool showRail = true;
-  bool showBus = false;
-  bool showFeeder = false;
-  bool showVehicles = true;
-  bool showAllBusRoutes = false;
+  bool showVehicles = false;
+  bool refreshingVehicles = false;
   String? liveError;
   String? locationWarning;
 
@@ -2074,7 +2343,13 @@ class _TransitMapScreenState extends State<TransitMapScreen> {
 
   Future<void> _loadMap() async {
     final allStations = await StationRepository.instance.loadAll();
-    final availableBusRoutes = await BusRouteRepository.load();
+    final availableBusRoutes = await TransitRouteRepository.load(
+      _RoadService.rapidKlBus.assetPath,
+    );
+    final availableFeederRoutes = await TransitRouteRepository.load(
+      _RoadService.mrtFeeder.assetPath,
+    );
+    final availableRailShapes = await RailShapeRepository.load();
     loc.LocationData? detectedPosition;
     try {
       final candidate = await DeviceLocationService.currentLocation();
@@ -2118,90 +2393,189 @@ class _TransitMapScreenState extends State<TransitMapScreen> {
         ),
       ),
     )
-        .where((station) => station.distance <= 15)
         .toList()
       ..sort((a, b) => a.distance.compareTo(b.distance));
-
-    List<LiveVehicle> liveVehicles = [];
-    String? vehicleError;
-    try {
-      liveVehicles = await RealtimeVehicleService.loadRapidKlVehicles();
-    } catch (error) {
-      vehicleError = error.toString().replaceFirst('Exception: ', '');
-    }
 
     if (!mounted) return;
     setState(() {
       position = detectedPosition;
       visibleStations = nearby;
-      busRoutes = availableBusRoutes;
-      vehicles = liveVehicles;
-      liveError = vehicleError;
+      rapidBusRoutes = availableBusRoutes;
+      feederRoutes = availableFeederRoutes;
+      railShapes = availableRailShapes;
       loading = false;
     });
   }
 
   Future<void> _refreshVehicles() async {
-    setState(() => liveError = null);
+    final service = selectedRoadService;
+    if (service == null || refreshingVehicles) return;
+    refreshingVehicles = true;
+    if (mounted) setState(() => liveError = null);
     try {
-      final latest = await RealtimeVehicleService.loadRapidKlVehicles();
-      if (!mounted) return;
+      final latest = await RealtimeVehicleService.loadPrasaranaVehicles(
+        service.realtimeCategory,
+      );
+      if (!mounted || selectedRoadService != service) return;
       setState(() => vehicles = latest);
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || selectedRoadService != service) return;
       setState(() {
         liveError = error.toString().replaceFirst('Exception: ', '');
       });
+    } finally {
+      refreshingVehicles = false;
+      if (mounted) setState(() {});
     }
   }
 
-  Future<void> _toggleBusStops(bool value) async {
-    setState(() => showBus = value);
-    if (value && selectedBusRoute == null && !showAllBusRoutes) {
-      await _chooseBusRoute();
-    }
-  }
-
-  Future<void> _chooseBusRoute() async {
-    final choice = await showDialog<Object>(
-      context: context,
-      builder: (dialogContext) => _BusRoutePicker(
-        routes: busRoutes,
-        selectedRoute: selectedBusRoute,
-        allRoutesSelected: showAllBusRoutes,
-      ),
+  void _startVehicleRefresh() {
+    vehicleRefreshTimer?.cancel();
+    vehicleRefreshTimer = Timer.periodic(
+      const Duration(seconds: 30),
+          (_) => _refreshVehicles(),
     );
-    if (!mounted || choice == null) return;
+  }
+
+  void _stopVehicleRefresh() {
+    vehicleRefreshTimer?.cancel();
+    vehicleRefreshTimer = null;
+  }
+
+  Future<void> _toggleRoadService(_RoadService service, bool value) async {
+    if (!value) {
+      _stopVehicleRefresh();
+      setState(() {
+        selectedRoadService = null;
+        selectedRoadRoute = null;
+        showVehicles = false;
+        vehicles = [];
+        liveError = null;
+      });
+      return;
+    }
+
+    final serviceChanged = selectedRoadService != service;
+    _stopVehicleRefresh();
     setState(() {
-      showBus = true;
-      if (choice == _allBusRoutesChoice) {
-        selectedBusRoute = null;
-        showAllBusRoutes = true;
-      } else if (choice is TransitRoute) {
-        selectedBusRoute = choice;
-        showAllBusRoutes = false;
+      showRail = false;
+      selectedRoadService = service;
+      if (serviceChanged) selectedRoadRoute = null;
+      showVehicles = false;
+      vehicles = [];
+      liveError = null;
+    });
+    if (selectedRoadRoute == null) await _chooseRoadRoute(service);
+  }
+
+  void _toggleRail(bool value) {
+    _stopVehicleRefresh();
+    setState(() {
+      showRail = value;
+      if (value) {
+        selectedRoadService = null;
+        selectedRoadRoute = null;
+        showVehicles = false;
+        vehicles = [];
+        liveError = null;
       }
     });
   }
 
-  bool _stationMatchesSelectedBusRoute(Station station) {
-    if (!station.sources.contains('bus')) return false;
-    if (showAllBusRoutes) return true;
-    final route = selectedBusRoute;
-    if (route == null) return false;
+  Future<void> _chooseRoadRoute(_RoadService service) async {
+    final routes = service == _RoadService.rapidKlBus
+        ? rapidBusRoutes
+        : feederRoutes;
+    final choice = await showDialog<TransitRoute>(
+      context: context,
+      builder: (dialogContext) => _TransitRoutePicker(
+        serviceName: service.label,
+        routes: routes,
+        selectedRoute: selectedRoadService == service
+            ? selectedRoadRoute
+            : null,
+      ),
+    );
+    if (!mounted || choice == null) return;
+    setState(() {
+      showRail = false;
+      selectedRoadService = service;
+      selectedRoadRoute = choice;
+      showVehicles = true;
+    });
+    _startVehicleRefresh();
+    await _refreshVehicles();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _fitStations(
+        visibleStations.where(_stationMatchesSelectedRoadRoute).toList(),
+      );
+    });
+  }
+
+  void _toggleLiveVehicles(bool value) {
+    setState(() => showVehicles = value);
+    if (value) {
+      _startVehicleRefresh();
+      _refreshVehicles();
+    } else {
+      _stopVehicleRefresh();
+    }
+  }
+
+  void _fitStations(List<Station> stations) {
+    if (stations.isEmpty) return;
+    var minimumLatitude = stations.first.latitude;
+    var maximumLatitude = stations.first.latitude;
+    var minimumLongitude = stations.first.longitude;
+    var maximumLongitude = stations.first.longitude;
+    for (final station in stations.skip(1)) {
+      minimumLatitude = math.min(minimumLatitude, station.latitude);
+      maximumLatitude = math.max(maximumLatitude, station.latitude);
+      minimumLongitude = math.min(minimumLongitude, station.longitude);
+      maximumLongitude = math.max(maximumLongitude, station.longitude);
+    }
+    final span = math.max(
+      maximumLatitude - minimumLatitude,
+      maximumLongitude - minimumLongitude,
+    );
+    final zoom = switch (span) {
+      > 1.2 => 8.0,
+      > .7 => 9.0,
+      > .35 => 10.0,
+      > .18 => 11.0,
+      > .09 => 12.0,
+      > .045 => 13.0,
+      _ => 14.0,
+    };
+    mapController.move(
+      LatLng(
+        (minimumLatitude + maximumLatitude) / 2,
+        (minimumLongitude + maximumLongitude) / 2,
+      ),
+      zoom,
+    );
+  }
+
+  bool _stationMatchesSelectedRoadRoute(Station station) {
+    final service = selectedRoadService;
+    final route = selectedRoadRoute;
+    if (service == null || route == null) return false;
+    if (!station.sources.contains(service.stationSource)) return false;
     return station.stopIds.any(route.stopIds.contains);
   }
 
-  bool _vehicleMatchesSelectedBusRoute(LiveVehicle vehicle) {
-    final route = selectedBusRoute;
-    if (route == null) return true;
+  bool _vehicleMatchesSelectedRoadRoute(LiveVehicle vehicle) {
+    final route = selectedRoadRoute;
+    if (route == null) return false;
     final vehicleRoute = vehicle.routeId.trim().toUpperCase();
     return vehicleRoute == route.id.trim().toUpperCase() ||
-        vehicleRoute == route.shortName.trim().toUpperCase();
+        vehicleRoute == route.displayName.toUpperCase();
   }
 
   @override
   void dispose() {
+    _stopVehicleRefresh();
     locationSubscription?.cancel();
     mapController.dispose();
     super.dispose();
@@ -2213,22 +2587,22 @@ class _TransitMapScreenState extends State<TransitMapScreen> {
         ? const LatLng(3.1390, 101.6869)
         : LatLng(position!.latitude, position!.longitude);
     final filteredStations = visibleStations.where((station) {
-      final matchesFeeder =
-          showFeeder && station.sources.contains('mrt_feeder');
       final matchesRail = showRail && station.sources.contains('rail');
-      final matchesBus = showBus && _stationMatchesSelectedBusRoute(station);
-      return matchesFeeder || matchesRail || matchesBus;
+      final matchesRoad =
+          selectedRoadService != null &&
+              _stationMatchesSelectedRoadRoute(station);
+      return matchesRail || matchesRoad;
     }).toList();
     final filteredVehicles = vehicles
-        .where(_vehicleMatchesSelectedBusRoute)
+        .where(_vehicleMatchesSelectedRoadRoute)
         .toList();
     return Scaffold(
       body: SafeArea(
         child: Column(
           children: [
             const _SimpleHeader(
-              title: 'Live Transit Map',
-              subtitle: 'Choose a transport category to keep the map clear',
+              title: 'Transit Map',
+              subtitle: 'Select rail or a bus route to explore the network',
               color: Color(0xFF6D28D9),
             ),
             Expanded(
@@ -2249,43 +2623,85 @@ class _TransitMapScreenState extends State<TransitMapScreen> {
                         userAgentPackageName:
                         'com.example.nextroute_assignment',
                       ),
+                      if (showRail && railShapes.isNotEmpty)
+                        PolylineLayer(
+                          polylines: railShapes
+                              .map(
+                                (shape) => Polyline(
+                              points: shape.points,
+                              color: shape.color.withValues(
+                                alpha: .78,
+                              ),
+                              strokeWidth: 4,
+                            ),
+                          )
+                              .toList(),
+                        ),
                       if (filteredStations.isNotEmpty)
                         MarkerLayer(
                           markers: filteredStations.map((station) {
-                            final markerColor =
-                            station.type.contains('Rail')
-                                ? _blue
-                                : station.type.contains('MRT Feeder')
-                                ? const Color(0xFF0891B2)
-                                : const Color(0xFF64748B);
+                            final isRoadStop =
+                                selectedRoadService != null &&
+                                    _stationMatchesSelectedRoadRoute(station);
+                            final markerColor = isRoadStop
+                                ? selectedRoadService!.color
+                                : const Color(0xFF7C3AED);
+                            final markerIcon = isRoadStop
+                                ? Icons.directions_bus
+                                : Icons.train;
+                            final routeText = isRoadStop
+                                ? selectedRoadRoute?.displayName
+                                : null;
                             return Marker(
                               point: LatLng(
                                 station.latitude,
                                 station.longitude,
                               ),
-                              width: 34,
-                              height: 34,
-                              child: IconButton(
-                                tooltip: station.name,
-                                padding: EdgeInsets.zero,
-                                onPressed: () => Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => StationDetailScreen(
-                                      station: station,
+                              width: 42,
+                              height: 42,
+                              child: Tooltip(
+                                message: routeText == null
+                                    ? station.name
+                                    : '${station.name}\n'
+                                    '${selectedRoadService!.label} '
+                                    'route $routeText',
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    color: markerColor,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: Colors.white,
+                                      width: 2.5,
+                                    ),
+                                    boxShadow: const [
+                                      BoxShadow(
+                                        color: Colors.black26,
+                                        blurRadius: 5,
+                                        offset: Offset(0, 2),
+                                      ),
+                                    ],
+                                  ),
+                                  child: IconButton(
+                                    tooltip: station.name,
+                                    padding: EdgeInsets.zero,
+                                    onPressed: () => openStationDetails(
+                                      context,
+                                      station,
+                                    ),
+                                    icon: Icon(
+                                      markerIcon,
+                                      color: Colors.white,
+                                      size: 22,
                                     ),
                                   ),
-                                ),
-                                icon: Icon(
-                                  Icons.location_on,
-                                  color: markerColor,
-                                  size: 30,
                                 ),
                               ),
                             );
                           }).toList(),
                         ),
-                      if (showVehicles)
+                      if (selectedRoadService != null &&
+                          selectedRoadRoute != null &&
+                          showVehicles)
                         MarkerLayer(
                           markers: filteredVehicles.map((vehicle) {
                             return Marker(
@@ -2298,12 +2714,16 @@ class _TransitMapScreenState extends State<TransitMapScreen> {
                               child: Tooltip(
                                 message:
                                 'Bus ${vehicle.id}\nRoute ${vehicle.routeId}',
-                                child: const DecoratedBox(
+                                child: DecoratedBox(
                                   decoration: BoxDecoration(
-                                    color: Colors.orange,
+                                    color:
+                                    selectedRoadService ==
+                                        _RoadService.mrtFeeder
+                                        ? const Color(0xFF0F766E)
+                                        : Colors.orange,
                                     shape: BoxShape.circle,
                                   ),
-                                  child: Icon(
+                                  child: const Icon(
                                     Icons.directions_bus,
                                     color: Colors.white,
                                     size: 23,
@@ -2364,16 +2784,53 @@ class _TransitMapScreenState extends State<TransitMapScreen> {
                             FilterChip(
                               label: const Text('Rail'),
                               selected: showRail,
-                              onSelected: (value) =>
-                                  setState(() => showRail = value),
+                              onSelected: _toggleRail,
                             ),
                             const SizedBox(width: 6),
                             FilterChip(
-                              label: const Text('Bus stops'),
-                              selected: showBus,
-                              onSelected: _toggleBusStops,
+                              avatar: const Icon(
+                                Icons.directions_bus,
+                                size: 18,
+                              ),
+                              label: const Text('Bus routes & stops'),
+                              selected:
+                              selectedRoadService ==
+                                  _RoadService.rapidKlBus,
+                              selectedColor: const Color(0xFFBFDBFE),
+                              side: BorderSide(
+                                color:
+                                selectedRoadService ==
+                                    _RoadService.rapidKlBus
+                                    ? _blue
+                                    : const Color(0xFFCBD5E1),
+                                width:
+                                selectedRoadService ==
+                                    _RoadService.rapidKlBus
+                                    ? 1.5
+                                    : 1,
+                              ),
+                              onSelected: (value) => _toggleRoadService(
+                                _RoadService.rapidKlBus,
+                                value,
+                              ),
                             ),
-                            if (showBus) ...[
+                            const SizedBox(width: 6),
+                            FilterChip(
+                              avatar: const Icon(
+                                Icons.airport_shuttle,
+                                size: 18,
+                              ),
+                              label: const Text('MRT feeder'),
+                              selected:
+                              selectedRoadService ==
+                                  _RoadService.mrtFeeder,
+                              selectedColor: const Color(0xFFCFFAFE),
+                              onSelected: (value) => _toggleRoadService(
+                                _RoadService.mrtFeeder,
+                                value,
+                              ),
+                            ),
+                            if (selectedRoadService != null) ...[
                               const SizedBox(width: 6),
                               InputChip(
                                 avatar: const Icon(
@@ -2381,53 +2838,77 @@ class _TransitMapScreenState extends State<TransitMapScreen> {
                                   size: 17,
                                 ),
                                 label: Text(
-                                  selectedBusRoute?.displayName ??
-                                      (showAllBusRoutes
-                                          ? 'All bus routes'
-                                          : 'Choose route'),
+                                  selectedRoadRoute == null
+                                      ? 'Choose a '
+                                      '${selectedRoadService!.label} route'
+                                      : selectedRoadRoute!
+                                      .description
+                                      .isEmpty
+                                      ? 'Route '
+                                      '${selectedRoadRoute!.displayName}'
+                                      : 'Route '
+                                      '${selectedRoadRoute!.displayName}: '
+                                      '${selectedRoadRoute!.description}',
                                 ),
-                                selected:
-                                selectedBusRoute != null ||
-                                    showAllBusRoutes,
-                                onPressed: _chooseBusRoute,
-                                onDeleted:
-                                selectedBusRoute == null &&
-                                    !showAllBusRoutes
+                                backgroundColor: const Color(0xFFFFF7ED),
+                                selectedColor: const Color(0xFFDBEAFE),
+                                side: BorderSide(
+                                  color: selectedRoadRoute == null
+                                      ? const Color(0xFFF59E0B)
+                                      : selectedRoadService!.color,
+                                  width: 1.5,
+                                ),
+                                selected: selectedRoadRoute != null,
+                                onPressed: () => _chooseRoadRoute(
+                                  selectedRoadService!,
+                                ),
+                                onDeleted: selectedRoadRoute == null
                                     ? null
-                                    : () => setState(() {
-                                  selectedBusRoute = null;
-                                  showAllBusRoutes = false;
-                                }),
+                                    : () {
+                                  _stopVehicleRefresh();
+                                  setState(() {
+                                    selectedRoadRoute = null;
+                                    showVehicles = false;
+                                    vehicles = [];
+                                    liveError = null;
+                                  });
+                                },
                               ),
                             ],
-                            const SizedBox(width: 6),
-                            FilterChip(
-                              label: const Text('MRT feeder'),
-                              selected: showFeeder,
-                              onSelected: (value) =>
-                                  setState(() => showFeeder = value),
-                            ),
-                            const SizedBox(width: 6),
-                            FilterChip(
-                              avatar: const Icon(
-                                Icons.directions_bus,
-                                size: 17,
+                            if (selectedRoadService != null &&
+                                selectedRoadRoute != null) ...[
+                              const SizedBox(width: 6),
+                              FilterChip(
+                                avatar: const Icon(
+                                  Icons.directions_bus,
+                                  size: 17,
+                                ),
+                                label: Text(
+                                  'Live buses on '
+                                      '${selectedRoadRoute!.displayName} '
+                                      '(${filteredVehicles.length})',
+                                ),
+                                selected: showVehicles,
+                                selectedColor: const Color(0xFFFED7AA),
+                                onSelected: _toggleLiveVehicles,
                               ),
-                              label: Text(
-                                selectedBusRoute == null
-                                    ? 'Live (${vehicles.length})'
-                                    : 'Live ${selectedBusRoute!.displayName} '
-                                    '(${filteredVehicles.length})',
+                              IconButton(
+                                tooltip:
+                                'Refresh live buses on route '
+                                    '${selectedRoadRoute!.displayName}',
+                                onPressed: refreshingVehicles
+                                    ? null
+                                    : _refreshVehicles,
+                                icon: refreshingVehicles
+                                    ? const SizedBox.square(
+                                  dimension: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                                    : const Icon(Icons.refresh),
                               ),
-                              selected: showVehicles,
-                              onSelected: (value) =>
-                                  setState(() => showVehicles = value),
-                            ),
-                            IconButton(
-                              tooltip: 'Refresh live buses',
-                              onPressed: _refreshVehicles,
-                              icon: const Icon(Icons.refresh),
-                            ),
+                            ],
                           ],
                         ),
                       ),
@@ -2436,17 +2917,29 @@ class _TransitMapScreenState extends State<TransitMapScreen> {
                   Positioned(
                     right: 14,
                     bottom: 20,
-                    child: FloatingActionButton.small(
-                      heroTag: 'map_recentre',
-                      tooltip: position == null
-                          ? 'Klang Valley overview'
-                          : 'My location',
-                      onPressed: () => mapController.move(centre, 13),
-                      child: Icon(
-                        position == null
-                            ? Icons.home_work
-                            : Icons.my_location,
-                      ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        FloatingActionButton.small(
+                          heroTag: 'map_fit_stops',
+                          tooltip: 'Show all visible stops',
+                          onPressed: () => _fitStations(filteredStations),
+                          child: const Icon(Icons.zoom_out_map),
+                        ),
+                        const SizedBox(height: 10),
+                        FloatingActionButton.small(
+                          heroTag: 'map_recentre',
+                          tooltip: position == null
+                              ? 'Klang Valley overview'
+                              : 'My location',
+                          onPressed: () => mapController.move(centre, 13),
+                          child: Icon(
+                            position == null
+                                ? Icons.home_work
+                                : Icons.my_location,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   if (locationWarning != null)
@@ -2456,7 +2949,10 @@ class _TransitMapScreenState extends State<TransitMapScreen> {
                       top: 78,
                       child: _MapNotice(message: locationWarning!),
                     ),
-                  if (liveError != null)
+                  if (selectedRoadService != null &&
+                      selectedRoadRoute != null &&
+                      showVehicles &&
+                      liveError != null)
                     Positioned(
                       left: 12,
                       right: 12,
@@ -2468,6 +2964,32 @@ class _TransitMapScreenState extends State<TransitMapScreen> {
                           padding: const EdgeInsets.all(12),
                           child: Text(
                             liveError!,
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (selectedRoadService != null &&
+                      selectedRoadRoute != null &&
+                      showVehicles &&
+                      !refreshingVehicles &&
+                      liveError == null &&
+                      filteredVehicles.isEmpty)
+                    Positioned(
+                      left: 12,
+                      right: 12,
+                      bottom: 76,
+                      child: Material(
+                        color: const Color(0xFF334155),
+                        borderRadius: BorderRadius.circular(12),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Text(
+                            'No live buses are currently reported for '
+                                '${selectedRoadService!.label} Route '
+                                '${selectedRoadRoute!.displayName}. '
+                                'Its stops are still shown using the static '
+                                'GTFS dataset.',
                             style: const TextStyle(color: Colors.white),
                           ),
                         ),

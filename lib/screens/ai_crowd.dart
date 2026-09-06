@@ -22,6 +22,115 @@ DateTime? minDate,
 DateTime? maxDate,
 });
 
+// Shape returned by _computeWeekdayWeekendComparison() for the History tab's
+// Weekday vs Weekend comparison. Averages are nullable because a given
+// month filter may genuinely contain zero weekday or zero weekend records
+// (e.g. a single-day selection) — null means "no real records for this
+// group", never a hardcoded/assumed 0.
+typedef _WeekdayWeekendStats = ({
+double? weekdayAvg,
+double? weekendAvg,
+int weekdayCount,
+int weekendCount,
+});
+
+// One day-cell in the Calendar Heatmap for a given month. `ridership` is
+// null when the local dataset has no record for that date — the heatmap
+// must render that as visibly empty, never as a real 0.
+typedef _HeatmapDayCell = ({int day, DateTime date, double? ridership});
+
+// The currently tapped/selected day in the Calendar Heatmap, shown in the
+// detail line below the grid. `ridership` mirrors _HeatmapDayCell: null
+// means "no record for this date", not zero ridership.
+typedef _HeatmapSelection = ({DateTime date, double? ridership});
+
+// ── Monthly Ridership Trend line chart painter ─────────────────────────────
+// Draws a simple polyline + point markers across evenly-spaced month slots.
+// Pure presentation: takes the real per-month averages already computed by
+// _computeMonthlyTrend() and just plots them — no modelling, no synthetic
+// points. The highest/lowest indices get the same purple/red highlight
+// colors used by the Daily Totals and Weekly Pattern charts elsewhere in
+// this tab, for visual consistency.
+class _MonthlyLineChartPainter extends CustomPainter {
+  final List<double> values;
+  final int highestIndex;
+  final int lowestIndex;
+
+  _MonthlyLineChartPainter({
+    required this.values,
+    required this.highestIndex,
+    required this.lowestIndex,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (values.isEmpty) return;
+    final n = values.length;
+    final maxVal = values.reduce((a, b) => a > b ? a : b);
+    final minVal = values.reduce((a, b) => a < b ? a : b);
+    final range = (maxVal - minVal) == 0 ? 1.0 : (maxVal - minVal);
+    const topPad = 10.0;
+    const bottomPad = 10.0;
+    final chartHeight = size.height - topPad - bottomPad;
+    final slotWidth = size.width / n;
+
+    Offset pointAt(int i) {
+      final x = slotWidth * i + slotWidth / 2;
+      final normalized = (values[i] - minVal) / range;
+      final y = topPad + chartHeight - (normalized * chartHeight);
+      return Offset(x, y);
+    }
+
+    final path = Path();
+    for (int i = 0; i < n; i++) {
+      final p = pointAt(i);
+      if (i == 0) {
+        path.moveTo(p.dx, p.dy);
+      } else {
+        path.lineTo(p.dx, p.dy);
+      }
+    }
+
+    if (n > 1) {
+      final linePaint = Paint()
+        ..color = Colors.blueGrey.withValues(alpha: 0.65)
+        ..strokeWidth = 2
+        ..style = PaintingStyle.stroke
+        ..strokeJoin = StrokeJoin.round
+        ..strokeCap = StrokeCap.round;
+      canvas.drawPath(path, linePaint);
+
+      final fillPath = Path.from(path)
+        ..lineTo(pointAt(n - 1).dx, size.height)
+        ..lineTo(pointAt(0).dx, size.height)
+        ..close();
+      canvas.drawPath(fillPath, Paint()..color = const Color(0xFF4F46E5).withValues(alpha: 0.06));
+    }
+
+    for (int i = 0; i < n; i++) {
+      final p = pointAt(i);
+      final isHighest = i == highestIndex;
+      final isLowest = i == lowestIndex && lowestIndex != highestIndex;
+      final color = isHighest
+          ? const Color(0xFF4F46E5) // highest — purple, matches other History charts
+          : isLowest
+          ? const Color(0xFFDC2626) // lowest — red, matches other History charts
+          : Colors.blueGrey;
+      if (isHighest || isLowest) {
+        canvas.drawCircle(p, 7, Paint()..color = color.withValues(alpha: 0.15));
+      }
+      canvas.drawCircle(p, isHighest || isLowest ? 4.5 : 3, Paint()..color = color);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _MonthlyLineChartPainter oldDelegate) {
+    return oldDelegate.values != values ||
+        oldDelegate.highestIndex != highestIndex ||
+        oldDelegate.lowestIndex != lowestIndex;
+  }
+}
+
 // ── Type-to-search station picker ────────────────────────────────────────
 // Drop-in replacement for DropdownButtonFormField<String> when the list of
 // choices is long (station names). Lets the user either tap and scroll a
@@ -360,6 +469,13 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   int? _historyDayOfWeekFilter; // null = All, else DateTime.monday..DateTime.sunday
   final ScrollController _historyScrollController = ScrollController();
 
+  // Calendar Heatmap (still Tab 3 / History, own independent month picker —
+  // deliberately separate from _historyMonthFilter above so switching the
+  // heatmap's month never affects the Summary/Trend/Weekly/Monthly sections
+  // above it, and vice versa).
+  DateTime? _heatmapMonth; // null = default to the most recent available month
+  _HeatmapSelection? _heatmapSelectedDay; // last tapped day, null until tapped
+
   // ── Tab 4: Connections (O-D) state ──
   String? _connStation;
   List<MapEntry<String, int>>? _connTopDestinations;
@@ -565,6 +681,58 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return result;
   }
 
+  // Weekday vs Weekend comparison (Tab 3 / History, still inside the
+  // Weekly Ridership Pattern section). Fed the same `byMonth` records as
+  // _computeWeeklyPattern above — respects the month filter, deliberately
+  // ignores the day-of-week filter (that filter narrows to a single day,
+  // which would make a weekday-vs-weekend comparison meaningless). Real
+  // data only: Monday–Friday records average into weekdayAvg, Saturday–
+  // Sunday records average into weekendAvg, no modelling or fixed values.
+  _WeekdayWeekendStats _computeWeekdayWeekendComparison(
+      List<RidershipRecord> records) {
+    final weekdayValues = <num>[];
+    final weekendValues = <num>[];
+    for (final r in records) {
+      final isWeekend =
+          r.date.weekday == DateTime.saturday || r.date.weekday == DateTime.sunday;
+      (isWeekend ? weekendValues : weekdayValues).add(r.ridership);
+    }
+    return (
+    weekdayAvg: weekdayValues.isEmpty
+        ? null
+        : weekdayValues.reduce((a, b) => a + b) / weekdayValues.length,
+    weekendAvg: weekendValues.isEmpty
+        ? null
+        : weekendValues.reduce((a, b) => a + b) / weekendValues.length,
+    weekdayCount: weekdayValues.length,
+    weekendCount: weekendValues.length,
+    );
+  }
+
+  // Monthly Ridership Trend (Tab 3 / History): groups ALL of the loaded
+  // station's real records by calendar month and averages the real
+  // ridership within each month. Deliberately fed `_historyData` directly
+  // (not the month-filtered `byMonth` used elsewhere in this tab) since
+  // this chart's whole purpose is to show every available month for the
+  // selected station side by side — the existing month filter is not
+  // applied here by design. Still respects the station filter, since
+  // `_historyData` is already scoped to whichever station was loaded.
+  // Real data only — no modelling, no fixed/hardcoded ridership figures.
+  List<({DateTime month, double avg, int count})> _computeMonthlyTrend(
+      List<RidershipRecord> records) {
+    final Map<DateTime, List<num>> byMonth = {};
+    for (final r in records) {
+      final key = DateTime(r.date.year, r.date.month);
+      byMonth.putIfAbsent(key, () => []).add(r.ridership);
+    }
+    final result = byMonth.entries.map((e) {
+      final avg = e.value.reduce((a, b) => a + b) / e.value.length;
+      return (month: e.key, avg: avg, count: e.value.length);
+    }).toList()
+      ..sort((a, b) => a.month.compareTo(b.month));
+    return result;
+  }
+
   // Describes the weekly pattern above in words — names the real
   // highest/lowest average day. Presentational only.
   (String, Color, IconData) _weeklyPatternInsight(
@@ -652,6 +820,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       _historyData = data;
       _historyMonthFilter = null; // reset filter on fresh load
       _historyDayOfWeekFilter = null; // reset filter on fresh load
+      _heatmapMonth = null; // reset heatmap to default to the latest month
+      _heatmapSelectedDay = null; // clear any previously tapped day
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_historyScrollController.hasClients) {
@@ -1882,7 +2052,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   //   D. Ridership Trend (current-period vs previous-period average)
   //   E. Ridership Insight (plain-language read of the trend)
   //   F. Daily totals chart
-  //   G. Weekly Ridership Pattern (Monday–Sunday averages)
+  //   G. Weekly Ridership Pattern (Monday–Sunday averages, + Weekday vs Weekend)
+  //   H. Monthly Ridership Trend (all months for the station, line chart)
+  //   I. Calendar Heatmap (daily ridership by date, one month at a time)
   Widget _buildHistoryTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
@@ -1914,6 +2086,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     _historyData = null;
                     _historyMonthFilter = null;
                     _historyDayOfWeekFilter = null;
+                    _heatmapMonth = null;
+                    _heatmapSelectedDay = null;
                   }),
                 ),
                 const SizedBox(height: 12),
@@ -2017,7 +2191,25 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               // at the bottom of the tab (see below), not gated by the
               // day-of-week filter that `filtered` below is subject to.
               final weeklyPattern = _computeWeeklyPattern(byMonth);
-              final weeklyPatternSection = _buildWeeklyPatternSection(weeklyPattern);
+              // Same `byMonth` (month-filtered, day-of-week-filter-ignored)
+              // records feed the Weekday vs Weekend comparison below.
+              final weekdayWeekendStats = _computeWeekdayWeekendComparison(byMonth);
+              final weeklyPatternSection =
+              _buildWeeklyPatternSection(weeklyPattern, weekdayWeekendStats);
+
+              // Monthly Ridership Trend — fed the full `_historyData` for
+              // this station, NOT `byMonth`/`filtered`, so it always shows
+              // every available month regardless of the month or
+              // day-of-week filters above.
+              final monthlyTrend = _computeMonthlyTrend(_historyData!);
+              final monthlyTrendSection = _buildMonthlyTrendSection(monthlyTrend);
+
+              // Calendar Heatmap — also fed the full `_historyData` for
+              // this station (own independent month picker, `_heatmapMonth`,
+              // separate from `_historyMonthFilter` above). Defaults to the
+              // most recent available month until the user picks one.
+              final heatmapSection =
+              _buildHeatmapSection(_historyData!, months, monthNames);
 
               if (filtered.isEmpty) {
                 return Column(
@@ -2029,6 +2221,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     _emptyState('No records for the selected month / day of week.'),
                     const SizedBox(height: _sectionGap),
                     weeklyPatternSection,
+                    const SizedBox(height: _sectionGap),
+                    monthlyTrendSection,
+                    const SizedBox(height: _sectionGap),
+                    heatmapSection,
                   ],
                 );
               }
@@ -2194,6 +2390,14 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
                   // G. Weekly Ridership Pattern (Monday–Sunday averages)
                   weeklyPatternSection,
+                  const SizedBox(height: _sectionGap),
+
+                  // H. Monthly Ridership Trend (all months for this station)
+                  monthlyTrendSection,
+                  const SizedBox(height: _sectionGap),
+
+                  // I. Calendar Heatmap (daily ridership by date, one month at a time)
+                  heatmapSection,
                 ],
               );
             }),
@@ -2206,7 +2410,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   // Weekly Ridership Pattern section card (Tab 3 / History). Renders one
   // bar per day-of-week present in the real, month-filtered data, with the
   // highest/lowest day highlighted, plus a plain-language insight line.
-  Widget _buildWeeklyPatternSection(List<({int weekday, double avg, int count})> pattern) {
+  Widget _buildWeeklyPatternSection(List<({int weekday, double avg, int count})> pattern,
+      _WeekdayWeekendStats weekdayWeekendStats) {
     const dayNames = [
       'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
     ];
@@ -2270,8 +2475,170 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               ],
             ),
           ),
+          _weekdayWeekendComparisonSection(weekdayWeekendStats),
         ],
       ),
+    );
+  }
+
+  // Weekday (Mon–Fri) vs Weekend (Sat–Sun) comparison — sits inside the
+  // same Weekly Ridership Pattern card as the day-of-week bars above, using
+  // the same underlying real records (respects the month filter, ignores
+  // the day-of-week filter). Shows both averages, the real difference and
+  // percentage difference, plus a small bar chart. No hardcoded ridership.
+  Widget _weekdayWeekendComparisonSection(_WeekdayWeekendStats stats) {
+    const weekdayColor = Color(0xFF4F46E5);
+    const weekendColor = Color(0xFF16A34A);
+
+    final header = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 16),
+        Container(height: 1, color: Colors.grey.withValues(alpha: 0.15)),
+        const SizedBox(height: 16),
+        const Text(
+          'WEEKDAY VS WEEKEND',
+          style: TextStyle(
+              fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black45, letterSpacing: 0.5),
+        ),
+        const SizedBox(height: 2),
+        const Text(
+          'Monday–Friday vs Saturday–Sunday, from the same real records above for the selected month '
+              '(not affected by the day-of-week filter).',
+          style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
+        ),
+        const SizedBox(height: 12),
+      ],
+    );
+
+    // Genuinely no weekday or weekend records at all for this month filter
+    // (e.g. neither group has data) — shouldn't normally happen since the
+    // pattern above is non-empty, but handled defensively rather than
+    // assuming/hardcoding a value.
+    if (stats.weekdayCount == 0 && stats.weekendCount == 0) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          header,
+          _emptyState('No records available to compare weekdays and weekends.'),
+        ],
+      );
+    }
+
+    final weekdayAvg = stats.weekdayAvg;
+    final weekendAvg = stats.weekendAvg;
+    final maxAvg = [weekdayAvg ?? 0.0, weekendAvg ?? 0.0].reduce((a, b) => a >= b ? a : b);
+
+    // Difference / percentage difference — only meaningful when both sides
+    // actually have real data.
+    Widget diffLine;
+    if (weekdayAvg != null && weekendAvg != null) {
+      final diff = weekdayAvg - weekendAvg;
+      final higherLabel = diff >= 0 ? 'weekdays' : 'weekends';
+      final lowerAvg = diff >= 0 ? weekendAvg : weekdayAvg;
+      final diffPct = lowerAvg > 0 ? (diff.abs() / lowerAvg * 100) : 0.0;
+      diffLine = Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+        decoration: BoxDecoration(
+          color: Colors.grey.withValues(alpha: 0.06),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          diff.abs() < 0.5
+              ? 'Difference: 0/day (0.0%, essentially tied)'
+              : 'Difference: ${_formatNumber(diff.abs())}/day (${diffPct.toStringAsFixed(1)}% higher on $higherLabel)',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+        ),
+      );
+    } else {
+      // One side has no real records for the selected month — say so
+      // rather than computing a difference against a missing value.
+      final missing = weekdayAvg == null ? 'weekday' : 'weekend';
+      diffLine = Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+        decoration: BoxDecoration(
+          color: Colors.grey.withValues(alpha: 0.06),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          'No $missing records for the selected month — difference not available.',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12, color: Colors.black54, fontStyle: FontStyle.italic),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        header,
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: _compareStatBlock(
+                  'Weekday Avg (Mon–Fri)', weekdayAvg ?? 0.0, weekdayColor),
+            ),
+            Container(
+              width: 1,
+              height: 40,
+              margin: const EdgeInsets.symmetric(horizontal: 12),
+              color: Colors.grey.withValues(alpha: 0.2),
+            ),
+            Expanded(
+              child: _compareStatBlock(
+                  'Weekend Avg (Sat–Sun)', weekendAvg ?? 0.0, weekendColor),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        diffLine,
+        const SizedBox(height: 14),
+        _weekdayWeekendBarRow('Weekday', weekdayAvg ?? 0.0, maxAvg, color: weekdayColor),
+        const SizedBox(height: 10),
+        _weekdayWeekendBarRow('Weekend', weekendAvg ?? 0.0, maxAvg, color: weekendColor),
+      ],
+    );
+  }
+
+  // One bar in the Weekday vs Weekend chart — mirrors the styling of
+  // _weekdayRow / _compareBarRow used elsewhere in this tab.
+  Widget _weekdayWeekendBarRow(String label, double avg, double maxAvg, {required Color color}) {
+    final factor = maxAvg == 0 ? 0.0 : avg / maxAvg;
+    return Row(
+      children: [
+        SizedBox(
+          width: 92,
+          child: Text(
+            label,
+            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+          ),
+        ),
+        Expanded(
+          child: Container(
+            height: 14,
+            decoration:
+            BoxDecoration(color: Colors.grey.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(4)),
+            child: FractionallySizedBox(
+              alignment: Alignment.centerLeft,
+              widthFactor: factor.clamp(0.03, 1.0),
+              child: Container(decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4))),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 64,
+          child: Text(
+            '${_formatNumber(avg)}/day',
+            textAlign: TextAlign.right,
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color),
+          ),
+        ),
+      ],
     );
   }
 
@@ -2331,6 +2698,425 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           ],
         ],
       ),
+    );
+  }
+
+  // Monthly Ridership Trend section card (Tab 3 / History). Plots the real
+  // average daily ridership per calendar month for the selected station —
+  // every month present in `_historyData`, unaffected by the month or
+  // day-of-week filters used elsewhere in this tab. Also surfaces the
+  // highest/lowest months and the overall % change from the first to the
+  // last available month. Real data only — no modelling, nothing hardcoded.
+  Widget _buildMonthlyTrendSection(List<({DateTime month, double avg, int count})> trend) {
+    if (trend.isEmpty) {
+      return _sectionCard(
+        title: 'MONTHLY RIDERSHIP TREND',
+        icon: Icons.show_chart,
+        subtitle: 'Average daily ridership by month, from all real records for this station.',
+        child: _emptyState('No records available to compute a monthly trend.'),
+      );
+    }
+
+    final sorted = [...trend]..sort((a, b) => b.avg.compareTo(a.avg));
+    final highest = sorted.first;
+    final lowest = sorted.last;
+    final highestIndex = trend.indexWhere((t) => t.month == highest.month);
+    final lowestIndex = trend.indexWhere((t) => t.month == lowest.month);
+
+    // Overall change: first available month's average vs the last
+    // available month's average, in chronological order. Null (rather
+    // than 0) when there's only one month of data — nothing to compare.
+    double? overallChangePct;
+    if (trend.length >= 2 && trend.first.avg != 0) {
+      overallChangePct = ((trend.last.avg - trend.first.avg) / trend.first.avg) * 100;
+    }
+    final (changeMessage, changeColor, changeIcon) =
+    _monthlyChangeInsight(overallChangePct, trend.first.month, trend.last.month);
+
+    return _sectionCard(
+      title: 'MONTHLY RIDERSHIP TREND',
+      icon: Icons.show_chart,
+      subtitle: 'Average daily ridership by month, from all real records for this station '
+          '(not affected by the month filter).',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _monthlyTrendChart(trend, highestIndex, lowestIndex),
+          const SizedBox(height: 14),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _compareStatBlock(
+                  'Highest: ${DateFormat('MMM yyyy').format(highest.month)}',
+                  highest.avg,
+                  const Color(0xFF4F46E5),
+                ),
+              ),
+              Container(
+                width: 1,
+                height: 40,
+                margin: const EdgeInsets.symmetric(horizontal: 12),
+                color: Colors.grey.withValues(alpha: 0.2),
+              ),
+              Expanded(
+                child: _compareStatBlock(
+                  'Lowest: ${DateFormat('MMM yyyy').format(lowest.month)}',
+                  lowest.avg,
+                  const Color(0xFFDC2626),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: changeColor.withValues(alpha: 0.05),
+              border: Border.all(color: changeColor.withValues(alpha: 0.3)),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(changeIcon, size: 16, color: changeColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    changeMessage,
+                    style: TextStyle(color: changeColor, fontSize: 13, fontWeight: FontWeight.w500),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Describes the overall month-to-month change in words. Mirrors the
+  // tone/threshold style of _ridershipInsight for consistency (an increase
+  // in ridership is flagged red as "more crowding", a decrease green).
+  (String, Color, IconData) _monthlyChangeInsight(
+      double? pct, DateTime firstMonth, DateTime lastMonth) {
+    if (pct == null) {
+      return (
+      'Only one month of real data is available for this station, so an overall change can\'t be computed.',
+      Colors.blueGrey,
+      Icons.info_outline,
+      );
+    }
+    final fromLabel = DateFormat('MMM yyyy').format(firstMonth);
+    final toLabel = DateFormat('MMM yyyy').format(lastMonth);
+    if (pct > 5) {
+      return (
+      'Ridership rose ${pct.toStringAsFixed(1)}% from $fromLabel to $toLabel.',
+      Colors.red.shade700,
+      Icons.trending_up,
+      );
+    } else if (pct < -5) {
+      return (
+      'Ridership fell ${pct.abs().toStringAsFixed(1)}% from $fromLabel to $toLabel.',
+      Colors.green.shade700,
+      Icons.trending_down,
+      );
+    }
+    return (
+    'Ridership stayed roughly stable (${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%) from $fromLabel to $toLabel.',
+    Colors.blueGrey,
+    Icons.trending_flat,
+    );
+  }
+
+  // The scrollable line-chart container for Monthly Ridership Trend: fixed
+  // width per month so the chart and the month labels beneath it always
+  // line up, scrolling horizontally when there are more months than fit
+  // on screen (same visual language as the Daily Totals chart above it).
+  Widget _monthlyTrendChart(
+      List<({DateTime month, double avg, int count})> trend, int highestIndex, int lowestIndex) {
+    const slotWidth = 64.0;
+    final values = trend.map((t) => t.avg).toList();
+    final totalWidth = trend.length * slotWidth;
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SizedBox(
+          width: totalWidth < 200 ? 200 : totalWidth,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(
+                height: 120,
+                child: CustomPaint(
+                  size: Size(totalWidth < 200 ? 200 : totalWidth, 120),
+                  painter: _MonthlyLineChartPainter(
+                    values: values,
+                    highestIndex: highestIndex,
+                    lowestIndex: lowestIndex,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: trend.map((t) {
+                  return SizedBox(
+                    width: totalWidth < 200 ? 200 / trend.length : slotWidth,
+                    child: Text(
+                      DateFormat('MMM yy').format(t.month),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 10, color: Colors.black54),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Calendar Heatmap (Tab 3 / History) ──────────────────────────────────
+  // Renders one calendar-style month grid where each real day-of-data gets
+  // a filled cell whose color intensity reflects its real ridership value
+  // (min–max scaled against the other real days in that same month — a
+  // purely presentational scale, not a modelled or hardcoded one). Days
+  // with no record in the local dataset render as empty/unfilled cells,
+  // never as a ridership of 0. Has its own month picker (`_heatmapMonth`)
+  // independent of the History filters above, per the section's spec.
+
+  // Builds the day cells for one calendar month: one entry per calendar
+  // day in the month, `ridership` null where `_historyData` has no record
+  // for that date.
+  List<_HeatmapDayCell> _computeHeatmapMonthCells(
+      List<RidershipRecord> records, DateTime month) {
+    final daysInMonth = DateTime(month.year, month.month + 1, 0).day;
+    final Map<int, double> byDay = {};
+    for (final r in records) {
+      if (r.date.year == month.year && r.date.month == month.month) {
+        byDay[r.date.day] = r.ridership.toDouble();
+      }
+    }
+    return List.generate(daysInMonth, (i) {
+      final day = i + 1;
+      return (day: day, date: DateTime(month.year, month.month, day), ridership: byDay[day]);
+    });
+  }
+
+  // Real min/max ridership among the days that actually have a record this
+  // month — used only to scale color intensity, never displayed as if it
+  // were itself a computed statistic. Null when the month has no records.
+  (double, double)? _heatmapMinMax(List<_HeatmapDayCell> cells) {
+    final values = cells.where((c) => c.ridership != null).map((c) => c.ridership!).toList();
+    if (values.isEmpty) return null;
+    return (values.reduce((a, b) => a < b ? a : b), values.reduce((a, b) => a > b ? a : b));
+  }
+
+  // Maps a real ridership value to a fill color: same indigo used
+  // throughout this tab, with alpha scaled by where the value falls
+  // between this month's real min and max. Empty days are handled by the
+  // caller (they never reach this function with a null value).
+  Color _heatmapColor(double value, (double, double) minMax) {
+    final (minV, maxV) = minMax;
+    final t = (maxV == minV) ? 1.0 : ((value - minV) / (maxV - minV)).clamp(0.0, 1.0);
+    final alpha = 0.12 + t * 0.83;
+    return const Color(0xFF4F46E5).withValues(alpha: alpha);
+  }
+
+  Widget _buildHeatmapSection(
+      List<RidershipRecord> records, List<DateTime> months, List<String> monthNames) {
+    if (months.isEmpty) {
+      return _sectionCard(
+        title: 'CALENDAR HEATMAP',
+        icon: Icons.calendar_month,
+        subtitle: 'Daily ridership intensity by date, from real records for this station.',
+        child: _emptyState('No records available to build a calendar heatmap.'),
+      );
+    }
+
+    final heatmapMonth = _heatmapMonth ?? months.last;
+    final cells = _computeHeatmapMonthCells(records, heatmapMonth);
+    final minMax = _heatmapMinMax(cells);
+
+    return _sectionCard(
+      title: 'CALENDAR HEATMAP',
+      icon: Icons.calendar_month,
+      subtitle: 'Daily ridership intensity by date, from real records for this station. '
+          'Tap a day for its exact figure — this month picker is independent of the filter above.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          DropdownButtonFormField<DateTime>(
+            value: heatmapMonth,
+            isDense: true,
+            decoration: InputDecoration(
+              labelText: 'Heatmap month',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            ),
+            items: months
+                .map((m) => DropdownMenuItem(
+              value: m,
+              child: Text('${monthNames[m.month - 1]} ${m.year}'),
+            ))
+                .toList(),
+            onChanged: (val) => setState(() {
+              _heatmapMonth = val;
+              _heatmapSelectedDay = null;
+            }),
+          ),
+          const SizedBox(height: 14),
+          if (cells.every((c) => c.ridership == null)) ...[
+            _emptyState('No records for ${monthNames[heatmapMonth.month - 1]} ${heatmapMonth.year}.'),
+          ] else ...[
+            _heatmapWeekdayHeader(),
+            const SizedBox(height: 4),
+            _heatmapGrid(cells, minMax!),
+            const SizedBox(height: 12),
+            _heatmapLegend(minMax),
+          ],
+          if (_heatmapSelectedDay != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+              decoration: BoxDecoration(
+                color: Colors.grey.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                _heatmapSelectedDay!.ridership != null
+                    ? '${DateFormat('EEEE, d MMM yyyy').format(_heatmapSelectedDay!.date)} — '
+                    '${_formatNumber(_heatmapSelectedDay!.ridership!)} trips'
+                    : '${DateFormat('EEEE, d MMM yyyy').format(_heatmapSelectedDay!.date)} — no record for this date',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // Mon–Sun header row above the calendar grid.
+  Widget _heatmapWeekdayHeader() {
+    const labels = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+    return Row(
+      children: labels
+          .map((l) => Expanded(
+        child: Center(
+          child: Text(l, style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: Colors.black45)),
+        ),
+      ))
+          .toList(),
+    );
+  }
+
+  // Lays the month's real day-cells out into a 7-wide calendar grid,
+  // padding with blank leading/trailing slots so day 1 lands under the
+  // correct weekday column (week starts Monday, matching the rest of the
+  // app's day-of-week convention).
+  Widget _heatmapGrid(List<_HeatmapDayCell> cells, (double, double) minMax) {
+    final leading = cells.first.date.weekday - 1; // Monday=1 -> 0 leading blanks
+    final items = <_HeatmapDayCell?>[
+      ...List<_HeatmapDayCell?>.filled(leading, null),
+      ...cells,
+    ];
+    while (items.length % 7 != 0) {
+      items.add(null);
+    }
+    final rows = <Widget>[];
+    for (int i = 0; i < items.length; i += 7) {
+      final week = items.sublist(i, i + 7);
+      rows.add(Row(children: week.map((c) => Expanded(child: _heatmapCell(c, minMax))).toList()));
+    }
+    return Column(children: rows);
+  }
+
+  // One calendar cell. Tap shows the exact date + real ridership (or "no
+  // record") in the detail line below the grid; a Tooltip gives the same
+  // information on hover for desktop / long-press on touch devices. Days
+  // with no record render with no fill at all — never a ridership of 0.
+  Widget _heatmapCell(_HeatmapDayCell? cell, (double, double) minMax) {
+    if (cell == null) {
+      return const AspectRatio(aspectRatio: 1, child: SizedBox.shrink());
+    }
+    final hasData = cell.ridership != null;
+    final t = hasData
+        ? ((minMax.$2 == minMax.$1) ? 1.0 : ((cell.ridership! - minMax.$1) / (minMax.$2 - minMax.$1)).clamp(0.0, 1.0))
+        : 0.0;
+    final bgColor = hasData ? _heatmapColor(cell.ridership!, minMax) : Colors.grey.withValues(alpha: 0.05);
+    final textColor = hasData
+        ? (t > 0.55 ? Colors.white : Colors.black87)
+        : Colors.black26;
+
+    return AspectRatio(
+      aspectRatio: 1,
+      child: Tooltip(
+        message: hasData
+            ? '${DateFormat('d MMM yyyy').format(cell.date)}\n${_formatNumber(cell.ridership!)} trips'
+            : '${DateFormat('d MMM yyyy').format(cell.date)}\nNo record',
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => setState(() {
+            _heatmapSelectedDay = (date: cell.date, ridership: cell.ridership);
+          }),
+          child: Container(
+            margin: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              color: bgColor,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: Colors.grey.withValues(alpha: hasData ? 0.15 : 0.12)),
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              '${cell.day}',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: textColor),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Low → high color-scale legend, plus the real min/max ridership that
+  // scale is anchored to for this specific month.
+  Widget _heatmapLegend((double, double) minMax) {
+    final (minV, maxV) = minMax;
+    return Row(
+      children: [
+        const Text('Low', style: TextStyle(fontSize: 10, color: Colors.black45)),
+        const SizedBox(width: 6),
+        Container(
+          width: 72,
+          height: 10,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(4),
+            gradient: LinearGradient(
+              colors: [
+                const Color(0xFF4F46E5).withValues(alpha: 0.12),
+                const Color(0xFF4F46E5).withValues(alpha: 0.95),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        const Text('High', style: TextStyle(fontSize: 10, color: Colors.black45)),
+        const Spacer(),
+        Text(
+          '${_formatNumber(minV)}–${_formatNumber(maxV)} trips/day',
+          style: const TextStyle(fontSize: 10.5, color: Colors.black45),
+        ),
+      ],
     );
   }
 

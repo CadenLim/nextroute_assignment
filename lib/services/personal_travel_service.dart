@@ -701,4 +701,26 @@ class PersonalTravelService {
         .verifyPassword(email: email, password: oldPassword);
     await _client.auth.updateUser(UserAttributes(password: newPassword));
   }
+
+  Future<void> deleteAccount({required String confirmation}) async {
+    if (confirmation != 'DELETE') {
+      throw const FormatException('Type DELETE to confirm account deletion.');
+    }
+
+    final response = await _client.functions.invoke(
+      'delete-account',
+      body: {'confirmation': confirmation},
+    );
+    if (response.status < 200 || response.status >= 300) {
+      final data = response.data;
+      final message = data is Map ? data['error']?.toString() : null;
+      throw StateError(
+        message == null || message.isEmpty
+            ? 'Account deletion failed. Please try again.'
+            : message,
+      );
+    }
+
+    await _client.auth.signOut(scope: SignOutScope.local);
+  }
 }

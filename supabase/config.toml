@@ -1,2 +1,7 @@
 [functions.collect-analytics]
 verify_jwt = false
+
+[functions.delete-account]
+# The function verifies the bearer token with auth.getUser before using its
+# server-only service role client. This also allows browser CORS preflight.
+verify_jwt = false

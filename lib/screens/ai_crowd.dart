@@ -354,7 +354,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   // view — one grouped query for every station, no hardcoded ridership,
   // no modelling.
   bool _loadingRanking = false;
-  bool _rankingCompletedOnce = false; // true once a load has finished at least once
   String? _rankingError;
   List<({String station, double avgRidership, int totalRidership, int recordCount, DateTime? minDate, DateTime? maxDate})>?
   _rankingData;
@@ -380,7 +379,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     super.dispose();
   }
 
-  Future<void> _loadData() async {
+  Future<void> _loadData({int attempt = 0}) async {
     try {
       final stations = await _api.getStationList();
       final odStations = await _api.getStationsWithOutgoingData();
@@ -397,15 +396,34 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         _statsReady = stations.isNotEmpty;
         if (stations.isEmpty) _loadError = 'No station records found in the local dataset.';
       });
-      // Kick off the Station Crowd Ranking fetch in the background as soon
-      // as the station list is known, instead of waiting for the user to
-      // open the Ranking tab and tap the button — by the time they get
-      // there it's often already finished, or well underway.
+      // Kick off the Station Crowd Ranking fetch in the background, a
+      // short beat after the essential startup data has loaded — not
+      // immediately alongside it. Even with the ridership indexes in
+      // place, firing this alongside your other tabs' own startup queries
+      // (Journey, Stations, Profile, Analytics likely all fetch on app
+      // open too) can still exhaust Supabase's connection pool for a
+      // moment and trip a statement timeout (57014). This delay lets the
+      // initial burst of app-wide startup queries clear first.
       if (stations.isNotEmpty) {
-        _runStationRanking();
+        Future.delayed(const Duration(milliseconds: 1500), () {
+          if (mounted) _runStationRanking();
+        });
       }
     } catch (e) {
       if (!mounted) return;
+      // A statement timeout at app-startup is usually transient (a burst
+      // of concurrent queries across the app's tabs, not a real outage),
+      // so retry automatically a couple of times with backoff before
+      // surfacing an error the user has to manually retry. Non-timeout
+      // errors (bad config, RLS block, etc.) fail immediately instead —
+      // retrying those would just waste time on something that won't fix
+      // itself.
+      final isTimeout = e.toString().contains('57014') || e.toString().contains('statement timeout');
+      if (isTimeout && attempt < 2) {
+        await Future.delayed(Duration(milliseconds: 1000 * (attempt + 1)));
+        if (!mounted) return;
+        return _loadData(attempt: attempt + 1);
+      }
       // Shows the real exception instead of a canned message, so you can
       // see exactly what Supabase/PostgREST is complaining about (missing
       // view, RLS block, not-initialized client, etc.) rather than
@@ -636,7 +654,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       setState(() {
         _rankingData = results.where((r) => r.recordCount > 0).toList();
         _loadingRanking = false;
-        _rankingCompletedOnce = true;
       });
     } catch (e) {
       if (!mounted) return;
@@ -665,7 +682,21 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
-            child: Text(_loadError!, textAlign: TextAlign.center),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(_loadError!, textAlign: TextAlign.center),
+                const SizedBox(height: 16),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    setState(() => _loadError = null);
+                    _loadData();
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Retry'),
+                ),
+              ],
+            ),
           ),
         ),
       );
@@ -2421,9 +2452,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   // station). No hardcoded ridership, no modelling.
   // Sections (mirrors the other tabs' pattern):
   //   A. Load control
-  //   B. Ranking insight (busiest / least-busy station, in plain language)
-  //   C. Top 5 busiest stations
-  //   D. Top 5 least-busy stations
+  //   B. Top 5 busiest stations
+  //   C. Top 5 least-busy stations
+  //   D. Ranking insight (busiest / least-busy station, in plain language)
 
   // Real earliest–latest date across every station's data (from the
   // min_date/max_date the ranking query already returns per station) —
@@ -2467,49 +2498,30 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               style: const TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
             ),
           ],
+          const SizedBox(height: 6),
+          // Network average — a simple line, not a card. Real value from
+          // Supabase's "network_average" view (same one the Crowd/Peak
+          // tabs already use), which is also what every "× network
+          // average" figure below is computed against.
+          Text(
+            'Network average: ${_formatNumber(_networkAverage)}/day',
+            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: Colors.black54),
+          ),
           const SizedBox(height: _sectionGap),
 
-          // A. Network-wide ranking header — auto-loads in the background
-          // (kicked off as soon as the station list is ready), so there's
-          // no "press Load to get output" step; a small icon button just
-          // lets you manually re-pull the latest data.
-          _sectionCard(
-            title: 'NETWORK-WIDE RANKING',
-            icon: Icons.leaderboard,
-            subtitle: 'Typical daily ridership for every station on the network.',
-            child: Row(
+          if (_loadingRanking && _rankingData == null) ...[
+            Row(
               children: [
-                Expanded(
-                  child: _loadingRanking
-                      ? Row(
-                    children: [
-                      const SizedBox(
-                          width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5))),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          !_rankingCompletedOnce ? 'Loading ranking…' : 'Refreshing ranking…',
-                          style: const TextStyle(fontSize: 12.5, color: Colors.black54),
-                        ),
-                      ),
-                    ],
-                  )
-                      : Text(
-                    _rankingData != null ? 'Up to date.' : 'Not loaded yet.',
-                    style: const TextStyle(fontSize: 12.5, color: Colors.black54),
-                  ),
-                ),
-                IconButton(
-                  onPressed: _loadingRanking ? null : () => _runStationRanking(forceRefresh: true),
-                  icon: const Icon(Icons.refresh, color: Color(0xFF4F46E5)),
-                  tooltip: 'Refresh ranking',
-                ),
+                const SizedBox(
+                    width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5))),
+                const SizedBox(width: 10),
+                const Text('Loading ranking…', style: TextStyle(fontSize: 12.5, color: Colors.black54)),
               ],
             ),
-          ),
+            const SizedBox(height: _sectionGap),
+          ],
 
           if (_rankingError != null) ...[
-            const SizedBox(height: _sectionGap),
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(_sectionCardPadding),
@@ -2520,34 +2532,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               ),
               child: Text(_rankingError!, style: const TextStyle(fontSize: 12, color: Colors.black87)),
             ),
+            const SizedBox(height: _sectionGap),
           ],
 
-          if (_rankingData != null) ...[
-            const SizedBox(height: _sectionGap),
-            if (_loadingRanking) ...[
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                decoration: BoxDecoration(
-                  color: Colors.blueGrey.withValues(alpha: 0.06),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  children: [
-                    const SizedBox(
-                        width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blueGrey)),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Refreshing in the background — the ranking below is the last completed result and won\'t change until the refresh finishes.',
-                        style: const TextStyle(fontSize: 11, color: Colors.black54, fontStyle: FontStyle.italic),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: _sectionGap),
-            ],
+          if (_rankingData != null)
             Builder(builder: (context) {
               if (_rankingData!.isEmpty) {
                 return _emptyState('No ridership records found for any station.');
@@ -2556,58 +2544,19 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               final sortedDesc = [..._rankingData!]..sort((a, b) => b.avgRidership.compareTo(a.avgRidership));
               final busiest = sortedDesc.take(5).toList();
               final leastBusy = sortedDesc.reversed.take(5).toList();
-              final top = sortedDesc.first;
-              final bottom = sortedDesc.last;
-              const accent = Color(0xFF4F46E5);
               // Real "X.XX× network average" comparison — station avg ÷
               // _networkAverage, both sourced from Supabase. Guarded
               // against a zero network average rather than dividing by it.
               double vsNetworkAvg(double stationAvg) =>
                   _networkAverage > 0 ? stationAvg / _networkAverage : 0.0;
-              final topVsAvg = vsNetworkAvg(top.avgRidership);
-              final bottomVsAvg = vsNetworkAvg(bottom.avgRidership);
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // B. Ranking insight
-                  _sectionCard(
-                    title: 'RANKING INSIGHT',
-                    icon: Icons.insights,
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: accent.withValues(alpha: 0.05),
-                        border: Border.all(color: accent.withValues(alpha: 0.3)),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Icon(Icons.lightbulb_outline, size: 16, color: accent),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Busiest station: ${top.station} (${top.avgRidership.round()} avg trips/day, '
-                                  '${topVsAvg.toStringAsFixed(2)}× the network average). '
-                                  'Least-busy station: ${bottom.station} (${bottom.avgRidership.round()} avg trips/day, '
-                                  '${bottomVsAvg.toStringAsFixed(2)}× the network average).',
-                              style: const TextStyle(color: accent, fontSize: 13, fontWeight: FontWeight.w500),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: _sectionGap),
-
-                  // C. Top 5 busiest stations
+                  // A. Top 5 busiest stations
                   _sectionCard(
                     title: 'TOP 5 BUSIEST STATIONS',
                     icon: Icons.trending_up,
-                    subtitle:
-                    'Ranked by typical daily ridership vs the network average of ${_networkAverage.round()}/day.',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: busiest.asMap().entries.map((entry) {
@@ -2619,12 +2568,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   ),
                   const SizedBox(height: _sectionGap),
 
-                  // D. Top 5 least-busy stations
+                  // B. Top 5 least-busy stations
                   _sectionCard(
                     title: 'TOP 5 LEAST-BUSY STATIONS',
                     icon: Icons.trending_down,
-                    subtitle:
-                    'Ranked by typical daily ridership vs the network average of ${_networkAverage.round()}/day.',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: leastBusy.asMap().entries.map((entry) {
@@ -2637,7 +2584,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 ],
               );
             }),
-          ],
         ],
       ),
     );
@@ -2682,7 +2628,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               Text('${_formatNumber(avgRidership)}/day',
                   style: TextStyle(fontSize: isTop ? 13 : 12, fontWeight: FontWeight.bold, color: isTop ? color : Colors.black87)),
               const SizedBox(height: 1),
-              Text('${vsNetworkAvg.toStringAsFixed(2)}× avg',
+              Text('${vsNetworkAvg.toStringAsFixed(2)}× network average',
                   style: TextStyle(fontSize: 10, color: isTop ? color : Colors.black45)),
             ],
           ),

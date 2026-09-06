@@ -130,10 +130,10 @@ class _NotificationPreferencesScreenState
                 SwitchListTile(
                   contentPadding: const EdgeInsets.symmetric(horizontal: 8),
                   secondary: const Icon(Icons.notifications_active_outlined),
-                  title: const Text('Android push notifications'),
+                  title: const Text('Android device notifications'),
                   subtitle: Text(
                     _pushService.isSupported
-                        ? 'Shows new enabled alerts while NextRoute is running.'
+                        ? 'Shows new enabled alerts while NextRoute is running. Background delivery requires future FCM setup.'
                         : 'Android only; the in-app inbox works here.',
                   ),
                   value:
@@ -159,14 +159,14 @@ class _NotificationPreferencesScreenState
                 ),
                 _toggle(
                   'Delay alerts',
-                  'Received delay notices; no GPS delay calculation.',
+                  'Publisher notices and qualified NextRoute schedule estimates.',
                   Icons.schedule,
                   preferences.delayAlertsEnabled,
                   (value) => preferences.copyWith(delayAlertsEnabled: value),
                 ),
                 _toggle(
                   'Congestion alerts',
-                  'Alerts from reported vehicle congestion levels.',
+                  'Possible slow movement estimated from repeated fresh GPS observations.',
                   Icons.traffic,
                   preferences.crowdAlertsEnabled,
                   (value) => preferences.copyWith(crowdAlertsEnabled: value),

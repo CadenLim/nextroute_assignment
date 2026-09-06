@@ -1,8 +1,10 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/notification_service.dart';
+import '../services/api_service.dart';
 import '../services/personal_travel_service.dart';
 import 'auth_screen.dart';
 import 'favourite_routes.dart';
@@ -18,14 +20,18 @@ class PersonalTravelScreen extends StatefulWidget {
     this.service,
     this.imagePicker,
     this.savedRoutesRepository,
+    this.savedPlacesRepository,
     this.dailyCommuteService,
+    this.smartRoutineService,
     this.onOpenJourneyPlanning,
   });
 
   final PersonalTravelService? service;
   final ImagePicker? imagePicker;
   final SavedRoutesRepository? savedRoutesRepository;
+  final SavedPlacesRepository? savedPlacesRepository;
   final DailyCommuteService? dailyCommuteService;
+  final SmartRoutineService? smartRoutineService;
   final VoidCallback? onOpenJourneyPlanning;
 
   @override
@@ -42,10 +48,12 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
   late final ImagePicker _imagePicker;
   late final SavedRoutesRepository _savedRoutesRepository;
   DailyCommuteService? _dailyCommuteService;
+  late final SmartRoutineService _smartRoutineService;
   _ProfilePage _page = _ProfilePage.dashboard;
   _HistoryFilter _historyFilter = _HistoryFilter.all;
   bool _isUploadingAvatar = false;
   bool _isLoadingHistory = true;
+  bool _isLoadingDailyCommute = true;
   String _displayName = 'Loading...';
   String _email = '';
   String _phoneNumber = '';
@@ -54,7 +62,9 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
   String? _avatarUrl;
   DateTime? _memberSince;
   List<TravelHistoryEntry> _history = const [];
-  DailyCommute? _dailyCommute;
+  List<DailyCommute> _dailyCommutes = const [];
+  String? _dismissedRoutineKey;
+  bool _isPreparingRoutine = false;
 
   @override
   void initState() {
@@ -66,6 +76,9 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
     _dailyCommuteService =
         widget.dailyCommuteService ??
         (widget.service == null ? DailyCommuteService() : null);
+    _smartRoutineService =
+        widget.smartRoutineService ??
+        SmartRoutineService(_savedRoutesRepository);
     _loadProfile();
     _loadSavedRoutes();
     _loadHistory();
@@ -73,13 +86,27 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
   }
 
   Future<void> _loadDailyCommute() async {
+    _isLoadingDailyCommute = true;
     final service = _dailyCommuteService;
-    if (service == null) return;
+    if (service == null) {
+      _isLoadingDailyCommute = false;
+      return;
+    }
     try {
-      final commute = await service.load();
-      if (mounted) setState(() => _dailyCommute = commute);
+      final commutes = await service.loadAll();
+      if (mounted) {
+        setState(() {
+          _dailyCommutes = commutes;
+          _isLoadingDailyCommute = false;
+        });
+      }
     } catch (_) {
-      if (mounted) setState(() => _dailyCommute = null);
+      if (mounted) {
+        setState(() {
+          _dailyCommutes = const [];
+          _isLoadingDailyCommute = false;
+        });
+      }
     }
   }
 
@@ -100,6 +127,61 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
     if (!mounted) return;
     await _loadDailyCommute();
     await _loadSavedRoutes();
+  }
+
+  RoutineSuggestion? get _routineSuggestion {
+    if (_isLoadingHistory || _isLoadingDailyCommute) return null;
+    final suggestion = SmartRoutineService.detect(
+      history: _history,
+      configuredCommutes: _dailyCommutes
+          .map(
+            (commute) => DailyCommuteRoute(
+              origin: commute.origin,
+              destination: commute.destination,
+            ),
+          )
+          .toList(),
+    );
+    return suggestion?.routeKey == _dismissedRoutineKey ? null : suggestion;
+  }
+
+  Future<void> _useRoutineSuggestion(RoutineSuggestion suggestion) async {
+    if (_isPreparingRoutine) return;
+    setState(() => _isPreparingRoutine = true);
+    try {
+      final route = await _smartRoutineService.findOrCreateFavourite(
+        suggestion,
+      );
+      if (!mounted) return;
+      await Navigator.push<DailyCommute>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => DailyCommuteSettingsScreen(
+            service: _dailyCommuteService,
+            savedRoutesRepository: _savedRoutesRepository,
+            initialRoute: route,
+            initialActiveDays: suggestion.commonWeekdays,
+          ),
+        ),
+      );
+      if (!mounted) return;
+      await Future.wait([
+        _loadDailyCommute(),
+        _loadSavedRoutes(),
+        _loadHistory(),
+      ]);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_routineErrorMessage(error)),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isPreparingRoutine = false);
+    }
   }
 
   Future<void> _loadProfile({String? confirmedEmail}) async {
@@ -186,6 +268,33 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
       return;
     }
     if (route != null && mounted) await _openJourney(route);
+  }
+
+  Future<void> _openSavedPlaces() async {
+    final repository =
+        widget.savedPlacesRepository ?? SupabaseSavedPlacesRepository();
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SavedPlacesScreen(repository: repository),
+      ),
+    );
+  }
+
+  Future<void> _openJourneyPlanning() async {
+    final onOpenJourneyPlanning = widget.onOpenJourneyPlanning;
+    if (onOpenJourneyPlanning != null) {
+      onOpenJourneyPlanning();
+      return;
+    }
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (_) => const JourneyPlanningScreen()),
+    );
+    if (mounted) {
+      await _loadSavedRoutes();
+      await _loadHistory();
+    }
   }
 
   Future<void> _openJourney(SavedRoute route) async {
@@ -287,6 +396,7 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
   Widget _buildDashboard() {
     final firstName = _displayName.trim().split(RegExp(r'\s+')).first;
     final recent = _history.isEmpty ? null : _history.first;
+    final routineSuggestion = _routineSuggestion;
     return RefreshIndicator(
       onRefresh: () async {
         await Future.wait([
@@ -302,7 +412,7 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
           SliverToBoxAdapter(
             child: Container(
               color: _blue,
-              padding: const EdgeInsets.fromLTRB(18, 12, 18, 20),
+              padding: const EdgeInsets.fromLTRB(18, 14, 18, 22),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -315,7 +425,11 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
                       ),
                       const Text(
                         'Home',
-                        style: TextStyle(color: Colors.white, fontSize: 12),
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                       const Spacer(),
                       InkWell(
@@ -327,17 +441,21 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 16),
                   const Text(
                     'Dashboard',
-                    style: TextStyle(color: Color(0xFFD9E5FF), fontSize: 12),
+                    style: TextStyle(
+                      color: Color(0xFFD9E5FF),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                   const SizedBox(height: 2),
                   Text(
                     '${_greeting()}, ${firstName == 'Loading...' ? 'there' : firstName} 👋',
                     style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 23,
+                      fontSize: 24,
                       fontWeight: FontWeight.w800,
                     ),
                   ),
@@ -346,22 +464,28 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
             ),
           ),
           SliverPadding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 14, 24),
+            padding: const EdgeInsets.fromLTRB(14, 16, 14, 28),
             sliver: SliverList.list(
               children: [
-                _sectionLabel("TODAY'S COMMUTE"),
-                const SizedBox(height: 7),
+                _sectionLabel('NEXT COMMUTE'),
+                const SizedBox(height: 8),
                 _commuteCard(),
-                const SizedBox(height: 12),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: _reminderCard()),
-                    const SizedBox(width: 10),
-                    Expanded(child: _recentTripCard(recent)),
-                  ],
+                if (routineSuggestion != null) ...[
+                  const SizedBox(height: 16),
+                  _smartRoutineCard(routineSuggestion),
+                ],
+                const SizedBox(height: 16),
+                IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(child: _reminderCard()),
+                      const SizedBox(width: 10),
+                      Expanded(child: _recentTripCard(recent)),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 17),
+                const SizedBox(height: 20),
                 _sectionLabel('QUICK ACCESS'),
                 const SizedBox(height: 8),
                 GridView.count(
@@ -370,7 +494,7 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
                   physics: const NeverScrollableScrollPhysics(),
                   mainAxisSpacing: 10,
                   crossAxisSpacing: 10,
-                  childAspectRatio: 2.15,
+                  childAspectRatio: 2.55,
                   children: [
                     _quickAccessCard(
                       key: const Key('open-my-profile'),
@@ -404,6 +528,22 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
                       iconBackground: const Color(0xFFFFF2DE),
                       label: 'Smart Reminders',
                       onTap: _openDailyCommuteSettings,
+                    ),
+                    _quickAccessCard(
+                      key: const Key('open-saved-places'),
+                      icon: Icons.bookmark_border_rounded,
+                      iconColor: const Color(0xFF16A085),
+                      iconBackground: const Color(0xFFE7F8F3),
+                      label: 'Saved Places',
+                      onTap: _openSavedPlaces,
+                    ),
+                    _quickAccessCard(
+                      key: const Key('open-journey-planning'),
+                      icon: Icons.route_rounded,
+                      iconColor: _navy,
+                      iconBackground: const Color(0xFFE8EEFA),
+                      label: 'Plan Journey',
+                      onTap: _openJourneyPlanning,
                     ),
                   ],
                 ),
@@ -760,109 +900,223 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
   }
 
   Widget _commuteCard() {
-    final commute = _dailyCommute;
+    final commute = _dashboardCommute;
     return _surfaceCard(
       onTap: _openDailyCommuteSettings,
-      padding: const EdgeInsets.all(13),
-      child: Row(
-        children: [
-          _softIcon(
-            Icons.directions_transit_rounded,
-            _blue,
-            const Color(0xFFEAF2FF),
-          ),
-          const SizedBox(width: 11),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.all(16),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 58),
+        child: Row(
+          children: [
+            _softIcon(
+              Icons.directions_transit_rounded,
+              _blue,
+              const Color(0xFFEAF2FF),
+              size: 42,
+              iconSize: 22,
+            ),
+            const SizedBox(width: 13),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    commute == null
+                        ? 'Set up your Daily Commute'
+                        : '${commute.origin} → ${commute.destination}',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFF172033),
+                      fontSize: 15,
+                      height: 1.2,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 7),
+                  Text(
+                    commute == null
+                        ? 'Choose a favourite route and arrival time'
+                        : '${commute.estimatedDurationMinutes} min  •  ${_activeDaysLabel(commute.activeDays)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFF718096),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+            Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  commute == null
-                      ? 'Set up your Daily Commute'
-                      : '${commute.origin} → ${commute.destination}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                  commute == null ? 'SET UP' : 'LEAVE BY',
                   style: const TextStyle(
-                    fontSize: 13,
+                    color: Color(0xFF8290A5),
+                    fontSize: 9.5,
                     fontWeight: FontWeight.w800,
+                    letterSpacing: 0.35,
                   ),
                 ),
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 Text(
                   commute == null
-                      ? 'Choose a favourite route and arrival time'
-                      : '${commute.estimatedDurationMinutes} min · ${_activeDaysLabel(commute.activeDays)}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                      ? 'Commute'
+                      : _formatMinutes(commute.recommendedDepartureMinutes),
                   style: const TextStyle(
-                    color: Color(0xFF8A94A6),
-                    fontSize: 10,
+                    color: _navy,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w900,
                   ),
                 ),
               ],
             ),
-          ),
-          const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _reminderCard() {
+    final next = _nextReminder;
+    final commute = next?.commute;
+    final nextReminder = next?.time;
+    return _surfaceCard(
+      onTap: _openDailyCommuteSettings,
+      padding: const EdgeInsets.all(13),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Text(
-                commute == null
-                    ? 'Set up'
-                    : _formatMinutes(commute.recommendedDepartureMinutes),
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                ),
+              _softIcon(
+                Icons.notifications_none_rounded,
+                const Color(0xFFE88B17),
+                const Color(0xFFFFF2DE),
+                size: 31,
+                iconSize: 18,
               ),
-              const SizedBox(height: 4),
-              Text(
-                commute == null ? 'commute' : 'leave by',
-                style: const TextStyle(color: Color(0xFF9BA6B7), fontSize: 9),
-              ),
+              const SizedBox(width: 8),
+              Expanded(child: _sectionLabel('NEXT REMINDER')),
             ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            commute == null
+                ? 'Set up commute'
+                : nextReminder == null
+                ? 'No reminder scheduled'
+                : '${_weekdayName(nextReminder.weekday)} ${_formatMinutes(nextReminder.hour * 60 + nextReminder.minute)}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFF172033),
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            commute == null
+                ? 'Tap to configure'
+                : nextReminder == null
+                ? (commute.reminderEnabled
+                      ? 'Choose at least one active day'
+                      : 'Reminder is turned off')
+                : '${commute.origin} → ${commute.destination}\n${commute.reminderMinutesBefore} min before departure',
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFF718096),
+              fontSize: 11,
+              height: 1.4,
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _reminderCard() {
-    final commute = _dailyCommute;
+  Widget _smartRoutineCard(RoutineSuggestion suggestion) {
     return _surfaceCard(
-      onTap: _openDailyCommuteSettings,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _sectionLabel('NEXT REMINDER'),
-          const SizedBox(height: 10),
-          _softIcon(
-            Icons.notifications_none_rounded,
-            const Color(0xFFE88B17),
-            const Color(0xFFFFF2DE),
+          Row(
+            children: [
+              _softIcon(
+                Icons.auto_awesome_rounded,
+                _blue,
+                const Color(0xFFEAF2FF),
+              ),
+              const SizedBox(width: 9),
+              Expanded(child: _sectionLabel('SMART ROUTINE SUGGESTION')),
+            ],
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'We noticed you frequently travel',
+            style: TextStyle(color: Color(0xFF64748B), fontSize: 12),
+          ),
+          const SizedBox(height: 7),
+          Text(
+            '${suggestion.origin}\n→\n${suggestion.destination}',
+            style: const TextStyle(
+              color: _navy,
+              fontSize: 15,
+              height: 1.35,
+              fontWeight: FontWeight.w800,
+            ),
           ),
           const SizedBox(height: 9),
           Text(
-            commute == null
-                ? 'Set up commute'
-                : commute.reminderEnabled
-                ? '${commute.reminderMinutesBefore} min before'
-                : 'Reminder OFF',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
+            '${suggestion.tripCount} trips in the last 30 days',
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
           ),
-          const SizedBox(height: 3),
-          Text(
-            commute == null
-                ? 'Tap to configure'
-                : '${_activeDaysLabel(commute.activeDays)}\nArrive ${_formatMinutes(commute.arriveByMinutes)}',
-            style: const TextStyle(
-              color: Color(0xFF8290A5),
-              fontSize: 10,
-              height: 1.35,
+          if (suggestion.commonWeekdays.isNotEmpty) ...[
+            const SizedBox(height: 3),
+            Text(
+              'Frequently travelled on ${_activeDaysLabel(suggestion.commonWeekdays)}',
+              style: const TextStyle(color: Color(0xFF8290A5), fontSize: 11),
             ),
+          ],
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton(
+                  key: const Key('set-routine-as-commute'),
+                  onPressed: _isPreparingRoutine
+                      ? null
+                      : () => _useRoutineSuggestion(suggestion),
+                  style: FilledButton.styleFrom(backgroundColor: _blue),
+                  child: _isPreparingRoutine
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text('Set as Daily Commute'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton(
+                key: const Key('dismiss-routine-suggestion'),
+                onPressed: () =>
+                    setState(() => _dismissedRoutineKey = suggestion.routeKey),
+                child: const Text('Dismiss'),
+              ),
+            ],
           ),
         ],
       ),
@@ -872,36 +1126,47 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
   Widget _recentTripCard(TravelHistoryEntry? trip) {
     return _surfaceCard(
       onTap: () => setState(() => _page = _ProfilePage.history),
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(13),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _sectionLabel('RECENT TRIP'),
-          const SizedBox(height: 10),
-          _softIcon(
-            Icons.history_rounded,
-            const Color(0xFF8056E8),
-            const Color(0xFFF0EAFF),
+          Row(
+            children: [
+              _softIcon(
+                Icons.history_rounded,
+                const Color(0xFF8056E8),
+                const Color(0xFFF0EAFF),
+                size: 31,
+                iconSize: 18,
+              ),
+              const SizedBox(width: 8),
+              Expanded(child: _sectionLabel('RECENT TRIP')),
+            ],
           ),
-          const SizedBox(height: 9),
+          const SizedBox(height: 12),
           Text(
             trip == null
                 ? 'No recent trips'
                 : '${trip.origin} → ${trip.destination}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
+            style: const TextStyle(
+              color: Color(0xFF172033),
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+            ),
           ),
-          const SizedBox(height: 3),
+          const SizedBox(height: 5),
           Text(
             trip == null
                 ? 'Plan a journey to begin'
                 : 'RM ${trip.fare.toStringAsFixed(2)}\n${_friendlyRecentDate(trip.createdAt)}',
             maxLines: 2,
+            overflow: TextOverflow.ellipsis,
             style: const TextStyle(
-              color: Color(0xFF8290A5),
-              fontSize: 10,
-              height: 1.35,
+              color: Color(0xFF718096),
+              fontSize: 11,
+              height: 1.4,
             ),
           ),
         ],
@@ -920,26 +1185,31 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
     return _surfaceCard(
       key: key,
       onTap: onTap,
-      padding: const EdgeInsets.fromLTRB(11, 9, 11, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.start,
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+      child: Row(
         children: [
           Container(
-            width: 29,
-            height: 29,
+            width: 36,
+            height: 36,
             decoration: BoxDecoration(
               color: iconBackground,
-              borderRadius: BorderRadius.circular(9),
+              borderRadius: BorderRadius.circular(11),
             ),
-            child: Icon(icon, color: iconColor, size: 17),
+            child: Icon(icon, color: iconColor, size: 21),
           ),
-          const Spacer(),
-          Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Color(0xFF263044),
+                fontSize: 12,
+                height: 1.15,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
           ),
         ],
       ),
@@ -973,15 +1243,21 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
     );
   }
 
-  Widget _softIcon(IconData icon, Color color, Color background) {
+  Widget _softIcon(
+    IconData icon,
+    Color color,
+    Color background, {
+    double size = 34,
+    double iconSize = 19,
+  }) {
     return Container(
-      width: 34,
-      height: 34,
+      width: size,
+      height: size,
       decoration: BoxDecoration(
         color: background,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(size * 0.3),
       ),
-      child: Icon(icon, color: color, size: 19),
+      child: Icon(icon, color: color, size: iconSize),
     );
   }
 
@@ -1173,9 +1449,9 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
       text,
       style: const TextStyle(
         color: Color(0xFF8290A5),
-        fontSize: 10,
+        fontSize: 11,
         fontWeight: FontWeight.w800,
-        letterSpacing: 0.45,
+        letterSpacing: 0.5,
       ),
     );
   }
@@ -1349,7 +1625,30 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
     return 'Good evening';
   }
 
-  int _activeReminderCount() => _dailyCommute == null ? 0 : 1;
+  String _routineErrorMessage(Object error) => error
+      .toString()
+      .replaceFirst('Exception: ', '')
+      .replaceFirst('Bad state: ', '')
+      .replaceFirst('Invalid argument(s): ', '');
+
+  int _activeReminderCount() =>
+      _dailyCommutes.where((commute) => commute.reminderEnabled).length;
+
+  UpcomingDailyCommuteReminder? get _nextReminder =>
+      DailyCommuteService.nextReminder(_dailyCommutes, DateTime.now());
+
+  DailyCommute? get _dashboardCommute =>
+      _nextReminder?.commute ?? _dailyCommutes.firstOrNull;
+
+  String _weekdayName(int weekday) => const [
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Saturday',
+    'Sunday',
+  ][weekday - 1];
 
   String _activeDaysLabel(Set<int> days) {
     const short = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -1392,6 +1691,324 @@ class _DragHandle extends StatelessWidget {
   }
 }
 
+class SavedPlacesScreen extends StatefulWidget {
+  const SavedPlacesScreen({
+    super.key,
+    required this.repository,
+    this.apiService,
+  });
+
+  final SavedPlacesRepository repository;
+  final ApiService? apiService;
+
+  @override
+  State<SavedPlacesScreen> createState() => _SavedPlacesScreenState();
+}
+
+class _SavedPlacesScreenState extends State<SavedPlacesScreen> {
+  static const _navy = Color(0xFF173A7A);
+  static const _blue = Color(0xFF2862E9);
+  static const _background = Color(0xFFF3F6FA);
+  late final ApiService _apiService;
+  Map<SavedPlaceType, SavedPlace> _places = const {};
+  List<StationModel> _stations = const [];
+  SavedPlaceType? _savingType;
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _apiService = widget.apiService ?? ApiService();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final results = await Future.wait<dynamic>([
+        widget.repository.load(),
+        _apiService.loadAllStations(),
+      ]);
+      final places = results[0] as List<SavedPlace>;
+      if (!mounted) return;
+      setState(() {
+        _places = {for (final place in places) place.type: place};
+        _stations = results[1] as List<StationModel>;
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = _message(error);
+      });
+    }
+  }
+
+  Future<void> _setPlace(SavedPlaceType type) async {
+    var query = '';
+    final station = await showModalBottomSheet<StationModel>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          final filtered = _stations.where((station) {
+            final needle = query.trim().toLowerCase();
+            return needle.isEmpty ||
+                station.name.toLowerCase().contains(needle) ||
+                station.lines.join(' ').toLowerCase().contains(needle);
+          }).toList();
+          return FractionallySizedBox(
+            heightFactor: .82,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Set ${type.label}',
+                    style: const TextStyle(
+                      fontSize: 19,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    key: const Key('saved-place-search'),
+                    autofocus: true,
+                    decoration: InputDecoration(
+                      hintText: 'Search stations or stops',
+                      prefixIcon: const Icon(Icons.search),
+                      filled: true,
+                      fillColor: const Color(0xFFF3F6FA),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                    onChanged: (value) => setSheetState(() => query = value),
+                  ),
+                  const SizedBox(height: 10),
+                  Expanded(
+                    child: filtered.isEmpty
+                        ? const Center(child: Text('No matching station'))
+                        : ListView.separated(
+                            itemCount: filtered.length,
+                            separatorBuilder: (_, _) =>
+                                const Divider(height: 1),
+                            itemBuilder: (context, index) {
+                              final station = filtered[index];
+                              return ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                leading: const CircleAvatar(
+                                  backgroundColor: Color(0xFFEAF2FF),
+                                  child: Icon(
+                                    Icons.place_outlined,
+                                    color: _blue,
+                                  ),
+                                ),
+                                title: Text(
+                                  station.name,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                subtitle: station.lines.isEmpty
+                                    ? null
+                                    : Text(station.lines.join(' • ')),
+                                onTap: () =>
+                                    Navigator.pop(sheetContext, station),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    if (station == null || !mounted) return;
+    setState(() => _savingType = type);
+    try {
+      final saved = await widget.repository.upsert(
+        SavedPlace(type: type, station: station),
+      );
+      if (mounted) {
+        setState(() => _places = {..._places, type: saved});
+      }
+    } catch (error) {
+      if (mounted) _showError(error);
+    } finally {
+      if (mounted) setState(() => _savingType = null);
+    }
+  }
+
+  Future<void> _removePlace(SavedPlaceType type) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Remove ${type.label}?'),
+        content: const Text('You can add this saved place again at any time.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _savingType = type);
+    try {
+      await widget.repository.delete(type);
+      if (mounted) {
+        final updated = Map<SavedPlaceType, SavedPlace>.from(_places)
+          ..remove(type);
+        setState(() => _places = updated);
+      }
+    } catch (error) {
+      if (mounted) _showError(error);
+    } finally {
+      if (mounted) setState(() => _savingType = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _background,
+      appBar: AppBar(
+        title: const Text(
+          'Saved Places',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
+        ),
+        foregroundColor: Colors.white,
+        backgroundColor: _navy,
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  const Text(
+                    'SAVED PLACES',
+                    style: TextStyle(
+                      color: Color(0xFF8290A5),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: .5,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  for (final type in SavedPlaceType.values) ...[
+                    _placeCard(type),
+                    const SizedBox(height: 10),
+                  ],
+                  if (_error != null)
+                    Text(_error!, style: const TextStyle(color: Colors.red)),
+                ],
+              ),
+            ),
+    );
+  }
+
+  Widget _placeCard(SavedPlaceType type) {
+    final place = _places[type];
+    final saving = _savingType == type;
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(15),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+          borderRadius: BorderRadius.circular(15),
+        ),
+        child: Row(
+          children: [
+            CircleAvatar(
+              backgroundColor: const Color(0xFFEAF2FF),
+              child: Icon(_placeIcon(type), color: _blue),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    type.label,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    place?.station.name ?? 'Not set',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Color(0xFF64748B)),
+                  ),
+                ],
+              ),
+            ),
+            if (saving)
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            else ...[
+              TextButton(
+                key: Key('set-saved-place-${type.databaseValue}'),
+                onPressed: () => _setPlace(type),
+                child: Text(place == null ? 'Add' : 'Edit'),
+              ),
+              if (place != null)
+                IconButton(
+                  tooltip: 'Remove ${type.label}',
+                  onPressed: () => _removePlace(type),
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    color: Color(0xFFEF4E5B),
+                  ),
+                ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData _placeIcon(SavedPlaceType type) => switch (type) {
+    SavedPlaceType.home => Icons.home_outlined,
+    SavedPlaceType.university => Icons.school_outlined,
+    SavedPlaceType.work => Icons.work_outline,
+  };
+
+  void _showError(Object error) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(_message(error)), backgroundColor: Colors.red),
+    );
+  }
+
+  static String _message(Object error) => error
+      .toString()
+      .replaceFirst('Exception: ', '')
+      .replaceFirst('Bad state: ', '')
+      .replaceFirst('Invalid argument(s): ', '');
+}
+
 // -----------------------------------------------------------------------------
 // Daily Commute settings and overview
 // -----------------------------------------------------------------------------
@@ -1401,10 +2018,16 @@ class DailyCommuteSettingsScreen extends StatefulWidget {
     super.key,
     this.service,
     this.savedRoutesRepository,
+    this.initialRoute,
+    this.initialActiveDays,
+    this.initialCommute,
   });
 
   final DailyCommuteService? service;
   final SavedRoutesRepository? savedRoutesRepository;
+  final SavedRoute? initialRoute;
+  final Set<int>? initialActiveDays;
+  final DailyCommute? initialCommute;
 
   @override
   State<DailyCommuteSettingsScreen> createState() =>
@@ -1453,12 +2076,8 @@ class _DailyCommuteSettingsScreenState
       _error = null;
     });
     try {
-      final results = await Future.wait<dynamic>([
-        _routesRepository.load(),
-        _service.load(),
-      ]);
-      final routes = results[0] as List<SavedRoute>;
-      final commute = results[1] as DailyCommute?;
+      final routes = await _routesRepository.load();
+      final commute = widget.initialCommute;
       SavedRoute? selected;
       if (commute?.savedRouteId != null) {
         for (final route in routes) {
@@ -1467,6 +2086,12 @@ class _DailyCommuteSettingsScreenState
             break;
           }
         }
+      }
+      final suggestedRoute = widget.initialRoute;
+      if (suggestedRoute?.id != null) {
+        selected = routes
+            .where((route) => route.id == suggestedRoute!.id)
+            .firstOrNull;
       }
       if (!mounted) return;
       setState(() {
@@ -1482,6 +2107,11 @@ class _DailyCommuteSettingsScreenState
           _reminderEnabled = commute.reminderEnabled;
           _reminderMinutes = commute.reminderMinutesBefore;
         }
+        if (suggestedRoute != null) {
+          _activeDays = widget.initialActiveDays?.isNotEmpty == true
+              ? Set<int>.from(widget.initialActiveDays!)
+              : _activeDays;
+        }
         _loading = false;
       });
     } catch (error) {
@@ -1494,11 +2124,128 @@ class _DailyCommuteSettingsScreenState
   }
 
   Future<void> _chooseTime() async {
-    final selected = await showTimePicker(
-      context: context,
-      initialTime: _arriveBy,
-      helpText: 'ARRIVE BY',
+    var hour12 = _arriveBy.hourOfPeriod == 0 ? 12 : _arriveBy.hourOfPeriod;
+    var minute = _arriveBy.minute;
+    var isPm = _arriveBy.period == DayPeriod.pm;
+    final hourController = FixedExtentScrollController(initialItem: hour12 - 1);
+    final minuteController = FixedExtentScrollController(initialItem: minute);
+    final periodController = FixedExtentScrollController(
+      initialItem: isPm ? 1 : 0,
     );
+    final selected = await showModalBottomSheet<TimeOfDay>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) => SafeArea(
+          child: SizedBox(
+            height: 330,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
+                  child: Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'Arrive By',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(sheetContext),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                        ),
+                        child: const Text('Cancel'),
+                      ),
+                      FilledButton(
+                        onPressed: () {
+                          final hour24 = isPm
+                              ? (hour12 == 12 ? 12 : hour12 + 12)
+                              : (hour12 == 12 ? 0 : hour12);
+                          Navigator.pop(
+                            sheetContext,
+                            TimeOfDay(hour: hour24, minute: minute),
+                          );
+                        },
+                        style: FilledButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          minimumSize: const Size(60, 36),
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                        ),
+                        child: const Text('Done'),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: CupertinoPicker(
+                          key: const Key('arrive-hour-wheel'),
+                          scrollController: hourController,
+                          itemExtent: 44,
+                          onSelectedItemChanged: (index) =>
+                              setSheetState(() => hour12 = index + 1),
+                          children: List.generate(
+                            12,
+                            (index) => Center(child: Text('${index + 1}')),
+                          ),
+                        ),
+                      ),
+                      const Text(
+                        ':',
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      Expanded(
+                        child: CupertinoPicker(
+                          key: const Key('arrive-minute-wheel'),
+                          scrollController: minuteController,
+                          itemExtent: 44,
+                          onSelectedItemChanged: (index) =>
+                              setSheetState(() => minute = index),
+                          children: List.generate(
+                            60,
+                            (index) => Center(
+                              child: Text(index.toString().padLeft(2, '0')),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: CupertinoPicker(
+                          key: const Key('arrive-period-wheel'),
+                          scrollController: periodController,
+                          itemExtent: 44,
+                          onSelectedItemChanged: (index) =>
+                              setSheetState(() => isPm = index == 1),
+                          children: const [
+                            Center(child: Text('AM')),
+                            Center(child: Text('PM')),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    hourController.dispose();
+    minuteController.dispose();
+    periodController.dispose();
     if (selected != null && mounted) setState(() => _arriveBy = selected);
   }
 
@@ -1530,6 +2277,7 @@ class _DailyCommuteSettingsScreenState
     });
     try {
       final commute = await _service.save(
+        reminderId: _commute?.id,
         route: route,
         arriveByMinutes: _arriveBy.hour * 60 + _arriveBy.minute,
         activeDays: _activeDays,
@@ -1610,7 +2358,6 @@ class _DailyCommuteSettingsScreenState
                                 _selectedRoute = _routes
                                     .where((route) => route.id == id)
                                     .firstOrNull;
-                                _commute = null;
                               });
                             },
                           ),
@@ -1953,7 +2700,7 @@ class DailyCommuteOverviewSheet extends StatefulWidget {
 class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
   static const _blue = Color(0xFF2862E9);
   late final DailyCommuteService _service;
-  DailyCommute? _commute;
+  List<DailyCommute> _commutes = const [];
   bool _loading = true;
   bool _updating = false;
   String? _error;
@@ -1971,8 +2718,8 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
       _error = null;
     });
     try {
-      final commute = await _service.load();
-      if (mounted) setState(() => _commute = commute);
+      final commutes = await _service.loadAll();
+      if (mounted) setState(() => _commutes = commutes);
     } catch (error) {
       if (mounted) setState(() => _error = _message(error));
     } finally {
@@ -1980,29 +2727,36 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
     }
   }
 
-  Future<void> _edit() async {
+  Future<void> _edit([DailyCommute? commute]) async {
     await Navigator.push<DailyCommute>(
       context,
       MaterialPageRoute(
         builder: (_) => DailyCommuteSettingsScreen(
           service: _service,
           savedRoutesRepository: widget.savedRoutesRepository,
+          initialCommute: commute,
         ),
       ),
     );
     if (mounted) await _load();
   }
 
-  Future<void> _toggle(bool enabled) async {
-    final commute = _commute;
-    if (commute == null || _updating) return;
+  Future<void> _toggle(DailyCommute commute, bool enabled) async {
+    if (_updating) return;
     setState(() {
       _updating = true;
       _error = null;
     });
     try {
       final updated = await _service.setReminderEnabled(commute, enabled);
-      if (mounted) setState(() => _commute = updated);
+      if (mounted) {
+        setState(() {
+          _commutes = [
+            for (final item in _commutes)
+              if (item.id == updated.id) updated else item,
+          ];
+        });
+      }
     } catch (error) {
       if (mounted) setState(() => _error = _message(error));
     } finally {
@@ -2010,7 +2764,7 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
     }
   }
 
-  Future<void> _delete() async {
+  Future<void> _delete(DailyCommute commute) async {
     if (_updating) return;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -2034,8 +2788,14 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
     if (confirmed != true || !mounted) return;
     setState(() => _updating = true);
     try {
-      await _service.delete();
-      if (mounted) setState(() => _commute = null);
+      await _service.delete(commute);
+      if (mounted) {
+        setState(
+          () => _commutes = _commutes
+              .where((item) => item.id != commute.id)
+              .toList(),
+        );
+      }
     } catch (error) {
       if (mounted) setState(() => _error = _message(error));
     } finally {
@@ -2075,19 +2835,16 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
                   ),
                 ),
                 FilledButton.icon(
-                  onPressed: _loading || _updating ? null : _edit,
+                  onPressed: _loading || _updating ? null : () => _edit(),
                   style: FilledButton.styleFrom(
                     backgroundColor: _blue,
                     minimumSize: const Size(0, 34),
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     visualDensity: VisualDensity.compact,
                   ),
-                  icon: Icon(
-                    _commute == null ? Icons.add : Icons.edit_outlined,
-                    size: 15,
-                  ),
+                  icon: Icon(Icons.add, size: 15),
                   label: Text(
-                    _commute == null ? 'Create' : 'Edit',
+                    'Add',
                     style: const TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w700,
@@ -2118,7 +2875,7 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
 
   Widget _body() {
     if (_loading) return const Center(child: CircularProgressIndicator());
-    if (_commute == null) {
+    if (_commutes.isEmpty) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(28),
@@ -2145,7 +2902,7 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
               ),
               const SizedBox(height: 6),
               const Text(
-                'Create one routine and NextRoute will calculate when you should leave.',
+                'Create reminders and NextRoute will calculate when you should leave.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Color(0xFF7B879A), fontSize: 12),
               ),
@@ -2159,7 +2916,7 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
               ],
               const SizedBox(height: 18),
               FilledButton.icon(
-                onPressed: _edit,
+                onPressed: () => _edit(),
                 icon: const Icon(Icons.add),
                 label: const Text('Create Daily Commute'),
               ),
@@ -2168,111 +2925,15 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
         ),
       );
     }
-    final commute = _commute!;
     return ListView(
       padding: const EdgeInsets.fromLTRB(14, 14, 14, 24),
       children: [
-        Container(
-          padding: const EdgeInsets.fromLTRB(14, 14, 12, 12),
-          decoration: BoxDecoration(
-            color: const Color(0xFFF7F9FC),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Column(
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    margin: const EdgeInsets.only(top: 5),
-                    decoration: const BoxDecoration(
-                      color: _blue,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  const SizedBox(width: 9),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Daily Commute',
-                          style: TextStyle(
-                            color: Color(0xFF334155),
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '${commute.origin} → ${commute.destination}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Color(0xFF1E293B),
-                            fontSize: 15,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '${_daysLabel(commute.activeDays)} · Leave ${_formatMinutes(commute.recommendedDepartureMinutes)}',
-                          style: const TextStyle(
-                            color: Color(0xFF8793A6),
-                            fontSize: 10,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Switch(
-                    value: commute.reminderEnabled,
-                    activeThumbColor: _blue,
-                    onChanged: _updating ? null : _toggle,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 11),
-              const Divider(height: 1, color: Color(0xFFE1E7EF)),
-              const SizedBox(height: 9),
-              Row(
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: _updating ? null : _edit,
-                    style: OutlinedButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      side: const BorderSide(color: Color(0xFFD9E1EC)),
-                    ),
-                    icon: const Icon(Icons.edit_outlined, size: 14),
-                    label: const Text('Edit', style: TextStyle(fontSize: 10)),
-                  ),
-                  const SizedBox(width: 8),
-                  OutlinedButton.icon(
-                    onPressed: _updating ? null : _delete,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFFEF4E5B),
-                      visualDensity: VisualDensity.compact,
-                      side: const BorderSide(color: Color(0xFFFFCCD1)),
-                    ),
-                    icon: const Icon(Icons.delete_outline_rounded, size: 14),
-                    label: const Text('Delete', style: TextStyle(fontSize: 10)),
-                  ),
-                  const Spacer(),
-                  if (_updating)
-                    const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                ],
-              ),
-            ],
-          ),
-        ),
+        for (final commute in _commutes) ...[
+          _commuteCard(commute),
+          const SizedBox(height: 10),
+        ],
         if (_error != null) ...[
-          const SizedBox(height: 12),
+          const SizedBox(height: 2),
           Text(
             _error!,
             textAlign: TextAlign.center,
@@ -2280,6 +2941,110 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
           ),
         ],
       ],
+    );
+  }
+
+  Widget _commuteCard(DailyCommute commute) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 14, 12, 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F9FC),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                margin: const EdgeInsets.only(top: 5),
+                decoration: const BoxDecoration(
+                  color: _blue,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Daily Commute',
+                      style: TextStyle(
+                        color: Color(0xFF334155),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${commute.origin} → ${commute.destination}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF1E293B),
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${_daysLabel(commute.activeDays)} · Leave ${_formatMinutes(commute.recommendedDepartureMinutes)}',
+                      style: const TextStyle(
+                        color: Color(0xFF8793A6),
+                        fontSize: 10,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: commute.reminderEnabled,
+                activeThumbColor: _blue,
+                onChanged: _updating
+                    ? null
+                    : (enabled) => _toggle(commute, enabled),
+              ),
+            ],
+          ),
+          const SizedBox(height: 11),
+          const Divider(height: 1, color: Color(0xFFE1E7EF)),
+          const SizedBox(height: 9),
+          Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: _updating ? null : () => _edit(commute),
+                style: OutlinedButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  side: const BorderSide(color: Color(0xFFD9E1EC)),
+                ),
+                icon: const Icon(Icons.edit_outlined, size: 14),
+                label: const Text('Edit', style: TextStyle(fontSize: 10)),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: _updating ? null : () => _delete(commute),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFFEF4E5B),
+                  visualDensity: VisualDensity.compact,
+                  side: const BorderSide(color: Color(0xFFFFCCD1)),
+                ),
+                icon: const Icon(Icons.delete_outline_rounded, size: 14),
+                label: const Text('Delete', style: TextStyle(fontSize: 10)),
+              ),
+              const Spacer(),
+              if (_updating)
+                const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 

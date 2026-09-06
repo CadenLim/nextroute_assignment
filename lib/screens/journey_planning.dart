@@ -34,12 +34,14 @@ class JourneyPlanningScreen extends StatefulWidget {
     this.savedRoute,
     this.apiService,
     this.savedRoutesRepository,
+    this.savedPlacesRepository,
     this.authenticate,
   });
 
   final SavedRoute? savedRoute;
   final ApiService? apiService;
   final SavedRoutesRepository? savedRoutesRepository;
+  final SavedPlacesRepository? savedPlacesRepository;
   final Future<bool> Function(BuildContext)? authenticate;
 
   @override
@@ -49,6 +51,7 @@ class JourneyPlanningScreen extends StatefulWidget {
 class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
   late final ApiService _apiService;
   SavedRoutesRepository? _savedRoutesRepository;
+  SavedPlacesRepository? _savedPlacesRepository;
 
   List<StationModel> _allStations = [];
   List<StationModel> _filteredStations = [];
@@ -64,11 +67,13 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
   bool _hasSearched = false;
   int _selectedRouteIndex = 0;
   bool _isStartingNavigation = false;
+  bool _isCompletingNavigation = false;
   bool _isSavingRoute = false;
   final Set<String> _savedRouteKeys = {};
   String? _searchError;
 
   List<Map<String, dynamic>> _recentJourneys = [];
+  List<SavedPlace> _savedPlaces = [];
   bool _isLoadingRecent = true;
 
   final Color _primaryBlue = const Color(0xFF1E50D6);
@@ -86,9 +91,13 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
     super.initState();
     _apiService = widget.apiService ?? ApiService();
     _savedRoutesRepository = widget.savedRoutesRepository;
+    _savedPlacesRepository = widget.savedPlacesRepository;
 
     if (_savedRoutesRepository == null && widget.authenticate == null) {
       _savedRoutesRepository = SupabaseSavedRoutesRepository();
+    }
+    if (_savedPlacesRepository == null && widget.authenticate == null) {
+      _savedPlacesRepository = SupabaseSavedPlacesRepository();
     }
 
     if (widget.authenticate == null) {
@@ -98,13 +107,48 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
           setState(() {
             _savedRouteKeys.clear();
             _recentJourneys = [];
+            _savedPlaces = [];
           });
           _loadRecentJourneys();
           _loadSavedRouteKeys();
+          _loadSavedPlaces();
         }
       });
     }
     _initializeData();
+    _loadSavedPlaces();
+  }
+
+  Future<void> _loadSavedPlaces() async {
+    final repository = _savedPlacesRepository;
+    if (repository == null) return;
+    try {
+      final places = await repository.load();
+      if (mounted) setState(() => _savedPlaces = places);
+    } catch (error) {
+      debugPrint('Unable to load saved places: $error');
+      if (mounted) setState(() => _savedPlaces = []);
+    }
+  }
+
+  void _selectSavedPlace(
+    BuildContext sheetContext,
+    SavedPlace place,
+    bool isOrigin,
+  ) {
+    final station = place.resolveStation(_allStations);
+    setState(() {
+      if (isOrigin) {
+        _originDisplayName = station.name;
+        _originGtfsStation = station;
+      } else {
+        _destinationDisplayName = station.name;
+        _destinationGtfsStation = station;
+      }
+      _hasSearched = false;
+      _searchError = null;
+    });
+    Navigator.pop(sheetContext);
   }
 
   Future<void> _initializeData() async {
@@ -464,8 +508,10 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
     }
   }
 
-  void _showLocationSearch(bool isOrigin) {
+  Future<void> _showLocationSearch(bool isOrigin) async {
     if (_isLoading || _isSavingRoute || _isStartingNavigation) return;
+    await _loadSavedPlaces();
+    if (!mounted) return;
     setState(() {
       _filteredStations = List.from(_allStations);
       _livePlaces = [];
@@ -489,6 +535,28 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                     Center(child: Container(width: 40, height: 4, margin: const EdgeInsets.only(bottom: 20), decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)))),
                     Text(isOrigin ? 'Start from' : 'Where to?', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _textDark)),
                     const SizedBox(height: 16),
+                    if (_savedPlaces.isNotEmpty) ...[
+                      Text('SAVED PLACES', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _textGrey)),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: _savedPlaces.map((place) => ActionChip(
+                          avatar: Icon(
+                            switch (place.type) {
+                              SavedPlaceType.home => Icons.home_outlined,
+                              SavedPlaceType.university => Icons.school_outlined,
+                              SavedPlaceType.work => Icons.work_outline,
+                            },
+                            size: 17,
+                            color: _primaryBlue,
+                          ),
+                          label: Text(place.type.label),
+                          onPressed: () => _selectSavedPlace(context, place, isOrigin),
+                        )).toList(),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
                     TextField(
                       autofocus: true,
                       decoration: InputDecoration(
@@ -591,23 +659,9 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
       }
 
       final signedIn = Supabase.instance.client.auth.currentUser != null;
-      if (signedIn) {
-        await _apiService.saveNavigationHistory(
-          origin: _originDisplayName,
-          destination: _destinationDisplayName,
-          fare: farePrice,
-          durationMinutes: totalMins,
-          departureTime: departTime,
-          estimatedArrivalTime: arriveTime,
-          transitSteps: dbSafeSteps,
-        );
-      }
-
-      await _loadRecentJourneys();
-
       if (mounted) {
         setState(() => _isStartingNavigation = false);
-        _showLiveNavigationModal(route, totalMins, departTime, arriveTime, signedIn);
+        _showLiveNavigationModal(route, totalMins, departTime, arriveTime, signedIn, farePrice, dbSafeSteps);
       }
     } catch (e) {
       if (mounted) {
@@ -617,7 +671,63 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
     }
   }
 
-  void _showLiveNavigationModal(Map<String, dynamic> route, int totalMins, String departTime, String arriveTime, bool signedIn) {
+  Future<void> _completeNavigation({
+    required BuildContext modalContext,
+    required bool signedIn,
+    required double fare,
+    required int totalMins,
+    required String departTime,
+    required String arriveTime,
+    required List<Map<String, dynamic>> transitSteps,
+  }) async {
+    if (_isCompletingNavigation) return;
+    _isCompletingNavigation = true;
+    try {
+      if (signedIn) {
+        await _apiService.saveNavigationHistory(
+          origin: _originDisplayName,
+          destination: _destinationDisplayName,
+          fare: fare,
+          durationMinutes: totalMins,
+          departureTime: departTime,
+          estimatedArrivalTime: arriveTime,
+          transitSteps: transitSteps,
+        );
+        await _loadRecentJourneys();
+      }
+      if (!mounted || !modalContext.mounted) return;
+      Navigator.pop(modalContext);
+      setState(() {
+        _originDisplayName = '';
+        _originGtfsStation = null;
+        _destinationDisplayName = '';
+        _destinationGtfsStation = null;
+        _realRoutes = [];
+        _hasSearched = false;
+        _searchError = null;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+          signedIn
+              ? 'Journey completed and added to Travel History.'
+              : 'Journey completed. Sign in to save your travel history.',
+        ),
+        backgroundColor: Colors.green,
+        behavior: SnackBarBehavior.floating,
+      ));
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(error.toString()),
+          backgroundColor: Colors.red,
+        ));
+      }
+    } finally {
+      _isCompletingNavigation = false;
+    }
+  }
+
+  void _showLiveNavigationModal(Map<String, dynamic> route, int totalMins, String departTime, String arriveTime, bool signedIn, double fare, List<Map<String, dynamic>> transitSteps) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -687,29 +797,15 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                       elevation: 0,
                     ),
-                    onPressed: () {
-                      Navigator.pop(context);
-
-                      setState(() {
-                        _originDisplayName = '';
-                        _originGtfsStation = null;
-                        _destinationDisplayName = '';
-                        _destinationGtfsStation = null;
-                        _realRoutes = [];
-                        _hasSearched = false;
-                        _searchError = null;
-                      });
-
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                        content: Text(
-                          signedIn
-                              ? 'Journey Completed! Welcome to your destination.'
-                              : 'Journey completed. Sign in to save your travel history.',
-                        ),
-                        backgroundColor: Colors.green,
-                        behavior: SnackBarBehavior.floating,
-                      ));
-                    },
+                    onPressed: () => _completeNavigation(
+                      modalContext: context,
+                      signedIn: signedIn,
+                      fare: fare,
+                      totalMins: totalMins,
+                      departTime: departTime,
+                      arriveTime: arriveTime,
+                      transitSteps: transitSteps,
+                    ),
                     child: const Text('End Journey', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   ),
                 ),

@@ -24,6 +24,7 @@ class PersonalTravelScreen extends StatefulWidget {
     this.dailyCommuteService,
     this.smartRoutineService,
     this.onOpenJourneyPlanning,
+    this.onAccountDeleted,
   });
 
   final PersonalTravelService? service;
@@ -33,9 +34,84 @@ class PersonalTravelScreen extends StatefulWidget {
   final DailyCommuteService? dailyCommuteService;
   final SmartRoutineService? smartRoutineService;
   final VoidCallback? onOpenJourneyPlanning;
+  final VoidCallback? onAccountDeleted;
 
   @override
   State<PersonalTravelScreen> createState() => _PersonalTravelScreenState();
+}
+
+class _DeleteAccountDialog extends StatefulWidget {
+  const _DeleteAccountDialog();
+
+  @override
+  State<_DeleteAccountDialog> createState() => _DeleteAccountDialogState();
+}
+
+class _DeleteAccountDialogState extends State<_DeleteAccountDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      icon: const Icon(
+        Icons.warning_amber_rounded,
+        color: Color(0xFFDC3545),
+        size: 34,
+      ),
+      title: const Text('Delete Account?'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This action is permanent. Your profile, travel history, favourite routes, reminders and saved places will also be deleted.',
+              style: TextStyle(height: 1.45),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Type DELETE to confirm',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 7),
+            TextField(
+              key: const Key('delete-account-confirmation'),
+              controller: _controller,
+              autofocus: true,
+              textCapitalization: TextCapitalization.characters,
+              decoration: const InputDecoration(
+                hintText: 'DELETE',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('confirm-delete-account'),
+          onPressed: _controller.text.trim() == 'DELETE'
+              ? () => Navigator.pop(context, true)
+              : null,
+          style: FilledButton.styleFrom(
+            backgroundColor: const Color(0xFFDC3545),
+          ),
+          child: const Text('Delete Account'),
+        ),
+      ],
+    );
+  }
 }
 
 class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
@@ -65,6 +141,7 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
   List<DailyCommute> _dailyCommutes = const [];
   String? _dismissedRoutineKey;
   bool _isPreparingRoutine = false;
+  bool _isDeletingAccount = false;
 
   @override
   void initState() {
@@ -323,6 +400,59 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
       ),
     );
     if (mounted) await _loadProfile(confirmedEmail: confirmedEmail);
+  }
+
+  Future<void> _confirmDeleteAccount() async {
+    if (_isDeletingAccount) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _DeleteAccountDialog(),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isDeletingAccount = true);
+    try {
+      await _service.deleteAccount(confirmation: 'DELETE');
+      if (!mounted) return;
+      final onAccountDeleted = widget.onAccountDeleted;
+      if (onAccountDeleted != null) {
+        onAccountDeleted();
+      } else {
+        await Navigator.push<void>(
+          context,
+          MaterialPageRoute(builder: (_) => const AuthScreen()),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_accountDeletionMessage(error)),
+          backgroundColor: const Color(0xFFB42318),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isDeletingAccount = false);
+    }
+  }
+
+  String _accountDeletionMessage(Object error) {
+    final raw = error.toString();
+    if (raw.contains('status: 404') ||
+        raw.contains('NOT_FOUND') ||
+        raw.contains('Requested function was not found')) {
+      return 'Account deletion is not available yet. Deploy the delete-account Edge Function first.';
+    }
+    if (raw.contains('status: 401') || raw.toLowerCase().contains('session')) {
+      return 'Your session has expired. Please sign in again.';
+    }
+    if (error is FormatException || error is StateError) {
+      return raw
+          .replaceFirst('Bad state: ', '')
+          .replaceFirst('FormatException: ', '');
+    }
+    return 'Account deletion failed. Nothing was deleted. Please try again.';
   }
 
   Future<void> _changePassword() async {
@@ -675,6 +805,39 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
                   borderColor: const Color(0xFFFFD8DC),
                   showChevron: false,
                   onTap: () => Supabase.instance.client.auth.signOut(),
+                ),
+                const SizedBox(height: 24),
+                const Text(
+                  'DANGER ZONE',
+                  style: TextStyle(
+                    color: Color(0xFFB42318),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                const Text(
+                  'Permanently remove your account and personal travel data.',
+                  style: TextStyle(
+                    color: Color(0xFF8290A5),
+                    fontSize: 11,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                _profileAction(
+                  key: const Key('delete-account-action'),
+                  icon: Icons.delete_forever_outlined,
+                  iconColor: const Color(0xFFB42318),
+                  iconBackground: const Color(0xFFFFECEE),
+                  label: _isDeletingAccount
+                      ? 'Deleting Account...'
+                      : 'Delete Account',
+                  labelColor: const Color(0xFFB42318),
+                  borderColor: const Color(0xFFF5B7BD),
+                  showChevron: false,
+                  onTap: _isDeletingAccount ? () {} : _confirmDeleteAccount,
                 ),
               ],
             ),

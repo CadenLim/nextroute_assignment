@@ -113,9 +113,11 @@ class MemoryPlaces implements SavedPlacesRepository {
 }
 
 class ProfileServiceStub implements PersonalTravelService {
-  ProfileServiceStub({this.history = const []});
+  ProfileServiceStub({this.history = const [], this.deleteAccountError});
 
   final List<TravelHistoryEntry> history;
+  final Object? deleteAccountError;
+  int deleteAccountCalls = 0;
 
   @override
   Future<PersonalProfile> loadProfile({String? confirmedEmail}) async =>
@@ -141,6 +143,13 @@ class ProfileServiceStub implements PersonalTravelService {
     required String newPassword,
     PasswordCodeLogin? passwordLogin,
   }) async {}
+
+  @override
+  Future<void> deleteAccount({required String confirmation}) async {
+    expect(confirmation, 'DELETE');
+    deleteAccountCalls++;
+    if (deleteAccountError case final error?) throw error;
+  }
 }
 
 class PlanningApi extends ApiService {
@@ -686,5 +695,84 @@ void main() {
 
     expect(find.text('Travel History'), findsOneWidget);
     expect(find.text('No trips found'), findsOneWidget);
+  });
+
+  testWidgets('delete account requires typing DELETE before confirmation', (
+    tester,
+  ) async {
+    final service = ProfileServiceStub();
+    var returnedToLogin = false;
+    await launch(
+      tester,
+      PersonalTravelScreen(
+        service: service,
+        savedRoutesRepository: MemoryRoutes(),
+        onAccountDeleted: () => returnedToLogin = true,
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('open-my-profile')));
+    await tester.pumpAndSettle();
+    final deleteAction = find.byKey(const Key('delete-account-action'));
+    await tester.ensureVisible(deleteAction);
+    await tester.tap(deleteAction);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Delete Account?'), findsOneWidget);
+    final confirmButton = find.byKey(const Key('confirm-delete-account'));
+    expect(tester.widget<FilledButton>(confirmButton).onPressed, isNull);
+
+    await tester.enterText(
+      find.byKey(const Key('delete-account-confirmation')),
+      'DELETE',
+    );
+    await tester.pump();
+    expect(tester.widget<FilledButton>(confirmButton).onPressed, isNotNull);
+    await tester.tap(confirmButton);
+    await tester.pumpAndSettle();
+
+    expect(service.deleteAccountCalls, 1);
+    expect(returnedToLogin, isTrue);
+  });
+
+  testWidgets('failed account deletion keeps the user on the profile', (
+    tester,
+  ) async {
+    final service = ProfileServiceStub(
+      deleteAccountError: StateError(
+        'Account deletion failed. Your account is still available.',
+      ),
+    );
+    var returnedToLogin = false;
+    await launch(
+      tester,
+      PersonalTravelScreen(
+        service: service,
+        savedRoutesRepository: MemoryRoutes(),
+        onAccountDeleted: () => returnedToLogin = true,
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('open-my-profile')));
+    await tester.pumpAndSettle();
+    final deleteAction = find.byKey(const Key('delete-account-action'));
+    await tester.ensureVisible(deleteAction);
+    await tester.tap(deleteAction);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('delete-account-confirmation')),
+      'DELETE',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('confirm-delete-account')));
+    await tester.pumpAndSettle();
+
+    expect(service.deleteAccountCalls, 1);
+    expect(returnedToLogin, isFalse);
+    expect(find.text('My Profile'), findsOneWidget);
+    expect(
+      find.text('Account deletion failed. Your account is still available.'),
+      findsOneWidget,
+    );
   });
 }

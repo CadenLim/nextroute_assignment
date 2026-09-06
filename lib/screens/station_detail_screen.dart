@@ -178,13 +178,95 @@ class _InfoCard extends StatelessWidget {
   );
 }
 
-class _TimetableTab extends StatelessWidget {
+enum _TimetablePeriod { allDay, morning, afternoon, evening }
+
+class _TimetableTab extends StatefulWidget {
   final Station station;
   const _TimetableTab({required this.station});
 
   @override
+  State<_TimetableTab> createState() => _TimetableTabState();
+}
+
+class _TimetableTabState extends State<_TimetableTab> {
+  late DateTime selectedDate;
+  late Future<ScheduleResult> schedule;
+  _TimetablePeriod selectedPeriod = _TimetablePeriod.allDay;
+
+  @override
+  void initState() {
+    super.initState();
+    selectedDate = DateUtils.dateOnly(DateTime.now());
+    schedule = _loadSchedule();
+  }
+
+  Future<ScheduleResult> _loadSchedule() {
+    final startSeconds = switch (selectedPeriod) {
+      _TimetablePeriod.allDay => null,
+      _TimetablePeriod.morning => 0,
+      _TimetablePeriod.afternoon => 12 * 3600,
+      _TimetablePeriod.evening => 18 * 3600,
+    };
+    final endSeconds = switch (selectedPeriod) {
+      _TimetablePeriod.morning => 12 * 3600,
+      _TimetablePeriod.afternoon => 18 * 3600,
+      _ => null,
+    };
+    return StaticScheduleService.loadDepartures(
+      widget.station,
+      date: selectedDate,
+      startSeconds: startSeconds,
+      endSeconds: endSeconds,
+    );
+  }
+
+  Future<void> _chooseDate() async {
+    final today = DateUtils.dateOnly(DateTime.now());
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: selectedDate,
+      firstDate: today,
+      lastDate: today.add(const Duration(days: 7)),
+      helpText: 'Select timetable date',
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      selectedDate = DateUtils.dateOnly(picked);
+      selectedPeriod = _TimetablePeriod.allDay;
+      schedule = _loadSchedule();
+    });
+  }
+
+  void _selectPeriod(_TimetablePeriod period) {
+    if (period == selectedPeriod) return;
+    setState(() {
+      selectedPeriod = period;
+      schedule = _loadSchedule();
+    });
+  }
+
+  bool get _isToday {
+    final today = DateUtils.dateOnly(DateTime.now());
+    return selectedDate == today;
+  }
+
+  String _dateLabel(BuildContext context) {
+    final today = DateUtils.dateOnly(DateTime.now());
+    if (selectedDate == today) return 'Today';
+    if (selectedDate == today.add(const Duration(days: 1))) return 'Tomorrow';
+    return MaterialLocalizations.of(context).formatMediumDate(selectedDate);
+  }
+
+  String _periodLabel(_TimetablePeriod period) => switch (period) {
+    _TimetablePeriod.allDay => _isToday ? 'Upcoming' : 'All day',
+    _TimetablePeriod.morning => 'Morning',
+    _TimetablePeriod.afternoon => 'Afternoon',
+    _TimetablePeriod.evening => 'Evening',
+  };
+
+  @override
   Widget build(BuildContext context) => FutureBuilder<ScheduleResult>(
-    future: StaticScheduleService.loadDepartures(station),
+    future: schedule,
     builder: (context, snapshot) {
       if (snapshot.connectionState == ConnectionState.waiting) {
         return const Center(child: CircularProgressIndicator());
@@ -205,22 +287,38 @@ class _TimetableTab extends StatelessWidget {
       return ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          const Row(
+          Row(
             children: [
               Expanded(
                 child: Text(
-                  'NEXT PUBLISHED DEPARTURES',
-                  style: TextStyle(
+                  _isToday
+                      ? 'NEXT PUBLISHED DEPARTURES'
+                      : 'PUBLISHED DEPARTURES',
+                  style: const TextStyle(
                     color: Color(0xFF71839E),
                     fontWeight: FontWeight.w700,
                   ),
                 ),
               ),
-              Chip(
-                avatar: Icon(Icons.calendar_today_outlined, size: 16),
-                label: Text('Today'),
+              ActionChip(
+                avatar: const Icon(Icons.calendar_today_outlined, size: 16),
+                label: Text(_dateLabel(context)),
+                tooltip: 'Choose a date within the next 7 days',
+                onPressed: _chooseDate,
               ),
             ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _TimetablePeriod.values.map((period) {
+              return ChoiceChip(
+                label: Text(_periodLabel(period)),
+                selected: selectedPeriod == period,
+                onSelected: (_) => _selectPeriod(period),
+              );
+            }).toList(),
           ),
           const SizedBox(height: 12),
           ...result.notices.map(
@@ -234,14 +332,17 @@ class _TimetableTab extends StatelessWidget {
             ),
           ),
           if (result.groups.isEmpty)
-            const _MessageCard(
+            _MessageCard(
               icon: Icons.event_busy_outlined,
-              color: Color(0xFF64748B),
-              message:
-              'No upcoming timetable is available for this stop '
-                  'today. This can mean the feed has expired, the stop has no '
-                  'scheduled service today, or the operator did not publish '
-                  'stop times for it.',
+              color: const Color(0xFF64748B),
+              message: _isToday
+                  ? 'No upcoming timetable is available for this stop today. '
+                      'This can mean the stop has no remaining service today '
+                      'or the operator did not publish stop times for it.'
+                  : 'No published timetable is available for this stop on '
+                      '${MaterialLocalizations.of(context).formatMediumDate(selectedDate)}. '
+                      'The service may not operate on this date or the operator '
+                      'may not have published stop times for it.',
             )
           else
             ...result.groups.map((group) => _DepartureCard(group: group)),
@@ -318,7 +419,6 @@ class _DepartureCard extends StatelessWidget {
                 if (group.frequencyNotes.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   ...group.frequencyNotes
-                      .take(3)
                       .map(
                         (note) => Padding(
                       padding: const EdgeInsets.only(bottom: 4),

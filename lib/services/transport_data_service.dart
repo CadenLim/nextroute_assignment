@@ -630,19 +630,29 @@ class _DepartureAccumulator {
 }
 
 class StaticScheduleService {
-  static Future<ScheduleResult> loadDepartures(Station station) async {
+  static Future<ScheduleResult> loadDepartures(
+    Station station, {
+    DateTime? date,
+    int? startSeconds,
+    int? endSeconds,
+  }) async {
     if (station.stopIds.isEmpty || station.sources.isEmpty) {
       return const ScheduleResult(groups: [], notices: []);
     }
 
     final now = DateTime.now();
+    final serviceDate = date == null
+        ? DateTime(now.year, now.month, now.day)
+        : DateTime(date.year, date.month, date.day);
     final groups = <String, _DepartureAccumulator>{};
     final notices = <String>[];
-    final nowSeconds = now.hour * 3600 + now.minute * 60 + now.second;
+    final windowStart =
+        startSeconds ?? scheduleCutoffSeconds(serviceDate, now);
+    final windowEnd = endSeconds;
 
     for (final source in station.sources) {
       final base = 'assets/gtfs/$source';
-      final calendar = await _activeServices(base, now);
+      final calendar = await _activeServices(base, serviceDate);
       if (calendar.$2 != null) notices.add(calendar.$2!);
       if (calendar.$1.isEmpty) continue;
 
@@ -709,7 +719,11 @@ class StaticScheduleService {
 
         final tripFrequencies = frequencies[tripId];
         if (tripFrequencies == null || tripFrequencies.isEmpty) {
-          if (scheduledSeconds >= nowSeconds) {
+          if (isInsideScheduleWindow(
+            scheduledSeconds,
+            startSeconds: windowStart,
+            endSeconds: windowEnd,
+          )) {
             group.addDeparture(scheduledSeconds, estimated: false);
           }
           continue;
@@ -722,7 +736,10 @@ class StaticScheduleService {
         for (final frequency in tripFrequencies) {
           final stationStart = frequency.startSeconds + stopOffset;
           final stationEnd = frequency.endSeconds + stopOffset;
-          if (stationEnd <= nowSeconds) continue;
+          if (stationEnd <= windowStart ||
+              (windowEnd != null && stationStart >= windowEnd)) {
+            continue;
+          }
 
           group.frequencyNotes[stationStart] = _frequencyDescription(
             frequency,
@@ -735,7 +752,8 @@ class StaticScheduleService {
           departure < stationEnd;
           departure += frequency.headwaySeconds
           ) {
-            if (departure < nowSeconds) continue;
+            if (departure < windowStart) continue;
+            if (windowEnd != null && departure >= windowEnd) break;
             group.addDeparture(departure, estimated: !frequency.exactTimes);
           }
         }
@@ -986,6 +1004,22 @@ class StaticScheduleService {
     return '${text.substring(0, 4)}-${text.substring(4, 6)}-'
         '${text.substring(6, 8)}';
   }
+}
+
+int scheduleCutoffSeconds(DateTime selectedDate, DateTime now) {
+  final isToday = selectedDate.year == now.year &&
+      selectedDate.month == now.month &&
+      selectedDate.day == now.day;
+  return isToday ? now.hour * 3600 + now.minute * 60 + now.second : 0;
+}
+
+bool isInsideScheduleWindow(
+  int seconds, {
+  required int startSeconds,
+  int? endSeconds,
+}) {
+  return seconds >= startSeconds &&
+      (endSeconds == null || seconds < endSeconds);
 }
 
 class AddressService {

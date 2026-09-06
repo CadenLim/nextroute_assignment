@@ -1380,11 +1380,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
     try {
       if (profileChanges.isNotEmpty) {
-        profileChanges['updated_at'] = DateTime.now().toIso8601String();
-        await Supabase.instance.client
-            .from('profiles')
-            .update(profileChanges)
-            .eq('id', user.id);
+        await (_service ?? PersonalTravelService()).updateProfile(
+          displayName: profileChanges['display_name'] as String?,
+          phoneNumber: profileChanges['phone_number'] as String?,
+        );
       }
 
       if (emailChanged) {

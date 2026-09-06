@@ -8,6 +8,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:gtfs_realtime_bindings/gtfs_realtime_bindings.dart' as gtfs;
 
+import 'personal_assistance_functions.dart';
+
 // =========================================================
 // YOUR CODE (Module 1 / Journey Planning)
 // =========================================================
@@ -718,21 +720,23 @@ class ApiService {
     required List<Map<String, dynamic>> transitSteps,
   }) async {
     try {
-      final user = Supabase.instance.client.auth.currentUser;
-      if (user == null) throw Exception('User is not logged in. Please log in first.');
-
-      await Supabase.instance.client.from('navigation_history').insert({
-        'user_id': user.id,
-        'origin': origin,
-        'destination': destination,
-        'fare': fare,
-        'currency': 'MYR',
-        'duration_minutes': durationMinutes,
-        'departure_time': departureTime,
-        'estimated_arrival_time': estimatedArrivalTime,
-        'transit_steps': transitSteps,
-        'status': 'in_progress',
-      });
+      await PersonalAssistanceFunctions().invoke(
+        'journey-history',
+        'insert',
+        payload: {
+          'journey': {
+            'origin': origin,
+            'destination': destination,
+            'fare': fare,
+            'currency': 'MYR',
+            'duration_minutes': durationMinutes,
+            'departure_time': departureTime,
+            'estimated_arrival_time': estimatedArrivalTime,
+            'transit_steps': transitSteps,
+            'status': 'completed',
+          },
+        },
+      );
     } catch (e) {
       throw Exception('Failed to save navigation to database: ${e.toString()}');
     }

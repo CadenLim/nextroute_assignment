@@ -13,7 +13,15 @@ import 'api_service.dart';
 import 'personal_assistance_functions.dart';
 import 'personal_travel_service.dart';
 
-enum NotificationFilter { all, unread, congestion, push, delays }
+enum NotificationFilter {
+  all,
+  unread,
+  congestion,
+  service,
+  delays,
+  dataStatus,
+  history,
+}
 
 typedef NotificationRowsLoader = Future<List<Map<String, dynamic>>> Function();
 
@@ -88,7 +96,7 @@ class LocalPushNotificationService {
   }
 
   Future<void> show(TransitNotification notification) async {
-    if (!isSupported) {
+    if (!isSupported || !notification.isCurrentAt(DateTime.now().toUtc())) {
       return;
     }
     await _initialize();
@@ -220,6 +228,7 @@ class LocalPushNotificationService {
 }
 
 class NotificationRepository {
+  static const historyLimit = 200;
   NotificationRepository(
     this._storage, {
     this.supabaseClient,
@@ -257,7 +266,11 @@ class NotificationRepository {
     final preferences = await loadPreferences();
     _cachedNotifications = List.unmodifiable(
       notifications.where(
-        (notification) => _notificationEnabled(notification, preferences),
+        (notification) =>
+            notification.isActive &&
+            !notification.createdAt.isAfter(DateTime.now().toUtc()) &&
+            (notification.isExpiredAt(DateTime.now().toUtc()) ||
+                _notificationEnabled(notification, preferences)),
       ),
     );
     return _cachedNotifications;
@@ -284,7 +297,11 @@ class NotificationRepository {
         ? await loadNotifications()
         : _cachedNotifications;
     final updated = notifications
-        .map((notification) => notification.copyWith(isRead: true))
+        .map(
+          (notification) => notification.isCurrentAt(DateTime.now().toUtc())
+              ? notification.copyWith(isRead: true)
+              : notification,
+        )
         .toList(growable: false);
     await _saveReadIds(updated);
     _cachedNotifications = List.unmodifiable(updated);
@@ -311,6 +328,18 @@ class NotificationRepository {
             onChanged();
           },
         )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'notifications',
+          callback: (_) => onChanged(),
+        )
+        .onPostgresChanges(
+          event: PostgresChangeEvent.delete,
+          schema: 'public',
+          table: 'notifications',
+          callback: (_) => onChanged(),
+        )
         .subscribe();
   }
 
@@ -320,14 +349,29 @@ class NotificationRepository {
 
   Future<List<Map<String, dynamic>>> _loadSupabaseRows() async {
     final now = DateTime.now().toUtc().toIso8601String();
-    final rows = await _supabase
-        .from('notifications')
-        .select()
-        .eq('is_active', true)
-        .or('expires_at.is.null,expires_at.gt.$now')
-        .order('created_at', ascending: false)
-        .limit(200);
-    return rows
+    // Separate limits keep a busy archive from displacing current alerts.
+    final pages = await Future.wait([
+      _supabase
+          .from('notifications')
+          .select()
+          .eq('is_active', true)
+          .lte('created_at', now)
+          .or('expires_at.is.null,expires_at.gt.$now')
+          .order('created_at', ascending: false)
+          .order('id')
+          .limit(200),
+      _supabase
+          .from('notifications')
+          .select()
+          .eq('is_active', true)
+          .lte('created_at', now)
+          .lte('expires_at', now)
+          .order('created_at', ascending: false)
+          .order('id')
+          .limit(historyLimit),
+    ]);
+    return pages
+        .expand((rows) => rows)
         .map((row) => Map<String, dynamic>.from(row))
         .toList(growable: false);
   }
@@ -353,23 +397,40 @@ class NotificationRepository {
     return ids;
   }
 
-  Future<void> _saveReadIds(Iterable<TransitNotification> notifications) {
-    return _storage.writeNotificationRecords(
-      notifications
-          .where((notification) => notification.isRead)
-          .map((notification) => notification.id)
-          .toList(growable: false),
-    );
+  Future<void> _saveReadIds(Iterable<TransitNotification> notifications) async {
+    final ids = await _loadReadIds();
+    ids.addAll(notifications.where((n) => n.isRead).map((n) => n.id));
+    return _storage.writeNotificationRecords(ids.toList(growable: false));
   }
 
   int unreadCount(Iterable<TransitNotification> notifications) {
-    return notifications.where((notification) => !notification.isRead).length;
+    final now = DateTime.now().toUtc();
+    return notifications
+        .where(
+          (notification) =>
+              !notification.isRead && notification.isCurrentAt(now),
+        )
+        .length;
   }
 
   List<TransitNotification> filterNotifications(
     Iterable<TransitNotification> notifications,
     NotificationFilter filter,
   ) {
+    final now = DateTime.now().toUtc();
+    if (filter == NotificationFilter.history) {
+      return List.unmodifiable(
+        notifications.where(
+          (notification) =>
+              notification.isActive &&
+              notification.isExpiredAt(now) &&
+              !notification.createdAt.isAfter(now),
+        ),
+      );
+    }
+    notifications = notifications.where(
+      (notification) => notification.isCurrentAt(now),
+    );
     return List.unmodifiable(switch (filter) {
       NotificationFilter.all => notifications,
       NotificationFilter.unread => notifications.where(
@@ -378,12 +439,18 @@ class NotificationRepository {
       NotificationFilter.congestion => notifications.where(
         (notification) => notification.type == TransitNotificationType.crowd,
       ),
-      NotificationFilter.push => notifications.where(
-        (notification) => notification.type == TransitNotificationType.service,
+      NotificationFilter.service => notifications.where(
+        (notification) =>
+            notification.type == TransitNotificationType.service &&
+            !notification.isDataHealth,
       ),
       NotificationFilter.delays => notifications.where(
         (notification) => notification.type == TransitNotificationType.delay,
       ),
+      NotificationFilter.dataStatus => notifications.where(
+        (notification) => notification.isDataHealth,
+      ),
+      NotificationFilter.history => const <TransitNotification>[],
     });
   }
 
@@ -413,6 +480,7 @@ class NotificationRepository {
   }
 
   Future<void> showPushIfEnabled(TransitNotification notification) async {
+    if (!notification.isCurrentAt(DateTime.now().toUtc())) return;
     final devicePush = pushService;
     if (devicePush == null) {
       return;

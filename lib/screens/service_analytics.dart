@@ -1,39 +1,154 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:file_saver/file_saver.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:nextroute_assignment/models/analytics_notification_models.dart';
 import 'package:nextroute_assignment/services/analytics_service.dart';
+import 'package:nextroute_assignment/services/module5_route_preferences.dart';
 
 const _autoRefreshInterval = Duration(seconds: 30);
+const _myRoutesScope = '__my_routes__';
+const _allNetworkScope = '__all_network__';
+
+class _RouteAvailabilityPresentation {
+  const _RouteAvailabilityPresentation(this.label, this.icon, this.color);
+
+  final String label;
+  final IconData icon;
+  final Color color;
+}
+
+_RouteAvailabilityPresentation _availabilityForRoute(
+  BusRouteInfo route,
+  ServiceAnalytics? analytics,
+) {
+  if (analytics == null) {
+    return const _RouteAvailabilityPresentation(
+      'Checking realtime availability',
+      Icons.sync,
+      Colors.blueGrey,
+    );
+  }
+  final matches = analytics.sourceStatuses.where(
+    (source) => source.category == route.sourceCategory,
+  );
+  if (matches.isEmpty) {
+    return const _RouteAvailabilityPresentation(
+      'Timetable only',
+      Icons.event_note,
+      Colors.blueGrey,
+    );
+  }
+  final source = matches.first;
+  if (source.availability == RealtimeFeedAvailability.unavailable ||
+      source.availability == RealtimeFeedAvailability.noVehicleData) {
+    return const _RouteAvailabilityPresentation(
+      'Realtime unavailable',
+      Icons.cloud_off_outlined,
+      Colors.orange,
+    );
+  }
+  if (source.availability == RealtimeFeedAvailability.stale) {
+    return const _RouteAvailabilityPresentation(
+      'Realtime data is stale',
+      Icons.update_disabled,
+      Colors.orange,
+    );
+  }
+  final active = analytics.vehiclesByRoute.keys.any(
+    (id) => BusRouteCatalog.matches(id, route.routeCode, {
+      id: route,
+      route.id: route,
+      route.routeCode: route,
+    }),
+  );
+  return active
+      ? const _RouteAvailabilityPresentation(
+          'Live now',
+          Icons.location_on,
+          Colors.green,
+        )
+      : const _RouteAvailabilityPresentation(
+          'No active vehicles now',
+          Icons.directions_bus_outlined,
+          Colors.blueGrey,
+        );
+}
+
+bool _routeIncluded(
+  String? routeId,
+  String scope,
+  Set<String> followedRoutes,
+  Map<String, BusRouteInfo> busRoutes,
+) {
+  if (scope == _allNetworkScope) return true;
+  // A route-less official notice is network-wide and relevant to every user.
+  if (routeId == null) return scope == _myRoutesScope;
+  if (scope != _myRoutesScope) {
+    return BusRouteCatalog.matches(routeId, scope, busRoutes);
+  }
+  return followedRoutes.any(
+    (route) => BusRouteCatalog.matches(routeId, route, busRoutes),
+  );
+}
+
+String _scopeLabel(String scope, Set<String> followedRoutes) =>
+    scope == _allNetworkScope
+    ? 'All network'
+    : scope == _myRoutesScope
+    ? 'My Routes (${followedRoutes.length})'
+    : 'Route $scope';
 
 class ServiceAnalyticsScreen extends StatefulWidget {
-  const ServiceAnalyticsScreen({this.embedded = false, super.key});
+  const ServiceAnalyticsScreen({
+    this.embedded = false,
+    this.routePreferences,
+    super.key,
+  });
 
   final bool embedded;
+  final Module5RoutePreferences? routePreferences;
 
   @override
   State<ServiceAnalyticsScreen> createState() => _ServiceAnalyticsScreenState();
 }
 
 class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
-  final GtfsRealtimeService _service = GtfsRealtimeService();
+  final GtfsRealtimeService _service = GtfsRealtimeService(
+    endpoints: GtfsRealtimeService.kualaLumpurBusEndpoints,
+  );
   final ServiceAnalyticsCalculator _calculator =
       const ServiceAnalyticsCalculator();
 
   late final SupabaseAnalyticsRepository _history;
+  late final Module5RoutePreferences _routePreferences;
+  late final bool _ownsRoutePreferences;
   late Future<ServiceAnalytics> _analyticsFuture;
+  ServiceAnalytics? _lastAnalytics;
   List<DailyAnalyticsSummary> _dailySummaries = const [];
+  List<AnalyticsAlert> _alerts = const [];
+  Object? _alertsError;
+  DateTime? _historyUpdatedAt;
+  bool _historyRequestRunning = false;
   Map<String, BusRouteInfo> _busRoutes = const {};
   Object? _historyError;
   Timer? _refreshTimer;
   int _selectedTab = 0;
   bool _isLoading = true;
   bool _isHistoryLoading = true;
+  String _routeScope = _myRoutesScope;
 
   @override
   void initState() {
     super.initState();
+    _ownsRoutePreferences = widget.routePreferences == null;
+    _routePreferences = widget.routePreferences ?? Module5RoutePreferences();
+    _routePreferences.addListener(_routePreferencesChanged);
+    if (!_routePreferences.loaded) _routePreferences.load();
     _history = SupabaseAnalyticsRepository();
     _analyticsFuture = _loadAnalytics();
     _loadCloudHistory();
@@ -45,7 +160,19 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
   void dispose() {
     _refreshTimer?.cancel();
     _service.close();
+    _routePreferences.removeListener(_routePreferencesChanged);
+    if (_ownsRoutePreferences) _routePreferences.dispose();
     super.dispose();
+  }
+
+  void _routePreferencesChanged() {
+    if (!mounted) return;
+    if (_routeScope != _myRoutesScope &&
+        _routeScope != _allNetworkScope &&
+        !_routePreferences.followedRoutes.contains(_routeScope)) {
+      _routeScope = _myRoutesScope;
+    }
+    setState(() {});
   }
 
   Future<void> _refresh() async {
@@ -67,7 +194,9 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
   Future<ServiceAnalytics> _loadAnalytics() async {
     try {
       final feed = await _service.fetchVehiclePositions();
-      return _calculator.calculate(feed);
+      final analytics = _calculator.calculate(feed);
+      _lastAnalytics = analytics;
+      return analytics;
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -76,6 +205,8 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
   }
 
   Future<void> _loadCloudHistory() async {
+    if (_historyRequestRunning) return;
+    _historyRequestRunning = true;
     if (mounted) {
       setState(() {
         _isHistoryLoading = true;
@@ -83,10 +214,42 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
       });
     }
     try {
-      final summaries = await _history.loadLastSevenDays();
+      final today = AnalyticsPeriod.day(DateTime.now());
+      final start = AnalyticsPeriod.monday(
+        today,
+      ).subtract(const Duration(days: 56));
+      final end = today.add(const Duration(days: 1));
+      List<DailyAnalyticsSummary>? summaries;
+      List<AnalyticsAlert>? alerts;
+      Object? summaryError;
+      Object? alertError;
+      await Future.wait([
+        _history
+            .loadSummaries(start: start, end: end)
+            .then((value) {
+              summaries = value;
+            })
+            .catchError((Object error) {
+              summaryError = error;
+            }),
+        _history
+            .loadAlerts(start: start, end: end)
+            .then((value) {
+              alerts = value;
+            })
+            .catchError((Object error) {
+              alertError = error;
+            }),
+      ]);
       if (mounted) {
         setState(() {
-          _dailySummaries = summaries;
+          if (summaries != null) _dailySummaries = summaries!;
+          if (alerts != null) _alerts = alerts!;
+          _historyError = summaryError;
+          _alertsError = alertError;
+          if (summaryError == null && alertError == null) {
+            _historyUpdatedAt = DateTime.now();
+          }
           _isHistoryLoading = false;
         });
       }
@@ -97,6 +260,8 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
           _isHistoryLoading = false;
         });
       }
+    } finally {
+      _historyRequestRunning = false;
     }
   }
 
@@ -109,6 +274,100 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
     }
   }
 
+  Future<void> _manageRoutes() async {
+    if (_busRoutes.isEmpty) return;
+    final selected = Set<String>.from(_routePreferences.followedRoutes);
+    final routes = BusRouteCatalog.selectable(_busRoutes);
+    var query = '';
+    final result = await showModalBottomSheet<Set<String>>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          final visible = routes.where((route) {
+            final value = query.toLowerCase();
+            return route.routeCode.toLowerCase().contains(value) ||
+                route.longName.toLowerCase().contains(value);
+          }).toList();
+          return SafeArea(
+            child: SizedBox(
+              height: MediaQuery.sizeOf(context).height * 0.82,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 8, 8),
+                    child: Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'Choose My Routes',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () =>
+                              Navigator.pop(sheetContext, selected),
+                          child: const Text('Done'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: TextField(
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search),
+                        labelText: 'Search bus route',
+                        border: OutlineInputBorder(),
+                      ),
+                      onChanged: (value) =>
+                          setSheetState(() => query = value.trim()),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: visible.length,
+                      itemBuilder: (context, index) {
+                        final route = visible[index];
+                        final code = route.routeCode.toUpperCase();
+                        final availability = _availabilityForRoute(
+                          route,
+                          _lastAnalytics,
+                        );
+                        return CheckboxListTile(
+                          value: selected.contains(code),
+                          onChanged: (checked) => setSheetState(() {
+                            checked == true
+                                ? selected.add(code)
+                                : selected.remove(code);
+                          }),
+                          title: Text('Route ${route.routeCode}'),
+                          subtitle: Text(
+                            '${route.longName}\n${availability.label}',
+                          ),
+                          secondary: Icon(
+                            availability.icon,
+                            color: availability.color,
+                          ),
+                          isThreeLine: true,
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    if (result != null) await _routePreferences.replace(result);
+  }
+
   @override
   Widget build(BuildContext context) {
     final content = Column(
@@ -116,6 +375,12 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
         _AnalyticsTabs(
           selectedIndex: _selectedTab,
           onSelected: (index) => setState(() => _selectedTab = index),
+        ),
+        _RouteScopeBar(
+          routes: _routePreferences.followedRoutes,
+          selected: _routeScope,
+          onSelected: (value) => setState(() => _routeScope = value),
+          onManage: _manageRoutes,
         ),
         Expanded(child: _buildSelectedTab()),
       ],
@@ -156,22 +421,27 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
               : _LiveServiceView(
                   analytics: analytics,
                   busRoutes: _busRoutes,
+                  followedRoutes: _routePreferences.followedRoutes,
+                  routeScope: _routeScope,
+                  alerts: _alerts,
                   isLoading: _isLoading,
                   onRefresh: _refresh,
                 );
         },
       ),
-      1 => _TrendDashboard(
+      _ => AnalyticsHistoryView(
+        key: ValueKey(_selectedTab),
+        report: _selectedTab == 2,
         summaries: _dailySummaries,
+        alerts: _alerts,
+        alertsError: _alertsError,
+        updatedAt: _historyUpdatedAt,
         isLoading: _isHistoryLoading,
         error: _historyError,
         onRetry: _loadCloudHistory,
-      ),
-      _ => _WeeklyReportView(
-        summaries: _dailySummaries,
-        isLoading: _isHistoryLoading,
-        error: _historyError,
-        onRetry: _loadCloudHistory,
+        routeScope: _routeScope,
+        followedRoutes: _routePreferences.followedRoutes,
+        busRoutes: _busRoutes,
       ),
     };
   }
@@ -205,22 +475,119 @@ class _AnalyticsTabs extends StatelessWidget {
   }
 }
 
+class _RouteScopeBar extends StatelessWidget {
+  const _RouteScopeBar({
+    required this.routes,
+    required this.selected,
+    required this.onSelected,
+    required this.onManage,
+  });
+
+  final Set<String> routes;
+  final String selected;
+  final ValueChanged<String> onSelected;
+  final VoidCallback onManage;
+
+  @override
+  Widget build(BuildContext context) {
+    final values = routes.toList()..sort();
+    final validSelected =
+        selected == _myRoutesScope ||
+        selected == _allNetworkScope ||
+        routes.contains(selected);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+      child: Row(
+        children: [
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              initialValue: validSelected ? selected : _myRoutesScope,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Analytics for',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              items: [
+                DropdownMenuItem(
+                  value: _myRoutesScope,
+                  child: Text('My Routes (${routes.length})'),
+                ),
+                const DropdownMenuItem(
+                  value: _allNetworkScope,
+                  child: Text('All network'),
+                ),
+                for (final route in values)
+                  DropdownMenuItem(value: route, child: Text('Route $route')),
+              ],
+              onChanged: (value) {
+                if (value != null) onSelected(value);
+              },
+            ),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton.icon(
+            onPressed: onManage,
+            icon: const Icon(Icons.star_outline),
+            label: const Text('Manage'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _LiveServiceView extends StatelessWidget {
   const _LiveServiceView({
     required this.analytics,
     required this.busRoutes,
+    required this.followedRoutes,
+    required this.routeScope,
+    required this.alerts,
     required this.isLoading,
     required this.onRefresh,
   });
 
   final ServiceAnalytics analytics;
   final Map<String, BusRouteInfo> busRoutes;
+  final Set<String> followedRoutes;
+  final String routeScope;
+  final List<AnalyticsAlert> alerts;
   final bool isLoading;
   final Future<void> Function() onRefresh;
 
   @override
   Widget build(BuildContext context) {
     final emptyFeed = analytics.vehicleCount == 0;
+    final visibleRoutes = <String, int>{
+      for (final entry in analytics.vehiclesByRoute.entries)
+        if (_routeIncluded(entry.key, routeScope, followedRoutes, busRoutes))
+          entry.key: entry.value,
+    };
+    final now = DateTime.now().toUtc();
+    final currentAlerts = alerts.where(
+      (alert) =>
+          alert.isCurrentAt(now) &&
+          !alert.isDataHealth &&
+          _routeIncluded(alert.routeId, routeScope, followedRoutes, busRoutes),
+    );
+    final delayAlerts = currentAlerts
+        .where((alert) => alert.type == TransitNotificationType.delay)
+        .length;
+    final slowAlerts = currentAlerts
+        .where((alert) => alert.type == TransitNotificationType.crowd)
+        .length;
+    final scopedVehicleCount = visibleRoutes.values.fold<int>(
+      0,
+      (a, b) => a + b,
+    );
+    final specificRoute =
+        routeScope == _myRoutesScope || routeScope == _allNetworkScope
+        ? null
+        : busRoutes[routeScope];
+    final availability = specificRoute == null
+        ? null
+        : _availabilityForRoute(specificRoute, analytics);
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 1100),
@@ -236,37 +603,71 @@ class _LiveServiceView extends StatelessWidget {
                 isLoading: isLoading,
                 onRefresh: onRefresh,
               ),
+              if (routeScope == _myRoutesScope && followedRoutes.isEmpty) ...[
+                const SizedBox(height: 12),
+                const _InformationCard(
+                  icon: Icons.star_outline,
+                  title: 'Choose the bus routes you use',
+                  message:
+                      'Use Manage to follow routes. Live service, trends and notifications will then focus on My Routes.',
+                ),
+              ],
+              if (specificRoute != null && availability != null) ...[
+                const SizedBox(height: 12),
+                _InformationCard(
+                  icon: availability.icon,
+                  iconColor: availability.color,
+                  title:
+                      'Route ${specificRoute.routeCode} • ${availability.label}',
+                  message: availability.label == 'Realtime unavailable'
+                      ? '${specificRoute.longName}. The timetable remains available, but delay and congestion cannot be calculated until its realtime feed returns vehicles.'
+                      : specificRoute.longName,
+                ),
+              ],
               const SizedBox(height: 12),
               _CompactCardGrid(
                 wideColumns: 4,
                 children: [
                   _MetricTile(
-                    label: 'Live vehicles',
-                    value: '${analytics.vehicleCount}',
+                    label: 'Observed buses',
+                    value:
+                        '${routeScope == _allNetworkScope ? analytics.vehicleCount : scopedVehicleCount}',
                     color: const Color(0xFF2962FF),
                     icon: Icons.directions_bus,
                   ),
                   _MetricTile(
-                    label: 'Active routes',
-                    value: '${analytics.routeCount}',
+                    label: 'Observed bus routes',
+                    value:
+                        '${routeScope == _allNetworkScope ? analytics.routeCount : visibleRoutes.length}',
                     color: const Color(0xFF7C3AED),
                     icon: Icons.route,
                   ),
                   _MetricTile(
-                    label: 'Congested',
-                    value: '${analytics.congestedVehicleCount}',
+                    label: 'Active delay alerts',
+                    value: '$delayAlerts',
                     color: const Color(0xFFF59E0B),
                     icon: Icons.traffic,
                   ),
                   _MetricTile(
-                    label: 'Severe',
-                    value: '${analytics.severeCongestionCount}',
+                    label: 'Possible slow movement',
+                    value: '$slowAlerts',
                     color: const Color(0xFFEF4444),
                     icon: Icons.warning_amber,
                   ),
                 ],
               ),
               const SizedBox(height: 20),
+              _InformationCard(
+                icon: Icons.info_outline,
+                title: 'How live congestion is handled',
+                message:
+                    'The public feed does not currently provide usable congestion levels. '
+                    'NextRoute only publishes Possible slow movement after repeated fresh GPS observations; '
+                    'normal stop dwell and missing data are not treated as congestion.',
+              ),
+              const SizedBox(height: 12),
+              _FeedStatusCard(statuses: analytics.sourceStatuses),
+              const SizedBox(height: 12),
               Text(
                 'ROUTE ACTIVITY',
                 style: Theme.of(context).textTheme.labelMedium?.copyWith(
@@ -276,19 +677,18 @@ class _LiveServiceView extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 8),
-              if (analytics.vehiclesByRoute.isEmpty)
-                const _InformationCard(
+              if (visibleRoutes.isEmpty)
+                _InformationCard(
                   icon: Icons.info_outline,
-                  title: 'No live vehicles right now',
-                  message:
-                      'The provider returned a valid feed with no vehicle records. '
-                      'Pull down or tap refresh to try again later.',
+                  title: routeScope == _myRoutesScope && followedRoutes.isEmpty
+                      ? 'No routes selected'
+                      : 'No active realtime vehicles for this selection',
+                  message: emptyFeed
+                      ? 'No configured Kuala Lumpur bus feed returned vehicle records. Refresh later; missing data is not zero service.'
+                      : 'Other routes may have live vehicles. This selection can remain followed and will update automatically when its feed reports service.',
                 )
               else
-                _RouteActivityCard(
-                  routes: analytics.vehiclesByRoute,
-                  busRoutes: busRoutes,
-                ),
+                _RouteActivityCard(routes: visibleRoutes, busRoutes: busRoutes),
             ],
           ),
         ),
@@ -312,6 +712,12 @@ class _StatusCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final age = latestUpdate == null
+        ? null
+        : DateTime.now().toUtc().difference(latestUpdate!.toUtc());
+    final freshnessUnknown = age == null || age.inSeconds < -60;
+    final stale = age != null && age > const Duration(minutes: 5);
+    final warning = emptyFeed || freshnessUnknown || stale;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(14),
@@ -320,7 +726,7 @@ class _StatusCard extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: (emptyFeed ? Colors.orange : Colors.green).withValues(
+                color: (warning ? Colors.orange : Colors.green).withValues(
                   alpha: 0.12,
                 ),
                 shape: BoxShape.circle,
@@ -329,7 +735,7 @@ class _StatusCard extends StatelessWidget {
                 emptyFeed
                     ? Icons.cloud_off_outlined
                     : Icons.cloud_done_outlined,
-                color: emptyFeed ? Colors.orange : Colors.green,
+                color: warning ? Colors.orange : Colors.green,
               ),
             ),
             const SizedBox(width: 12),
@@ -340,7 +746,11 @@ class _StatusCard extends StatelessWidget {
                   Text(
                     emptyFeed
                         ? 'Feed online — no vehicles'
-                        : 'Live feed online',
+                        : freshnessUnknown
+                        ? 'Feed received — freshness unknown'
+                        : stale
+                        ? 'Feed received — vehicle data is stale'
+                        : 'Feed received — recent positions available',
                     style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 2),
@@ -365,6 +775,61 @@ class _StatusCard extends StatelessWidget {
   }
 }
 
+class _FeedStatusCard extends StatelessWidget {
+  const _FeedStatusCard({required this.statuses});
+
+  final List<RealtimeFeedStatus> statuses;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: ExpansionTile(
+        leading: const Icon(Icons.cloud_queue),
+        title: const Text('Realtime source status'),
+        subtitle: const Text(
+          'A feed response and a bus route being active are different things.',
+        ),
+        children: [
+          if (statuses.isEmpty)
+            const ListTile(title: Text('Source diagnostics unavailable')),
+          for (final status in statuses)
+            ListTile(
+              leading: Icon(
+                status.availability == RealtimeFeedAvailability.live
+                    ? Icons.check_circle_outline
+                    : status.availability ==
+                          RealtimeFeedAvailability.unavailable
+                    ? Icons.error_outline
+                    : Icons.info_outline,
+              ),
+              title: Text(_sourceLabel(status.category)),
+              subtitle: Text(_feedStatusText(status)),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+String _sourceLabel(String category) => switch (category) {
+  'rapid-bus-kl' => 'Rapid Bus KL',
+  'rapid-bus-mrtfeeder' => 'MRT feeder buses',
+  _ => category,
+};
+
+String _feedStatusText(
+  RealtimeFeedStatus status,
+) => switch (status.availability) {
+  RealtimeFeedAvailability.live =>
+    '${status.vehicleCount ?? 0} live vehicle(s) • latest ${status.latestUpdate == null ? 'timestamp unavailable' : _formatDataAge(status.latestUpdate!)}',
+  RealtimeFeedAvailability.noVehicleData =>
+    'Feed responded but returned no usable vehicle positions. Realtime analytics are unavailable.',
+  RealtimeFeedAvailability.stale =>
+    '${status.vehicleCount ?? 0} vehicle position(s), but the latest timestamp is stale.',
+  RealtimeFeedAvailability.unavailable =>
+    'Could not read this feed${status.error == null ? '' : ': ${status.error}'}',
+};
+
 class _CompactCardGrid extends StatelessWidget {
   const _CompactCardGrid({required this.children, this.wideColumns = 3});
 
@@ -384,7 +849,13 @@ class _CompactCardGrid extends StatelessWidget {
           runSpacing: spacing,
           children: [
             for (final child in children)
-              SizedBox(width: itemWidth, height: 92, child: child),
+              SizedBox(
+                width: itemWidth,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 100),
+                  child: child,
+                ),
+              ),
           ],
         );
       },
@@ -498,472 +969,937 @@ class _RouteActivityCard extends StatelessWidget {
   }
 }
 
-class _TrendDashboard extends StatelessWidget {
-  const _TrendDashboard({
+/// Network-free presentation, also used by the widget tests.
+class AnalyticsHistoryView extends StatefulWidget {
+  const AnalyticsHistoryView({
+    required this.report,
     required this.summaries,
+    required this.alerts,
     required this.isLoading,
     required this.error,
+    required this.alertsError,
     required this.onRetry,
+    this.updatedAt,
+    this.now,
+    this.saveReport,
+    this.routeScope = _allNetworkScope,
+    this.followedRoutes = const {},
+    this.busRoutes = const {},
+    super.key,
   });
-
+  final bool report;
   final List<DailyAnalyticsSummary> summaries;
+  final List<AnalyticsAlert> alerts;
   final bool isLoading;
   final Object? error;
+  final Object? alertsError;
   final Future<void> Function() onRetry;
-
+  final DateTime? updatedAt;
+  final DateTime? now;
+  final Future<String?> Function(String name, Uint8List bytes)? saveReport;
+  final String routeScope;
+  final Set<String> followedRoutes;
+  final Map<String, BusRouteInfo> busRoutes;
   @override
-  Widget build(BuildContext context) {
-    if (isLoading && summaries.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (error != null && summaries.isEmpty) {
-      return _ErrorState(error: error, onRetry: onRetry);
-    }
-    final days = _sevenDaySummarySlots(summaries);
-    final recorded = summaries.where((day) => day.sampleCount > 0).toList();
-    final latest = recorded.isEmpty ? null : recorded.last;
-    final previous = recorded.length < 2 ? null : recorded[recorded.length - 2];
+  State<AnalyticsHistoryView> createState() => _AnalyticsHistoryViewState();
+}
 
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 1100),
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 2, 16, 24),
-          children: [
-            _InformationCard(
-              icon: Icons.traffic,
-              title: _trendTitle(latest, previous),
-              message: _trendMessage(latest, previous, recorded.length),
-            ),
-            const SizedBox(height: 12),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      '7-DAY CONGESTION TREND',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: Color(0xFF52627D),
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      'Y-axis: average share of live buses reported as congested',
-                      style: TextStyle(fontSize: 12),
-                    ),
-                    const SizedBox(height: 10),
-                    _CongestionChart(days: days),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            _CompactCardGrid(
-              children: [
-                _SummaryCard(
-                  label: 'Days with collected data',
-                  value: '${recorded.length}/7',
-                  color: const Color(0xFF2962FF),
-                ),
-                _SummaryCard(
-                  label: 'Latest congestion rate',
-                  value: latest == null
-                      ? '—'
-                      : '${latest.averageCongestionRate.toStringAsFixed(1)}%',
-                  color: const Color(0xFFF59E0B),
-                ),
-                _SummaryCard(
-                  label: 'Latest feed availability',
-                  value: latest == null
-                      ? '—'
-                      : '${latest.feedSuccessRate.toStringAsFixed(0)}%',
-                  color: const Color(0xFF16A34A),
-                ),
-              ],
-            ),
-          ],
+class _AnalyticsHistoryViewState extends State<AnalyticsHistoryView> {
+  int _weekOffset = 0;
+  int? _selectedDay;
+  TransitNotificationType? _trendType;
+  bool _isExporting = false;
+
+  Future<void> _downloadReport(
+    DateTime start,
+    DateTime now,
+    String summary,
+    List<AnalyticsAlert> alerts,
+    List<DailyAnalyticsSummary> days,
+  ) async {
+    if (_isExporting) return;
+    setState(() => _isExporting = true);
+    try {
+      final name = 'NextRoute-weekly-${WeeklyReportExport.date(start)}';
+      final bytes = Uint8List.fromList(
+        utf8.encode(
+          WeeklyReportExport.csv(
+            start: start,
+            now: now,
+            summary: summary,
+            alerts: alerts,
+            days: days,
+          ),
         ),
-      ),
-    );
-  }
-
-  static String _trendTitle(
-    DailyAnalyticsSummary? latest,
-    DailyAnalyticsSummary? previous,
-  ) {
-    if (latest == null) return 'No cloud analytics collected yet';
-    if (previous == null) return 'More history is needed to identify a trend';
-    final difference =
-        latest.averageCongestionRate - previous.averageCongestionRate;
-    if (difference.abs() < 0.5) return 'Congestion remained broadly stable';
-    return difference > 0
-        ? 'Congestion increased on the latest recorded day'
-        : 'Congestion decreased on the latest recorded day';
-  }
-
-  static String _trendMessage(
-    DailyAnalyticsSummary? latest,
-    DailyAnalyticsSummary? previous,
-    int daysRecorded,
-  ) {
-    if (latest == null) {
-      return 'The Supabase collector has not stored a successful day yet. '
-          'This page will update for every user after cloud collection begins.';
-    }
-    if (previous == null) {
-      return 'Only $daysRecorded of the last 7 days has data. The latest '
-          'average congestion rate was '
-          '${latest.averageCongestionRate.toStringAsFixed(1)}%. Missing days '
-          'are not treated as zero.';
-    }
-    final difference =
-        latest.averageCongestionRate - previous.averageCongestionRate;
-    return 'The latest rate was '
-        '${latest.averageCongestionRate.toStringAsFixed(1)}%, '
-        '${difference.abs().toStringAsFixed(1)} percentage points '
-        '${difference >= 0 ? 'higher' : 'lower'} than the previous recorded '
-        'day. This measures reported bus congestion, not passenger ridership.';
-  }
-}
-
-class _WeeklyReportView extends StatelessWidget {
-  const _WeeklyReportView({
-    required this.summaries,
-    required this.isLoading,
-    required this.error,
-    required this.onRetry,
-  });
-
-  final List<DailyAnalyticsSummary> summaries;
-  final bool isLoading;
-  final Object? error;
-  final Future<void> Function() onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    if (isLoading && summaries.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (error != null && summaries.isEmpty) {
-      return _ErrorState(error: error, onRetry: onRetry);
-    }
-
-    final days = _sevenDaySummarySlots(summaries);
-    final recorded = summaries.where((day) => day.sampleCount > 0).toList();
-    final today = DateTime.now();
-    final start = DateTime(
-      today.year,
-      today.month,
-      today.day,
-    ).subtract(const Duration(days: 6));
-    final totalSamples = recorded.fold<int>(
-      0,
-      (sum, day) => sum + day.sampleCount,
-    );
-    final successfulSamples = recorded.fold<int>(
-      0,
-      (sum, day) => sum + day.successfulSampleCount,
-    );
-    final failedSamples = recorded.fold<int>(
-      0,
-      (sum, day) => sum + day.failedSampleCount,
-    );
-    final feedSuccessRate = totalSamples == 0
-        ? 0.0
-        : successfulSamples / totalSamples * 100;
-    final averageCongestionRate = recorded.isEmpty
-        ? 0.0
-        : recorded.fold<double>(
-                0,
-                (sum, day) => sum + day.averageCongestionRate,
-              ) /
-              recorded.length;
-    final peakDay = recorded.isEmpty
-        ? null
-        : recorded.reduce(
-            (current, next) =>
-                next.averageCongestionRate > current.averageCongestionRate
-                ? next
-                : current,
-          );
-
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 1100),
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 2, 16, 24),
-          children: [
-            Card(
-              color: const Color(0xFFEAF1FF),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'WEEKLY SERVICE REPORT',
-                      style: TextStyle(
-                        color: Color(0xFF2962FF),
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      '${_formatDate(start)} — ${_formatDate(today)}',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      '$totalSamples scheduled cloud checks across '
-                      '${recorded.length} of the last 7 days.',
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            _InformationCard(
-              icon: recorded.length < 4
-                  ? Icons.hourglass_top
-                  : feedSuccessRate >= 90
-                  ? Icons.check_circle_outline
-                  : Icons.warning_amber,
-              title: recorded.length < 4
-                  ? 'Partial report — more days are needed'
-                  : 'Weekly congestion and feed summary',
-              message: recorded.isEmpty
-                  ? 'No cloud snapshots are available yet. The scheduled '
-                        'collector must run before a real report can be created.'
-                  : 'Average reported congestion was '
-                        '${averageCongestionRate.toStringAsFixed(1)}%. '
-                        '${peakDay == null ? '' : 'The highest daily rate was ${peakDay.averageCongestionRate.toStringAsFixed(1)}% on ${_formatShortDate(peakDay.serviceDate)}. '}'
-                        'Feed availability was '
-                        '${feedSuccessRate.toStringAsFixed(0)}%.',
-            ),
-            const SizedBox(height: 12),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'DAILY CONGESTION RATE',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: Color(0xFF52627D),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    _CongestionChart(days: days),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            _CompactCardGrid(
-              children: [
-                _SummaryCard(
-                  label: 'Feed availability',
-                  value: '${feedSuccessRate.toStringAsFixed(0)}%',
-                  color: const Color(0xFF16A34A),
-                ),
-                _SummaryCard(
-                  label: 'Failed cloud checks',
-                  value: '$failedSamples',
-                  color: const Color(0xFFEF4444),
-                ),
-                _SummaryCard(
-                  label: 'Average congestion rate',
-                  value: '${averageCongestionRate.toStringAsFixed(1)}%',
-                  color: const Color(0xFFF59E0B),
-                ),
-                _SummaryCard(
-                  label: 'Highest severe vehicles in one check',
-                  value: peakDay == null
-                      ? '—'
-                      : '${peakDay.peakSevereCongestionCount}',
-                  color: const Color(0xFFD92D3A),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _CongestionChart extends StatefulWidget {
-  const _CongestionChart({required this.days});
-
-  final List<DailyAnalyticsSummary?> days;
-
-  @override
-  State<_CongestionChart> createState() => _CongestionChartState();
-}
-
-class _CongestionChartState extends State<_CongestionChart> {
-  static const _leftPadding = 38.0;
-  static const _rightPadding = 10.0;
-  int? _selectedIndex;
-
-  void _selectNearest(Offset position, double width) {
-    final chartWidth = math.max(1.0, width - _leftPadding - _rightPadding);
-    final ratio = ((position.dx - _leftPadding) / chartWidth).clamp(0.0, 1.0);
-    final index = (ratio * 6).round();
-    if (_selectedIndex != index) setState(() => _selectedIndex = index);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final selected = _selectedIndex == null
-                ? null
-                : widget.days[_selectedIndex!];
-            final chartWidth = math.max(
-              1.0,
-              constraints.maxWidth - _leftPadding - _rightPadding,
+      );
+      final save = widget.saveReport;
+      // A native Save As dialog can open behind the Flutter window on Windows,
+      // which makes the report screen appear to have disappeared. Desktop
+      // exports therefore go straight to Downloads and keep the app visible.
+      final saveDirectlyToDownloads =
+          !kIsWeb &&
+          (defaultTargetPlatform == TargetPlatform.windows ||
+              defaultTargetPlatform == TargetPlatform.linux);
+      final result = save != null
+          ? await save(name, bytes)
+          : saveDirectlyToDownloads
+          ? await FileSaver.instance.saveFile(
+              name: name,
+              bytes: bytes,
+              fileExtension: 'csv',
+              mimeType: MimeType.custom,
+              customMimeType: 'text/csv',
+            )
+          : await FileSaver.instance.saveAs(
+              name: name,
+              bytes: bytes,
+              fileExtension: 'csv',
+              mimeType: MimeType.custom,
+              customMimeType: 'text/csv',
             );
-            final pointX = _selectedIndex == null
-                ? 0.0
-                : _leftPadding + chartWidth * _selectedIndex! / 6;
-            final tooltipLeft = (pointX - 80)
-                .clamp(0.0, math.max(0.0, constraints.maxWidth - 160))
-                .toDouble();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            result == null || result.isEmpty
+                ? 'Export cancelled; no report saved.'
+                : kIsWeb
+                ? 'Download requested. Check your browser downloads.'
+                : saveDirectlyToDownloads
+                ? 'Report downloaded: $result'
+                : 'Report saved: $result',
+          ),
+        ),
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Could not save report. Try again or use Copy weekly report.',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
+    }
+  }
 
-            return MouseRegion(
-              onHover: (event) =>
-                  _selectNearest(event.localPosition, constraints.maxWidth),
-              onExit: (_) => setState(() => _selectedIndex = null),
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapDown: (details) =>
-                    _selectNearest(details.localPosition, constraints.maxWidth),
-                onHorizontalDragUpdate: (details) =>
-                    _selectNearest(details.localPosition, constraints.maxWidth),
-                child: SizedBox(
-                  height: 190,
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: CustomPaint(
-                          painter: _TrendChartPainter(
-                            widget.days,
-                            highlightIndex: _selectedIndex,
-                          ),
-                        ),
+  @override
+  Widget build(BuildContext context) {
+    if (widget.isLoading &&
+        widget.updatedAt == null &&
+        widget.summaries.isEmpty &&
+        widget.alerts.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    final now = widget.now ?? DateTime.now();
+    final today = AnalyticsPeriod.day(now);
+    final start = widget.report
+        ? AnalyticsPeriod.monday(
+            today,
+          ).subtract(Duration(days: _weekOffset * 7))
+        : today.subtract(const Duration(days: 6));
+    final end = start.add(const Duration(days: 7));
+    final all = AnalyticsPeriod.deduplicate(widget.alerts);
+    final periodAlerts = AnalyticsPeriod.alertsIn(all, start, end);
+    final alerts = periodAlerts
+        .where(
+          (alert) => _routeIncluded(
+            alert.routeId,
+            widget.routeScope,
+            widget.followedRoutes,
+            widget.busRoutes,
+          ),
+        )
+        .toList();
+    final health = AnalyticsPeriod.alertsIn(all, start, end, dataHealth: true);
+    final days = AnalyticsPeriod.summariesIn(widget.summaries, start, end);
+    final available = widget.alertsError == null;
+    final trendAlerts = _trendType == null
+        ? alerts
+        : alerts.where((alert) => alert.type == _trendType).toList();
+    final counts = List.generate(
+      7,
+      (i) => AnalyticsPeriod.alertsIn(
+        trendAlerts,
+        start.add(Duration(days: i)),
+        start.add(Duration(days: i + 1)),
+      ).length,
+    );
+    final partial = widget.report && _weekOffset == 0;
+    final emptyMyRoutes =
+        widget.routeScope == _myRoutesScope && widget.followedRoutes.isEmpty;
+    final scopeLabel = _scopeLabel(widget.routeScope, widget.followedRoutes);
+    final summary = !available
+        ? 'Alert history could not be refreshed. No event totals or conclusions are shown.'
+        : emptyMyRoutes
+        ? 'Choose at least one route using Manage, or select All network to see network-wide analytics.'
+        : alerts.isEmpty
+        ? 'No published travel alerts were found for $scopeLabel. '
+              'This does not prove that no disruptions occurred.'
+        : '${alerts.length} published travel alert(s) for $scopeLabel mention '
+              '${alerts.map((a) => a.routeId).whereType<String>().toSet().length} identified route(s). '
+              '${health.length} collector-health notice(s) are tracked separately, not counted as travel disruptions.';
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 1100),
+        child: RefreshIndicator(
+          onRefresh: widget.onRetry,
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.report
+                          ? 'Weekly service report'
+                          : 'Explore service alerts',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
                       ),
-                      if (_selectedIndex != null)
-                        Positioned(
-                          left: tooltipLeft,
-                          top: 6,
-                          width: 160,
-                          child: Material(
-                            elevation: 4,
-                            borderRadius: BorderRadius.circular(10),
-                            color: const Color(0xFF17233C),
-                            child: Padding(
-                              padding: const EdgeInsets.all(10),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    selected == null
-                                        ? 'Day ${_selectedIndex! + 1}'
-                                        : _formatShortDate(
-                                            selected.serviceDate,
-                                          ),
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: widget.isLoading ? null : widget.onRetry,
+                    tooltip: 'Refresh cloud history',
+                    icon: const Icon(Icons.refresh),
+                  ),
+                ],
+              ),
+              Text(
+                widget.report
+                    ? 'A Monday–Sunday summary of published alerts and collection quality.'
+                    : 'See when and where travel alerts were published over the last seven days.',
+              ),
+              const SizedBox(height: 12),
+              if (widget.report && !emptyMyRoutes)
+                DropdownButtonFormField<int>(
+                  initialValue: _weekOffset,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Reporting week • Malaysia time',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: List.generate(8, (i) {
+                    final monday = AnalyticsPeriod.monday(
+                      today,
+                    ).subtract(Duration(days: i * 7));
+                    return DropdownMenuItem(
+                      value: i,
+                      child: Text(
+                        '${_formatShortDate(monday)} – ${_formatDate(monday.add(const Duration(days: 6)))}'
+                        '${i == 0 ? ' • In progress' : ''}',
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    );
+                  }),
+                  onChanged: (value) => setState(() {
+                    _weekOffset = value ?? 0;
+                    _selectedDay = null;
+                  }),
+                ),
+              if (!widget.report && !emptyMyRoutes)
+                DropdownButtonFormField<TransitNotificationType?>(
+                  initialValue: _trendType,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Trend metric',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: null,
+                      child: Text('All travel alerts'),
+                    ),
+                    DropdownMenuItem(
+                      value: TransitNotificationType.delay,
+                      child: Text('Delay alerts'),
+                    ),
+                    DropdownMenuItem(
+                      value: TransitNotificationType.crowd,
+                      child: Text('Possible slow movement'),
+                    ),
+                    DropdownMenuItem(
+                      value: TransitNotificationType.service,
+                      child: Text('Service notices'),
+                    ),
+                  ],
+                  onChanged: available
+                      ? (value) => setState(() {
+                          _trendType = value;
+                          _selectedDay = null;
+                        })
+                      : null,
+                ),
+              const SizedBox(height: 12),
+              if (widget.isLoading) const LinearProgressIndicator(),
+              if (widget.alertsError != null || widget.error != null)
+                _InformationCard(
+                  icon: Icons.warning_amber,
+                  title: 'Cloud history needs attention',
+                  message:
+                      '${widget.alertsError != null ? 'Alert archive unavailable. Apply the Module 5 analytics migration if it has not been deployed. ' : ''}'
+                      '${widget.error != null ? 'Collection history could not be refreshed. ' : ''}'
+                      'Check the connection and database permissions, then refresh. '
+                      '${widget.updatedAt == null ? '' : 'Last complete refresh: ${_formatDataAge(widget.updatedAt!)}.'}',
+                ),
+              _InformationCard(
+                icon: emptyMyRoutes
+                    ? Icons.route_outlined
+                    : widget.report
+                    ? Icons.summarize_outlined
+                    : Icons.insights,
+                title: emptyMyRoutes
+                    ? 'No routes selected'
+                    : widget.report
+                    ? (partial
+                          ? 'Week in progress — not a final report'
+                          : 'Week at a glance')
+                    : '${_formatShortDate(start)} – ${_formatShortDate(end.subtract(const Duration(days: 1)))}',
+                message: summary,
+              ),
+              const SizedBox(height: 12),
+              if (available && !emptyMyRoutes) ...[
+                if (widget.report) ...[
+                  _CompactCardGrid(
+                    children: [
+                      _SummaryCard(
+                        label: 'Delay alerts',
+                        value:
+                            '${alerts.where((a) => a.type == TransitNotificationType.delay).length}',
+                        color: const Color(0xFF2962FF),
+                      ),
+                      _SummaryCard(
+                        label: 'Average known delay',
+                        value: _averageDelayLabel(alerts),
+                        color: const Color(0xFF7C3AED),
+                      ),
+                      _SummaryCard(
+                        label: 'Possible slow movement',
+                        value:
+                            '${alerts.where((a) => a.type == TransitNotificationType.crowd).length}',
+                        color: const Color(0xFFF59E0B),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  _section(
+                    'ALERTS BY CATEGORY',
+                    Column(
+                      children: [
+                        for (final type in TransitNotificationType.values)
+                          _CategoryBar(
+                            label: _typeLabel(type),
+                            count: alerts.where((a) => a.type == type).length,
+                            maximum: math.max(1, alerts.length),
+                            color: _typeColor(type),
+                          ),
+                        const Text(
+                          'Bar length: published alert count, not delay minutes or passenger counts.',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                  _InformationCard(
+                    icon: Icons.compare_arrows,
+                    title: 'Comparison with the previous week',
+                    message: partial
+                        ? 'This week is still in progress. A full-week increase/decrease would be misleading.'
+                        : '${alerts.length} published alerts this week; '
+                              '${AnalyticsPeriod.alertsIn(all, start.subtract(const Duration(days: 7)), start).where((alert) => _routeIncluded(alert.routeId, widget.routeScope, widget.followedRoutes, widget.busRoutes)).length} '
+                              'in the previous week. These are archive counts, not actual service reliability.',
+                  ),
+                  const SizedBox(height: 12),
+                  _section('ROUTES MENTIONED', _routeSummary(alerts)),
+                ] else
+                  _section(
+                    'DAILY ${_trendType == null ? 'TRAVEL ALERTS' : _typeLabel(_trendType!).toUpperCase()}',
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Y-axis: alert count • X-axis: day and date (Malaysia time)',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                        const SizedBox(height: 12),
+                        _AlertTrendChart(
+                          start: start,
+                          counts: counts,
+                          alerts: trendAlerts,
+                          onSelected: (index) =>
+                              setState(() => _selectedDay = index),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          trendAlerts.isEmpty
+                              ? 'No published alerts. Zero records does not mean zero disruptions.'
+                              : 'Hover for daily values. Tap a day to inspect its alerts.',
+                        ),
+                      ],
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                _section(
+                  widget.report
+                      ? 'IMPORTANT ALERTS • NEWEST FIRST'
+                      : _selectedDay == null
+                      ? 'RECENT ALERTS • TAP A DAY TO FILTER'
+                      : 'ALERTS ON ${_formatShortDate(start.add(Duration(days: _selectedDay!))).toUpperCase()}',
+                  _alertList(
+                    widget.report || _selectedDay == null
+                        ? alerts
+                        : AnalyticsPeriod.alertsIn(
+                            trendAlerts,
+                            start.add(Duration(days: _selectedDay!)),
+                            start.add(Duration(days: _selectedDay! + 1)),
+                          ),
+                  ),
+                ),
+              ],
+              if (!emptyMyRoutes) ...[
+                const SizedBox(height: 12),
+                ExpansionTile(
+                  tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+                  leading: const Icon(Icons.data_usage_outlined),
+                  title: const Text('Data source & quality details'),
+                  subtitle: Text(
+                    '${health.length} collector-health notice(s) in this period',
+                  ),
+                  children: [
+                    _qualityCard(days, start, end, now, widget.error != null),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                const _InformationCard(
+                  icon: Icons.info_outline,
+                  title: 'What these analytics can — and cannot — tell you',
+                  message:
+                      'Counts refer to public alerts in the shared archive, including expired alerts; '
+                      'withdrawn alerts are excluded. An event may have multiple manually published updates. '
+                      'These are not unique incident counts. Bus road congestion is not station crowding. '
+                      'Delay minutes are never inferred from vehicle counts or missing data. '
+                      'A labelled NextRoute delay estimate appears only when a fresh near-stop GPS position '
+                      'can be matched safely to the published timetable. Possible slow movement requires at least three '
+                      'qualifying low-speed GPS intervals over six minutes; bus-stop dwell and GPS jitter are excluded. '
+                      'It is a NextRoute estimate, not an operator-confirmed incident.',
+                ),
+                if (widget.report) ...[
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: FilledButton.icon(
+                      onPressed:
+                          available && widget.error == null && !_isExporting
+                          ? () => _downloadReport(
+                              start,
+                              now,
+                              summary,
+                              alerts,
+                              days,
+                            )
+                          : null,
+                      icon: const Icon(Icons.download),
+                      label: Text(
+                        _isExporting ? 'Saving report…' : 'Download weekly CSV',
+                      ),
+                    ),
+                  ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton.icon(
+                      onPressed: available && widget.error == null
+                          ? () async {
+                              try {
+                                await Clipboard.setData(
+                                  ClipboardData(
+                                    text: _reportText(
+                                      start,
+                                      end,
+                                      summary,
+                                      alerts,
+                                      days,
+                                      partial,
                                     ),
                                   ),
-                                  const SizedBox(height: 4),
-                                  if (selected == null)
-                                    const Text(
-                                      'No cloud data for this day',
-                                      style: TextStyle(color: Colors.white70),
-                                    )
-                                  else ...[
-                                    Text(
-                                      '${selected.averageCongestionRate.toStringAsFixed(1)}% congested',
-                                      style: const TextStyle(
-                                        color: Color(0xFFFFC46B),
+                                );
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Report copied. Paste into a document to save or share.',
                                       ),
                                     ),
-                                    Text(
-                                      '${selected.averageCongestedVehicleCount.toStringAsFixed(1)} of '
-                                      '${selected.averageVehicleCount.toStringAsFixed(1)} buses',
-                                      style: const TextStyle(
-                                        color: Colors.white70,
+                                  );
+                                }
+                              } catch (_) {
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Could not copy the report on this device.',
                                       ),
                                     ),
-                                    Text(
-                                      '${selected.feedSuccessRate.toStringAsFixed(0)}% feed availability',
-                                      style: const TextStyle(
-                                        color: Color(0xFFA7F3C0),
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
+                                  );
+                                }
+                              }
+                            }
+                          : null,
+                      icon: const Icon(Icons.copy),
+                      label: const Text('Copy weekly report'),
+                    ),
+                  ),
+                ],
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _routeSummary(List<AnalyticsAlert> alerts) {
+    final counts = <String, int>{};
+    for (final alert in alerts) {
+      counts.update(
+        alert.routeId ?? 'Route not specified',
+        (n) => n + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    final sorted = counts.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return sorted.isEmpty
+        ? const Text('No routes can be identified without alert records.')
+        : Column(
+            children: [
+              for (final entry in sorted.take(5))
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.route),
+                  title: Text(entry.key),
+                  trailing: Text('${entry.value} alert(s)'),
+                ),
+              if (sorted.length > 5)
+                Text('Top 5 of ${sorted.length} route groups.'),
+            ],
+          );
+  }
+
+  Widget _alertList(List<AnalyticsAlert> alerts) {
+    if (alerts.isEmpty) {
+      return const Text('No published travel alerts for this selection.');
+    }
+    final sorted = alerts.toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return Column(
+      children: [
+        for (final alert in sorted.take(30))
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            leading: Icon(
+              Icons.notifications_outlined,
+              color: _typeColor(alert.type),
+            ),
+            title: Text(alert.title),
+            subtitle: Text(
+              '${_formatShortDate(AnalyticsPeriod.day(alert.createdAt))} • '
+              '${_typeLabel(alert.type)} • ${alert.routeId ?? 'Route not specified'}',
+            ),
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: SelectableText(
+                    [
+                      if (_alertAuditText(alert).isNotEmpty)
+                        _alertAuditText(alert),
+                      alert.message,
+                    ].join('\n\n'),
                   ),
                 ),
               ),
-            );
-          },
-        ),
-        const SizedBox(height: 6),
-        Padding(
-          padding: const EdgeInsets.only(
-            left: _leftPadding,
-            right: _rightPadding,
+            ],
           ),
+        if (alerts.length > 30)
+          Text(
+            'Showing the latest 30 of ${alerts.length} alerts. Totals include all records.',
+          ),
+      ],
+    );
+  }
+}
+
+String _alertAuditText(AnalyticsAlert alert) {
+  final lines = <String>[];
+  if (alert.isEstimatedCongestion) {
+    if (alert.observedSpeedKmh != null) {
+      lines.add(
+        'Observed average speed: ${alert.observedSpeedKmh!.toStringAsFixed(1)} km/h',
+      );
+    }
+    if (alert.observationDurationMinutes != null) {
+      lines.add('Observation window: ${alert.observationDurationMinutes} min');
+    }
+    if (alert.vehicleLabel != null) {
+      lines.add('Vehicle ID: ${alert.vehicleLabel}');
+    }
+    lines.add(
+      'NextRoute estimate from consecutive GPS intervals; not operator-confirmed congestion.',
+    );
+    return lines.join('\n');
+  }
+  if (alert.type != TransitNotificationType.delay) return '';
+  if (alert.delayMinutes != null) {
+    lines.add(
+      '${alert.isEstimatedDelay ? 'Estimated' : 'Reported'} delay: ${alert.delayMinutes} min',
+    );
+  }
+  if (alert.scheduledArrival != null) {
+    lines.add(
+      'Scheduled arrival: ${_formatMalaysiaInstant(alert.scheduledArrival!)}',
+    );
+  }
+  if (alert.estimatedArrival != null) {
+    lines.add(
+      'Estimated arrival: ${_formatMalaysiaInstant(alert.estimatedArrival!)}',
+    );
+  }
+  if (alert.vehicleLabel != null) {
+    lines.add('Vehicle ID: ${alert.vehicleLabel}');
+  }
+  if (alert.fromStop != null) lines.add('Observed at: ${alert.fromStop}');
+  if (alert.toStop != null) lines.add('Towards: ${alert.toStop}');
+  if (alert.isEstimatedDelay) {
+    lines.add(
+      'NextRoute near-stop GPS/timetable estimate; not an operator Trip Update.',
+    );
+  }
+  return lines.join('\n');
+}
+
+String _formatMalaysiaInstant(DateTime instant) {
+  final local = instant.toUtc().add(const Duration(hours: 8));
+  final hour = local.hour % 12 == 0 ? 12 : local.hour % 12;
+  final minute = local.minute.toString().padLeft(2, '0');
+  final period = local.hour >= 12 ? 'PM' : 'AM';
+  return '${_formatShortDate(AnalyticsPeriod.day(instant))}, '
+      '$hour:$minute $period MYT';
+}
+
+Widget _section(String title, Widget child) => Card(
+  child: Padding(
+    padding: const EdgeInsets.all(16),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF52627D),
+          ),
+        ),
+        const SizedBox(height: 12),
+        child,
+      ],
+    ),
+  ),
+);
+
+Widget _qualityCard(
+  List<DailyAnalyticsSummary> days,
+  DateTime start,
+  DateTime end,
+  DateTime now,
+  bool failed,
+) {
+  if (failed) {
+    return const _InformationCard(
+      icon: Icons.cloud_off,
+      title: 'Collection quality unavailable',
+      message: 'Refresh before using collection statistics.',
+    );
+  }
+  final checks = days.fold(0, (sum, day) => sum + day.sampleCount);
+  final successful = days.fold(
+    0,
+    (sum, day) => sum + day.successfulSampleCount,
+  );
+  final expected = AnalyticsPeriod.expectedChecks(start, end, now);
+  final known = days.fold(0, (sum, day) => sum + day.qualitySampleCount);
+  final empty = days.fold(0, (sum, day) => sum + day.emptySampleCount);
+  final stale = days.fold(0, (sum, day) => sum + day.staleSampleCount);
+  final unknown = days.fold(
+    0,
+    (sum, day) => sum + day.unknownFreshnessSampleCount,
+  );
+  final suspicious = days
+      .where(
+        (day) => day.successfulSampleCount > 0 && day.averageVehicleCount < 1,
+      )
+      .toList();
+  final hasCongestion = days.any((day) => day.averageCongestionRate != null);
+  return _section(
+    'DATA COVERAGE • NOT SERVICE PERFORMANCE',
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '$checks saved / $expected expected half-hour checks • '
+          '${days.where((d) => d.sampleCount > 0).length} day(s) with records.',
+        ),
+        Text(
+          checks == 0
+              ? 'Request success: N/A — no checks recorded.'
+              : 'Request success: ${(successful * 100 / checks).toStringAsFixed(1)}% of saved checks. '
+                    'A successful request does not guarantee usable data.',
+        ),
+        if (checks < expected)
+          Text(
+            '${expected - checks} scheduled check(s) have no saved record. '
+            'This may include time before collection began.',
+          ),
+        const SizedBox(height: 8),
+        Text(
+          hasCongestion
+              ? 'Congestion measurements exist only for observations with a reported status.'
+              : 'Congestion: N/A — no verified congestion coverage in this period.',
+        ),
+        Text(
+          '$known of $checks checks include the new quality fields. '
+          'Legacy records cannot establish that congestion was zero.',
+        ),
+        if (known > 0)
+          Text(
+            'Quality flags: $empty empty, $stale with stale vehicles, '
+            '$unknown with unknown/invalid timestamps. Flags may overlap.',
+          ),
+        if (suspicious.isNotEmpty)
+          Text(
+            'Sparse feed warning: ${suspicious.map((d) => _formatShortDate(d.serviceDate)).join(', ')} '
+            'averaged fewer than one observed bus per successful check. '
+            'Do not interpret this as normal traffic or an actual service reduction.',
+            style: const TextStyle(color: Color(0xFFB45309)),
+          ),
+        const SizedBox(height: 6),
+        const Text(
+          'Collection runs in the cloud. Closing the app does not stop the scheduled collector.',
+          style: TextStyle(fontSize: 12),
+        ),
+      ],
+    ),
+  );
+}
+
+String _reportText(
+  DateTime start,
+  DateTime end,
+  String summary,
+  List<AnalyticsAlert> alerts,
+  List<DailyAnalyticsSummary> days,
+  bool partial,
+) {
+  final checks = days.fold(0, (sum, d) => sum + d.sampleCount);
+  return [
+    'NextRoute • Weekly service report',
+    '${_formatDate(start)} – ${_formatDate(end.subtract(const Duration(days: 1)))} (Malaysia time)',
+    if (partial) 'This week so far — incomplete week',
+    summary,
+    for (final type in TransitNotificationType.values)
+      '${_typeLabel(type)}: ${alerts.where((a) => a.type == type).length} published alert(s)',
+    'Collection: $checks saved checks across ${days.length} days.',
+    'Unknown congestion is not zero. Archive counts are not unique incidents or service reliability.',
+    ...alerts.map(
+      (a) =>
+          '${_formatShortDate(AnalyticsPeriod.day(a.createdAt))} | '
+          '${a.routeId ?? 'Unspecified route'} | ${a.title}'
+          '${_alertAuditText(a).isEmpty ? '' : '\n${_alertAuditText(a)}'}\n${a.message}',
+    ),
+  ].join('\n\n');
+}
+
+String _typeLabel(TransitNotificationType type) => switch (type) {
+  TransitNotificationType.service => 'Service',
+  TransitNotificationType.delay => 'Delay',
+  TransitNotificationType.crowd => 'Congestion',
+};
+Color _typeColor(TransitNotificationType type) => switch (type) {
+  TransitNotificationType.service => const Color(0xFF2962FF),
+  TransitNotificationType.delay => const Color(0xFF7C3AED),
+  TransitNotificationType.crowd => const Color(0xFFF59E0B),
+};
+
+class _CategoryBar extends StatelessWidget {
+  const _CategoryBar({
+    required this.label,
+    required this.count,
+    required this.maximum,
+    required this.color,
+  });
+  final String label;
+  final int count;
+  final int maximum;
+  final Color color;
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 14),
+    child: Column(
+      children: [
+        Row(
+          children: [
+            Expanded(child: Text(label)),
+            Text('$count'),
+          ],
+        ),
+        const SizedBox(height: 5),
+        LinearProgressIndicator(
+          value: count / maximum,
+          color: color,
+          minHeight: 10,
+          borderRadius: BorderRadius.circular(8),
+        ),
+      ],
+    ),
+  );
+}
+
+class _AlertTrendChart extends StatelessWidget {
+  const _AlertTrendChart({
+    required this.start,
+    required this.counts,
+    required this.alerts,
+    required this.onSelected,
+  });
+  final DateTime start;
+  final List<int> counts;
+  final List<AnalyticsAlert> alerts;
+  final ValueChanged<int> onSelected;
+  @override
+  Widget build(BuildContext context) {
+    final maximum = math.max(2, ((counts.fold(0, math.max) + 1) ~/ 2) * 2);
+    return Column(
+      children: [
+        SizedBox(
+          height: 190,
           child: Row(
             children: [
-              for (var index = 0; index < 7; index++)
+              SizedBox(
+                width: 30,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('$maximum'),
+                    Text('${maximum ~/ 2}'),
+                    const Text('0'),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: CustomPaint(
+                        painter: _AlertPainter(counts, maximum),
+                      ),
+                    ),
+                    Row(
+                      children: [
+                        for (var i = 0; i < 7; i++)
+                          Expanded(
+                            child: Builder(
+                              builder: (context) {
+                                final date = start.add(Duration(days: i));
+                                final daily = AnalyticsPeriod.alertsIn(
+                                  alerts,
+                                  date,
+                                  date.add(const Duration(days: 1)),
+                                );
+                                final detail =
+                                    '${_formatDate(date)}\n${counts[i]} published travel alert(s)\n'
+                                    '${TransitNotificationType.values.map((type) => '${_typeLabel(type)}: ${daily.where((a) => a.type == type).length}').join(' • ')}';
+                                return Tooltip(
+                                  message: detail,
+                                  child: Semantics(
+                                    label: detail,
+                                    button: true,
+                                    child: InkWell(
+                                      onTap: () => onSelected(i),
+                                      child: const SizedBox(
+                                        height: 190,
+                                        width: double.infinity,
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(left: 30),
+          child: Row(
+            children: [
+              for (var i = 0; i < 7; i++)
                 Expanded(
                   child: Text(
-                    '${index + 1}',
+                    '${i + 1}\n${start.add(Duration(days: i)).day}/${start.add(Duration(days: i)).month}',
                     textAlign: TextAlign.center,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+                    style: const TextStyle(fontSize: 11),
                   ),
                 ),
             ],
           ),
         ),
-        const SizedBox(height: 4),
-        const Center(
-          child: Text(
-            'X-axis: Day 1 to Day 7 • Hover or tap for the date and values',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12, color: Color(0xFF52627D)),
-          ),
-        ),
-        const SizedBox(height: 8),
-        const Center(
-          child: _Legend(
-            color: Color(0xFFF59E0B),
-            label: 'Average congestion rate',
-          ),
-        ),
       ],
     );
   }
+}
+
+class _AlertPainter extends CustomPainter {
+  _AlertPainter(this.counts, this.maximum);
+  final List<int> counts;
+  final int maximum;
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bottom = size.height - 5;
+    const top = 5.0;
+    final grid = Paint()..color = const Color(0xFFE1E6F0);
+    for (var i = 0; i <= 4; i++) {
+      final y = top + (bottom - top) * i / 4;
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
+    }
+    final pen = Paint()
+      ..color = const Color(0xFF2962FF)
+      ..strokeWidth = 2.5;
+    Offset? previous;
+    for (var i = 0; i < 7; i++) {
+      final point = Offset(
+        size.width * (i + .5) / 7,
+        bottom - (bottom - top) * counts[i] / maximum,
+      );
+      if (previous != null) canvas.drawLine(previous, point, pen);
+      canvas.drawCircle(point, 4, pen);
+      previous = point;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _AlertPainter old) =>
+      old.counts != counts || old.maximum != maximum;
 }
 
 class _SummaryCard extends StatelessWidget {
@@ -972,35 +1908,30 @@ class _SummaryCard extends StatelessWidget {
     required this.value,
     required this.color,
   });
-
   final String label;
   final String value;
   final Color color;
-
   @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              value,
-              style: TextStyle(
-                color: color,
-                fontSize: 23,
-                fontWeight: FontWeight.w800,
-              ),
+  Widget build(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 24,
+              color: color,
+              fontWeight: FontWeight.w800,
             ),
-            const SizedBox(height: 3),
-            Text(label, style: Theme.of(context).textTheme.bodySmall),
-          ],
-        ),
+          ),
+          Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ],
       ),
-    );
-  }
+    ),
+  );
 }
 
 class _InformationCard extends StatelessWidget {
@@ -1008,222 +1939,67 @@ class _InformationCard extends StatelessWidget {
     required this.icon,
     required this.title,
     required this.message,
+    this.iconColor = const Color(0xFF2962FF),
   });
-
   final IconData icon;
   final String title;
   final String message;
-
+  final Color iconColor;
   @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(icon, color: const Color(0xFF2962FF)),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(message),
-                ],
-              ),
+  Widget build(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: iconColor),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 4),
+                Text(message),
+              ],
             ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _Legend extends StatelessWidget {
-  const _Legend({required this.color, required this.label});
-
-  final Color color;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          width: 10,
-          height: 10,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
-        const SizedBox(width: 5),
-        Text(label),
-      ],
-    );
-  }
-}
-
-class _TrendChartPainter extends CustomPainter {
-  _TrendChartPainter(this.days, {this.highlightIndex});
-
-  final List<DailyAnalyticsSummary?> days;
-  final int? highlightIndex;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    const leftPadding = 38.0;
-    const otherPadding = 10.0;
-    final chart = Rect.fromLTWH(
-      leftPadding,
-      otherPadding,
-      size.width - leftPadding - otherPadding,
-      size.height - otherPadding * 2,
-    );
-    final gridPaint = Paint()
-      ..color = const Color(0xFFE7ECF5)
-      ..strokeWidth = 1;
-    for (var line = 0; line <= 4; line++) {
-      final y = chart.top + chart.height * line / 4;
-      canvas.drawLine(Offset(chart.left, y), Offset(chart.right, y), gridPaint);
-      if (line.isEven) {
-        final labelValue = (100 * (4 - line) / 4).round();
-        final label = TextPainter(
-          text: TextSpan(
-            text: '$labelValue%',
-            style: const TextStyle(color: Color(0xFF71809F), fontSize: 10),
           ),
-          textDirection: TextDirection.ltr,
-        )..layout(maxWidth: leftPadding - 6);
-        label.paint(canvas, Offset(chart.left - label.width - 6, y - 6));
-      }
-    }
-
-    final selected = highlightIndex;
-    if (selected != null && selected >= 0 && selected < days.length) {
-      final x = chart.left + chart.width * selected / 6;
-      canvas.drawLine(
-        Offset(x, chart.top),
-        Offset(x, chart.bottom),
-        Paint()
-          ..color = const Color(0xFF52627D).withValues(alpha: 0.45)
-          ..strokeWidth = 1.5,
-      );
-    }
-
-    _drawSeries(
-      canvas,
-      chart,
-      days
-          .map((item) => item?.averageCongestionRate.clamp(0, 100).toDouble())
-          .toList(),
-      const Color(0xFFF59E0B),
-    );
-  }
-
-  void _drawSeries(
-    Canvas canvas,
-    Rect chart,
-    List<double?> values,
-    Color color,
-  ) {
-    if (values.isEmpty) {
-      return;
-    }
-    final pointPaint = Paint()..color = color;
-    Offset? previous;
-    for (var index = 0; index < values.length; index++) {
-      final value = values[index];
-      if (value == null) {
-        previous = null;
-        continue;
-      }
-      final x = values.length == 1
-          ? chart.center.dx
-          : chart.left + chart.width * index / (values.length - 1);
-      final y = chart.bottom - chart.height * value / 100;
-      final point = Offset(x, y);
-      if (previous != null) {
-        canvas.drawLine(
-          previous,
-          point,
-          Paint()
-            ..color = color
-            ..strokeWidth = 2.5
-            ..strokeCap = StrokeCap.round,
-        );
-      }
-      canvas.drawCircle(point, 3.5, pointPaint);
-      previous = point;
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _TrendChartPainter oldDelegate) {
-    return oldDelegate.days != days ||
-        oldDelegate.highlightIndex != highlightIndex;
-  }
+        ],
+      ),
+    ),
+  );
 }
 
 class _ErrorState extends StatelessWidget {
   const _ErrorState({required this.error, required this.onRetry});
-
   final Object? error;
   final VoidCallback onRetry;
-
   @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.error_outline, size: 48),
-            const SizedBox(height: 12),
-            Text('$error', textAlign: TextAlign.center),
-            const SizedBox(height: 12),
-            FilledButton(onPressed: onRetry, child: const Text('Try again')),
-          ],
-        ),
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.error_outline, size: 48),
+          const SizedBox(height: 12),
+          Text('$error', textAlign: TextAlign.center),
+          FilledButton(onPressed: onRetry, child: const Text('Try again')),
+        ],
       ),
-    );
-  }
+    ),
+  );
 }
 
 String _formatDataAge(DateTime latestUpdate) {
   final age = DateTime.now().toUtc().difference(latestUpdate.toUtc());
-  if (age.isNegative || age.inSeconds < 10) {
-    return 'just now';
-  }
-  if (age.inSeconds < 60) {
-    return '${age.inSeconds} seconds ago';
-  }
-  if (age.inMinutes < 60) {
-    return '${age.inMinutes} minutes ago';
-  }
+  if (age.isNegative) return 'timestamp is in the future';
+  if (age.inSeconds < 60) return '${age.inSeconds} seconds ago';
+  if (age.inMinutes < 60) return '${age.inMinutes} minutes ago';
   return '${age.inHours} hours ago';
-}
-
-List<DailyAnalyticsSummary?> _sevenDaySummarySlots(
-  Iterable<DailyAnalyticsSummary> summaries,
-) {
-  final today = DateTime.now();
-  final firstDay = DateTime(
-    today.year,
-    today.month,
-    today.day,
-  ).subtract(const Duration(days: 6));
-  final byDay = <DateTime, DailyAnalyticsSummary>{};
-  for (final summary in summaries) {
-    final local = summary.serviceDate.toLocal();
-    byDay[DateTime(local.year, local.month, local.day)] = summary;
-  }
-  return List.unmodifiable(
-    List.generate(7, (index) => byDay[firstDay.add(Duration(days: index))]),
-  );
 }
 
 String _formatShortDate(DateTime value) {
@@ -1241,25 +2017,19 @@ String _formatShortDate(DateTime value) {
     'Nov',
     'Dec',
   ];
-  final local = value.toLocal();
-  return '${months[local.month - 1]} ${local.day}';
+  return '${months[value.month - 1]} ${value.day}';
 }
 
-String _formatDate(DateTime value) {
-  const months = [
-    'Jan',
-    'Feb',
-    'Mar',
-    'Apr',
-    'May',
-    'Jun',
-    'Jul',
-    'Aug',
-    'Sep',
-    'Oct',
-    'Nov',
-    'Dec',
-  ];
-  final local = value.toLocal();
-  return '${months[local.month - 1]} ${local.day}, ${local.year}';
+String _formatDate(DateTime value) =>
+    '${_formatShortDate(value)}, ${value.year}';
+
+String _averageDelayLabel(Iterable<AnalyticsAlert> alerts) {
+  final values = alerts
+      .where((alert) => alert.type == TransitNotificationType.delay)
+      .map((alert) => alert.delayMinutes)
+      .whereType<int>()
+      .toList();
+  if (values.isEmpty) return 'N/A';
+  final average = values.fold<int>(0, (a, b) => a + b) / values.length;
+  return '${average.toStringAsFixed(1)} min';
 }

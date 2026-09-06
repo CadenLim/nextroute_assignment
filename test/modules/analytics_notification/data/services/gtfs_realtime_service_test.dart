@@ -68,4 +68,50 @@ void main() {
     );
     service.close();
   });
+
+  test('combines KL bus feeds and tolerates one valid empty feed', () async {
+    final emptyFeed = gtfs.FeedMessage(
+      header: gtfs.FeedHeader(gtfsRealtimeVersion: '2.0'),
+    );
+    final feederFeed = gtfs.FeedMessage(
+      header: gtfs.FeedHeader(gtfsRealtimeVersion: '2.0'),
+      entity: [
+        gtfs.FeedEntity(
+          id: 'feeder-1',
+          vehicle: gtfs.VehiclePosition(
+            trip: gtfs.TripDescriptor(routeId: 'T2500'),
+            position: gtfs.Position(latitude: 3, longitude: 101),
+          ),
+        ),
+      ],
+    );
+    final endpoints = [
+      Uri.parse('https://example.test/rapid-bus-kl'),
+      Uri.parse('https://example.test/rapid-bus-mrtfeeder'),
+    ];
+    final service = GtfsRealtimeService(
+      endpoints: endpoints,
+      client: MockClient(
+        (request) async => http.Response.bytes(
+          request.url == endpoints.first
+              ? emptyFeed.writeToBuffer()
+              : feederFeed.writeToBuffer(),
+          200,
+        ),
+      ),
+    );
+
+    final result = await service.fetchVehiclePositions();
+
+    expect(result.totalEntities, 1);
+    expect(result.vehicles, hasLength(1));
+    expect(result.vehicles.single.routeId, 'T2500');
+    expect(result.sources, hasLength(2));
+    expect(
+      result.sources.first.availability,
+      RealtimeFeedAvailability.noVehicleData,
+    );
+    expect(result.sources.last.availability, RealtimeFeedAvailability.stale);
+    service.close();
+  });
 }

@@ -107,4 +107,44 @@ void main() {
       expect(lineForegroundColor('KJ'), Colors.white);
     });
   });
+
+  group('Timetable date selection', () {
+    test('today starts from the current time', () {
+      final now = DateTime(2026, 9, 7, 14, 35, 20);
+
+      expect(scheduleCutoffSeconds(DateTime(2026, 9, 7), now), 52520);
+    });
+
+    test('a future date starts from the first service of the day', () {
+      final now = DateTime(2026, 9, 7, 14, 35, 20);
+
+      expect(scheduleCutoffSeconds(DateTime(2026, 9, 8), now), 0);
+    });
+
+    test('afternoon and evening filters use clear time boundaries', () {
+      expect(
+        isInsideScheduleWindow(
+          16 * 3600 + 30 * 60,
+          startSeconds: 12 * 3600,
+          endSeconds: 18 * 3600,
+        ),
+        isTrue,
+      );
+      expect(
+        isInsideScheduleWindow(
+          19 * 3600 + 30 * 60,
+          startSeconds: 12 * 3600,
+          endSeconds: 18 * 3600,
+        ),
+        isFalse,
+      );
+      expect(
+        isInsideScheduleWindow(
+          24 * 3600 + 30 * 60,
+          startSeconds: 18 * 3600,
+        ),
+        isTrue,
+      );
+    });
+  });
 }

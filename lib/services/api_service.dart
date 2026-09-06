@@ -8,7 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:gtfs_realtime_bindings/gtfs_realtime_bindings.dart' as gtfs;
 
-import 'personal_assistance_functions.dart';
+import 'personal_assistance_functions.dart'; // 🌟 ADDED FRIEND'S FUNCTION
 
 // =========================================================
 // YOUR CODE (Module 1 / Journey Planning)
@@ -90,7 +90,6 @@ class ApiService {
     return name;
   }
 
-  // 🌟 FRIEND'S UPDATED NORMALIZER
   String _normalizeToMasterInterchange(String cleanName) {
     final map = {
       'MUZIUM NEGARA': 'KL SENTRAL',
@@ -121,7 +120,6 @@ class ApiService {
     return Duration(hours: int.tryParse(parts[0]) ?? 0, minutes: int.tryParse(parts[1]) ?? 0, seconds: int.tryParse(parts[2]) ?? 0);
   }
 
-  // 🌟 SPEED FIX: Memory Cache to prevent reloading text files repeatedly
   Future<void> _ensureGtfsFullyCached() async {
     if (_isGtfsFullyCached) return;
     for (String folder in ['rail', 'bus', 'mrt_feeder']) {
@@ -229,7 +227,6 @@ class ApiService {
 
             while (stationMap.containsKey(mapKey)) {
               final existing = stationMap[mapKey]!;
-              // 🌟 FRIEND'S UPDATED 0.25 MERGE RADIUS
               if (lat != 0.0 && lon != 0.0 && existing.lat != 0.0 && existing.lon != 0.0 &&
                   _calculateDistance(existing.lat, existing.lon, lat, lon) <= 0.25) {
                 existing.ids.add(stopId);
@@ -293,7 +290,6 @@ class ApiService {
     return intermediateStops;
   }
 
-  // 🌟 RESTORED: FAST IN-MEMORY ROUTING WITH MIX2
   Future<List<Map<String, dynamic>>> findRoutes(StationModel origin, StationModel destination) async {
     try {
       final List<Map<String, dynamic>> results = [];
@@ -319,7 +315,6 @@ class ApiService {
         int oIdx = stops.indexWhere((s) => _matchesStation(origin, s['stop_id']));
         int dIdx = stops.lastIndexWhere((s) => _matchesStation(destination, s['stop_id']));
 
-        // DIRECT ROUTES
         if (oIdx != -1 && dIdx != -1 && oIdx < dIdx) {
           String rId = stops[oIdx]['route_id'];
           int oMins = _timeToMinutes(stops[oIdx]['arrival_time']);
@@ -338,7 +333,6 @@ class ApiService {
           }
         }
 
-        // ONE TRANSFER ORIGIN SCAN
         if (oIdx != -1) {
           String rId = stops[oIdx]['route_id'];
           int oMins = _timeToMinutes(stops[oIdx]['arrival_time']);
@@ -363,7 +357,6 @@ class ApiService {
           }
         }
 
-        // ONE TRANSFER DESTINATION SCAN
         if (dIdx != -1) {
           String rId = stops[dIdx]['route_id'];
           for (int i = 0; i < dIdx; i++) {
@@ -463,7 +456,6 @@ class ApiService {
         }
       }
 
-      // 🌟 MIX2: 2 TRANSFER RAIL BRIDGES
       Map<StationModel, Map<StationModel, Map<String, dynamic>>> railBridges = {};
       for (final tripId in _allTripStopTimes.keys) {
         if (!tripId.startsWith('rail_')) continue;
@@ -554,16 +546,25 @@ class ApiService {
         if (a['badge'] == 'Direct') scoreA -= 2000;
         if (b['badge'] == 'Direct') scoreB -= 2000;
 
+        bool aStartsWithBus = a['legs'].first['mode'] == 'Bus';
+        bool bStartsWithBus = b['legs'].first['mode'] == 'Bus';
+        bool aHasRail = a['legs'].any((l) => l['mode'] == 'Rail');
+        bool bHasRail = b['legs'].any((l) => l['mode'] == 'Rail');
+
+        // 🌟 NEW RULE: If user starts at a train station, heavily penalize taking a bus to another train!
+        if (aStartsWithBus && aHasRail) scoreA += 500;
+        if (bStartsWithBus && bHasRail) scoreB += 500;
+
         bool aEndsWithBus = a['legs'].last['mode'] == 'Bus';
         bool bEndsWithBus = b['legs'].last['mode'] == 'Bus';
 
         if (a['badge'] != 'Direct') {
           if (aEndsWithBus) scoreA += 50;
-          if (!a['legs'].any((l) => l['mode'] == 'Rail')) scoreA += 100;
+          if (!aHasRail) scoreA += 100;
         }
         if (b['badge'] != 'Direct') {
           if (bEndsWithBus) scoreB += 50;
-          if (!b['legs'].any((l) => l['mode'] == 'Rail')) scoreB += 100;
+          if (!bHasRail) scoreB += 100;
         }
 
         return scoreA.compareTo(scoreB);
@@ -710,6 +711,7 @@ class ApiService {
     return tripStopTimes;
   }
 
+  // 🌟 Database Fix: Use Friend's Edge Function to bypass RLS blocking
   Future<void> saveNavigationHistory({
     required String origin,
     required String destination,
@@ -720,6 +722,9 @@ class ApiService {
     required List<Map<String, dynamic>> transitSteps,
   }) async {
     try {
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null) throw Exception('User is not logged in. Please log in first.');
+
       await PersonalAssistanceFunctions().invoke(
         'journey-history',
         'insert',
@@ -734,7 +739,7 @@ class ApiService {
             'estimated_arrival_time': estimatedArrivalTime,
             'transit_steps': transitSteps,
             'status': 'completed',
-          },
+          }
         },
       );
     } catch (e) {
@@ -742,7 +747,6 @@ class ApiService {
     }
   }
 
-  // 🌟 RESTORED: Pure 90+ GTFS-RT Engine (No scrapers)
   Future<List<LiveVehicle>> getLiveVehicles(String folder) async {
     try {
       String category = 'rapid-bus-kl';
@@ -918,7 +922,6 @@ class ApiService {
     return avg;
   }
 
-  // 🌟 FRIEND'S UPDATED SUPABASE RPC ANALYTICS LOGIC
   Future<List<({String station, double avgRidership, int totalRidership, int recordCount, DateTime? minDate, DateTime? maxDate})>>
   getStationRidershipTotals({DateTime? startDate, DateTime? endDate, bool forceRefresh = false}) async {
     final isOverall = startDate == null && endDate == null;

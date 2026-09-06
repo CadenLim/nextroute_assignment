@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config/supabase_config.dart';
 import 'api_service.dart';
+import 'personal_assistance_functions.dart';
 
 class SavedRoute {
   const SavedRoute({
@@ -175,9 +176,11 @@ abstract interface class SavedPlacesRepository {
 
 class SupabaseSavedPlacesRepository implements SavedPlacesRepository {
   SupabaseSavedPlacesRepository({SupabaseClient? client})
-    : _client = client ?? Supabase.instance.client;
+    : _client = client ?? Supabase.instance.client,
+      _functions = PersonalAssistanceFunctions(client: client);
 
   final SupabaseClient _client;
+  final PersonalAssistanceFunctions _functions;
 
   String get _userId {
     final id = _client.auth.currentUser?.id;
@@ -187,31 +190,29 @@ class SupabaseSavedPlacesRepository implements SavedPlacesRepository {
 
   @override
   Future<List<SavedPlace>> load() async {
-    final rows = await _client
-        .from('saved_places')
-        .select()
-        .eq('user_id', _userId)
-        .order('place_type');
+    final rows = await _functions.list('personal-data', 'list-saved-places');
     return rows.map(SavedPlace.fromJson).toList();
   }
 
   @override
   Future<SavedPlace> upsert(SavedPlace place) async {
-    final row = await _client
-        .from('saved_places')
-        .upsert(place.toUpsert(_userId), onConflict: 'user_id,place_type')
-        .select()
-        .single();
+    final placeData = place.toUpsert(_userId)..remove('user_id');
+    final response = await _functions.invoke(
+      'personal-data',
+      'upsert-saved-place',
+      payload: {'place': placeData},
+    );
+    final row = Map<String, dynamic>.from(response['data'] as Map);
     return SavedPlace.fromJson(row);
   }
 
   @override
   Future<void> delete(SavedPlaceType type) async {
-    await _client
-        .from('saved_places')
-        .delete()
-        .eq('user_id', _userId)
-        .eq('place_type', type.databaseValue);
+    await _functions.invoke(
+      'personal-data',
+      'delete-saved-place',
+      payload: {'place_type': type.databaseValue},
+    );
   }
 }
 
@@ -225,9 +226,11 @@ abstract class SavedRoutesRepository {
 
 class SupabaseSavedRoutesRepository implements SavedRoutesRepository {
   SupabaseSavedRoutesRepository({SupabaseClient? client})
-    : _client = client ?? Supabase.instance.client;
+    : _client = client ?? Supabase.instance.client,
+      _functions = PersonalAssistanceFunctions(client: client);
 
   final SupabaseClient _client;
+  final PersonalAssistanceFunctions _functions;
 
   String get _userId {
     final id = _client.auth.currentUser?.id;
@@ -237,53 +240,47 @@ class SupabaseSavedRoutesRepository implements SavedRoutesRepository {
 
   @override
   Future<List<SavedRoute>> load() async {
-    final rows = await _client
-        .from('saved_routes')
-        .select()
-        .eq('user_id', _userId)
-        .order('created_at', ascending: false);
+    final rows = await _functions.list('personal-data', 'list-saved-routes');
     return rows.map(SavedRoute.fromJson).toList();
   }
 
   @override
-  Future<int> count() => _client
-      .from('saved_routes')
-      .count(CountOption.exact)
-      .eq('user_id', _userId);
+  Future<int> count() async {
+    final response = await _functions.invoke(
+      'personal-data',
+      'count-saved-routes',
+    );
+    return (response['count'] as num?)?.toInt() ?? 0;
+  }
 
   @override
   Future<void> save(SavedRoute route) async {
     _validateName(route.name);
-    await _client
-        .from('saved_routes')
-        .upsert(
-          route.toInsert(_userId),
-          onConflict: 'user_id,route_key',
-          ignoreDuplicates: true,
-        );
+    final routeData = route.toInsert(_userId)..remove('user_id');
+    await _functions.invoke(
+      'personal-data',
+      'upsert-saved-route',
+      payload: {'route': routeData},
+    );
   }
 
   @override
   Future<void> rename(String id, String name) async {
     _validateName(name);
-    await _client
-        .from('saved_routes')
-        .update({'name': name.trim()})
-        .eq('id', id)
-        .eq('user_id', _userId)
-        .select('id')
-        .single();
+    await _functions.invoke(
+      'personal-data',
+      'rename-saved-route',
+      payload: {'id': id, 'name': name.trim()},
+    );
   }
 
   @override
   Future<void> delete(String id) async {
-    await _client
-        .from('saved_routes')
-        .delete()
-        .eq('id', id)
-        .eq('user_id', _userId)
-        .select('id')
-        .single();
+    await _functions.invoke(
+      'personal-data',
+      'delete-saved-route',
+      payload: {'id': id},
+    );
   }
 
   void _validateName(String name) {
@@ -597,9 +594,11 @@ class DailyCommuteRoute {
 
 class PersonalTravelService {
   PersonalTravelService({SupabaseClient? client})
-    : _client = client ?? Supabase.instance.client;
+    : _client = client ?? Supabase.instance.client,
+      _functions = PersonalAssistanceFunctions(client: client);
 
   final SupabaseClient _client;
+  final PersonalAssistanceFunctions _functions;
 
   User get _user {
     final user = _client.auth.currentUser;
@@ -609,51 +608,39 @@ class PersonalTravelService {
 
   Future<PersonalProfile> loadProfile({String? confirmedEmail}) async {
     final user = _user;
-    Map<String, dynamic> row;
-    try {
-      row = await _client
-          .from('profiles')
-          .select('display_name, phone_number, avatar_path')
-          .eq('id', user.id)
-          .single();
-    } on PostgrestException catch (error) {
-      if (error.code != '42703') rethrow;
-      row = await _client
-          .from('profiles')
-          .select('display_name, phone_number')
-          .eq('id', user.id)
-          .single();
-    }
+    final response = await _functions.invoke('personal-data', 'get-profile');
+    final row = Map<String, dynamic>.from(response['data'] as Map);
 
     final name = (row['display_name'] as String?)?.trim();
-    final avatarPath = row['avatar_path'] as String?;
-    String? avatarUrl;
-    if (avatarPath != null && avatarPath.isNotEmpty) {
-      final signed = await _client.storage
-          .from('avatars')
-          .createSignedUrl(avatarPath, 3600);
-      avatarUrl = '$signed&v=${DateTime.now().millisecondsSinceEpoch}';
-    }
     return PersonalProfile(
       displayName: name == null || name.isEmpty
           ? user.email ?? 'NextRoute User'
           : name,
       email: confirmedEmail ?? user.email ?? '',
       phoneNumber: row['phone_number'] as String? ?? '',
-      avatarUrl: avatarUrl,
+      avatarUrl: row['avatar_url'] as String?,
       memberSince: DateTime.tryParse(user.createdAt),
     );
   }
 
   Future<List<TravelHistoryEntry>> loadTravelHistory({int limit = 100}) async {
-    final rows = await _client
-        .from('navigation_history')
-        .select()
-        .eq('user_id', _user.id)
-        .eq('status', 'completed')
-        .order('created_at', ascending: false)
-        .limit(limit);
+    final rows = await _functions.list(
+      'journey-history',
+      'list',
+      payload: {'limit': limit, 'completed_only': true},
+    );
     return rows.map(TravelHistoryEntry.fromJson).toList();
+  }
+
+  Future<void> updateProfile({String? displayName, String? phoneNumber}) async {
+    final changes = <String, dynamic>{};
+    if (displayName != null) changes['display_name'] = displayName;
+    if (phoneNumber != null) changes['phone_number'] = phoneNumber;
+    await _functions.invoke(
+      'personal-data',
+      'update-profile',
+      payload: changes,
+    );
   }
 
   Future<String> uploadAvatar(
@@ -663,28 +650,15 @@ class PersonalTravelService {
     if (bytes.length > 5 * 1024 * 1024) {
       throw const FormatException('Photo must be 5 MB or smaller.');
     }
-    final user = _user;
-    final path = '${user.id}/avatar';
-    await _client.storage
-        .from('avatars')
-        .uploadBinary(
-          path,
-          bytes,
-          fileOptions: FileOptions(upsert: true, contentType: contentType),
-        );
-    await _client
-        .from('profiles')
-        .update({
-          'avatar_path': path,
-          'updated_at': DateTime.now().toIso8601String(),
-        })
-        .eq('id', user.id)
-        .select('id')
-        .single();
-    final signed = await _client.storage
-        .from('avatars')
-        .createSignedUrl(path, 3600);
-    return '$signed&v=${DateTime.now().millisecondsSinceEpoch}';
+    final response = await _functions.invoke(
+      'profile-avatar',
+      'upload',
+      payload: {
+        'content_type': contentType,
+        'data_base64': base64Encode(bytes),
+      },
+    );
+    return response['avatar_url'] as String;
   }
 
   Future<void> changePassword({
@@ -707,8 +681,11 @@ class PersonalTravelService {
       throw const FormatException('Type DELETE to confirm account deletion.');
     }
 
+    final session = _client.auth.currentSession;
+    if (session == null) throw const AuthException('Please sign in again.');
     final response = await _client.functions.invoke(
       'delete-account',
+      headers: {'Authorization': 'Bearer ${session.accessToken}'},
       body: {'confirmation': confirmation},
     );
     if (response.status < 200 || response.status >= 300) {

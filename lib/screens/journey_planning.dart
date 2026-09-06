@@ -10,6 +10,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import '../services/api_service.dart';
 import '../services/personal_travel_service.dart';
+import '../services/personal_assistance_functions.dart';
 import 'favourite_routes.dart';
 import 'auth_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -242,12 +243,11 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
     try {
       final user = Supabase.instance.client.auth.currentUser;
       if (user != null) {
-        final response = await Supabase.instance.client
-            .from('navigation_history')
-            .select()
-            .eq('user_id', user.id)
-            .order('created_at', ascending: false)
-            .limit(3);
+        final response = await PersonalAssistanceFunctions().list(
+          'journey-history',
+          'list',
+          payload: {'limit': 3},
+        );
 
         if (mounted && Supabase.instance.client.auth.currentUser?.id == user.id) {
           setState(() {
@@ -748,32 +748,15 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
     _isCompletingNavigation = true;
     try {
       if (signedIn) {
-        try {
-          final dynamic api = _apiService;
-          await api.saveNavigationHistory(
-            origin: _originDisplayName,
-            destination: _destinationDisplayName,
-            fare: fare,
-            durationMinutes: totalMins,
-            departureTime: departTime,
-            estimatedArrivalTime: arriveTime,
-            transitSteps: transitSteps,
-          );
-        } catch (_) {
-          final user = Supabase.instance.client.auth.currentUser;
-          if (user != null) {
-            await Supabase.instance.client.from('navigation_history').insert({
-              'user_id': user.id,
-              'origin': _originDisplayName,
-              'destination': _destinationDisplayName,
-              'fare': fare,
-              'duration_minutes': totalMins,
-              'departure_time': departTime,
-              'estimated_arrival_time': arriveTime,
-              'transit_steps': transitSteps,
-            });
-          }
-        }
+        await _apiService.saveNavigationHistory(
+          origin: _originDisplayName,
+          destination: _destinationDisplayName,
+          fare: fare,
+          durationMinutes: totalMins,
+          departureTime: departTime,
+          estimatedArrivalTime: arriveTime,
+          transitSteps: transitSteps,
+        );
         await _loadRecentJourneys();
       }
       if (!mounted || !modalContext.mounted) return;
@@ -1338,7 +1321,10 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                   final user = Supabase.instance.client.auth.currentUser;
                   if (user != null) {
                     setState(() => _isLoadingRecent = true);
-                    await Supabase.instance.client.from('navigation_history').delete().eq('user_id', user.id);
+                    await PersonalAssistanceFunctions().invoke(
+                      'journey-history',
+                      'clear',
+                    );
                     await _loadRecentJourneys();
                   }
                 },

@@ -132,6 +132,9 @@ class ProfileServiceStub implements PersonalTravelService {
       history;
 
   @override
+  Future<void> updateProfile({String? displayName, String? phoneNumber}) async {}
+
+  @override
   Future<String> uploadAvatar(
     Uint8List bytes, {
     required String contentType,

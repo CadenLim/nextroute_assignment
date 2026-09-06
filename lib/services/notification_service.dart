@@ -10,6 +10,7 @@ import 'package:timezone/data/latest.dart' as tz_data;
 import 'package:timezone/timezone.dart' as tz;
 
 import 'api_service.dart';
+import 'personal_assistance_functions.dart';
 import 'personal_travel_service.dart';
 
 enum NotificationFilter { all, unread, congestion, push, delays }
@@ -595,43 +596,35 @@ abstract interface class DailyCommuteRepository {
 
 class SupabaseDailyCommuteRepository implements DailyCommuteRepository {
   SupabaseDailyCommuteRepository({SupabaseClient? client})
-    : _client = client ?? Supabase.instance.client;
+    : _functions = PersonalAssistanceFunctions(client: client);
 
-  final SupabaseClient _client;
-
-  String get _userId {
-    final userId = _client.auth.currentUser?.id;
-    if (userId == null) throw const AuthException('Please sign in again.');
-    return userId;
-  }
+  final PersonalAssistanceFunctions _functions;
 
   @override
   Future<List<DailyCommute>> loadAll() async {
-    final rows = await _client
-        .from('daily_commutes')
-        .select()
-        .eq('user_id', _userId)
-        .order('updated_at', ascending: false);
+    final rows = await _functions.list('daily-commutes', 'list');
     return rows.map(DailyCommute.fromJson).toList();
   }
 
   @override
   Future<DailyCommute> upsert(DailyCommute commute) async {
-    final row = await _client
-        .from('daily_commutes')
-        .upsert(commute.toUpsert(), onConflict: 'id')
-        .select()
-        .single();
+    final commuteData = commute.toUpsert()..remove('user_id');
+    final response = await _functions.invoke(
+      'daily-commutes',
+      'upsert',
+      payload: {'commute': commuteData},
+    );
+    final row = Map<String, dynamic>.from(response['data'] as Map);
     return DailyCommute.fromJson(row);
   }
 
   @override
   Future<void> delete(String id) async {
-    await _client
-        .from('daily_commutes')
-        .delete()
-        .eq('id', id)
-        .eq('user_id', _userId);
+    await _functions.invoke(
+      'daily-commutes',
+      'delete',
+      payload: {'id': id},
+    );
   }
 }
 

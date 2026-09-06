@@ -5,3 +5,17 @@ verify_jwt = false
 # The function verifies the bearer token with auth.getUser before using its
 # server-only service role client. This also allows browser CORS preflight.
 verify_jwt = false
+
+[functions.personal-data]
+# Authentication is explicitly verified with auth.getUser in the shared
+# server helper before the service-role client is created.
+verify_jwt = false
+
+[functions.daily-commutes]
+verify_jwt = false
+
+[functions.journey-history]
+verify_jwt = false
+
+[functions.profile-avatar]
+verify_jwt = false

@@ -32,6 +32,20 @@ SavedRoute sampleRoute({
   lineName: 'Kelana Jaya',
 );
 
+TravelHistoryEntry trip(
+  String origin,
+  String destination,
+  DateTime createdAt,
+) => TravelHistoryEntry(
+  origin: origin,
+  destination: destination,
+  fare: 2.5,
+  currency: 'MYR',
+  departureTime: '08:00',
+  createdAt: createdAt,
+  lineName: 'Kelana Jaya',
+);
+
 class MemoryRoutes implements SavedRoutesRepository {
   List<SavedRoute> routes = [];
   bool failLoad = false;
@@ -50,7 +64,16 @@ class MemoryRoutes implements SavedRoutesRepository {
   @override
   Future<void> save(SavedRoute route) async {
     if (failSave) throw StateError('Offline');
-    routes.add(route);
+    routes.add(
+      SavedRoute(
+        id: route.id ?? 'saved-${routes.length + 1}',
+        name: route.name,
+        origin: route.origin,
+        destination: route.destination,
+        signature: route.signature,
+        lineName: route.lineName,
+      ),
+    );
   }
 
   @override
@@ -69,7 +92,31 @@ class MemoryRoutes implements SavedRoutesRepository {
   }
 }
 
+class MemoryPlaces implements SavedPlacesRepository {
+  MemoryPlaces([Iterable<SavedPlace> initial = const []]) {
+    places = {for (final place in initial) place.type: place};
+  }
+
+  late Map<SavedPlaceType, SavedPlace> places;
+
+  @override
+  Future<List<SavedPlace>> load() async => places.values.toList();
+
+  @override
+  Future<SavedPlace> upsert(SavedPlace place) async {
+    places[place.type] = place;
+    return place;
+  }
+
+  @override
+  Future<void> delete(SavedPlaceType type) async => places.remove(type);
+}
+
 class ProfileServiceStub implements PersonalTravelService {
+  ProfileServiceStub({this.history = const []});
+
+  final List<TravelHistoryEntry> history;
+
   @override
   Future<PersonalProfile> loadProfile({String? confirmedEmail}) async =>
       PersonalProfile(
@@ -80,7 +127,7 @@ class ProfileServiceStub implements PersonalTravelService {
 
   @override
   Future<List<TravelHistoryEntry>> loadTravelHistory({int limit = 100}) async =>
-      const [];
+      history;
 
   @override
   Future<String> uploadAvatar(
@@ -150,6 +197,203 @@ Future<void> launch(WidgetTester tester, Widget screen) async {
 }
 
 void main() {
+  test('saved place keeps station data and resolves current GTFS IDs', () {
+    final original = SavedPlace(
+      type: SavedPlaceType.home,
+      station: station('PV128 Setapak', ['old-id']),
+    );
+    final payload = original.toUpsert('user-1');
+    final restored = SavedPlace.fromJson(payload);
+    final current = station('Setapak station', ['old-id', 'new-id']);
+
+    expect(payload['place_type'], 'home');
+    expect(payload['latitude'], original.station.lat);
+    expect(restored.station.ids, ['old-id']);
+    expect(restored.resolveStation([current]), same(current));
+  });
+
+  testWidgets('Saved Places can add, edit and remove a station', (
+    tester,
+  ) async {
+    final repository = MemoryPlaces();
+    final api = PlanningApi();
+    await launch(
+      tester,
+      SavedPlacesScreen(repository: repository, apiService: api),
+    );
+
+    expect(find.text('Not set'), findsNWidgets(3));
+    await tester.tap(find.byKey(const Key('set-saved-place-home')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('CURRENT ORIGIN'));
+    await tester.pumpAndSettle();
+    expect(
+      repository.places[SavedPlaceType.home]!.station.name,
+      'CURRENT ORIGIN',
+    );
+    expect(find.text('CURRENT ORIGIN'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Remove Home'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Remove'));
+    await tester.pumpAndSettle();
+    expect(repository.places.containsKey(SavedPlaceType.home), isFalse);
+  });
+
+  testWidgets('Journey Planning selects a Saved Place as the origin', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final api = PlanningApi();
+    final home = SavedPlace(
+      type: SavedPlaceType.home,
+      station: api.stations.first,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: JourneyPlanningScreen(
+          apiService: api,
+          savedRoutesRepository: MemoryRoutes(),
+          savedPlacesRepository: MemoryPlaces([home]),
+          authenticate: (_) async => true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Origin Location'));
+    await tester.pumpAndSettle();
+    expect(find.text('SAVED PLACES'), findsOneWidget);
+    await tester.tap(find.text('Home'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('CURRENT ORIGIN'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  test('smart routine uses the most frequent route from the last 30 days', () {
+    final now = DateTime(2026, 9, 6, 12);
+    final suggestion = SmartRoutineService.detect(
+      now: now,
+      history: [
+        trip('PV128 Setapak', 'TAR UMT', DateTime(2026, 9, 1)),
+        trip(' pv128  setapak ', 'tar umt', DateTime(2026, 9, 3)),
+        trip('PV128 Setapak', 'TAR UMT', DateTime(2026, 9, 5)),
+        trip('Old', 'Route', DateTime(2026, 7, 1)),
+        trip('KLCC', 'KL Sentral', DateTime(2026, 9, 2)),
+        trip('KLCC', 'KL Sentral', DateTime(2026, 9, 4)),
+        trip('KLCC', 'KL Sentral', DateTime(2026, 9, 5)),
+        trip('KLCC', 'KL Sentral', DateTime(2026, 9, 6)),
+      ],
+    );
+
+    expect(suggestion!.origin, 'KLCC');
+    expect(suggestion.destination, 'KL Sentral');
+    expect(suggestion.tripCount, 4);
+    expect(suggestion.commonWeekdays, {3, 5, 6, 7});
+  });
+
+  test('smart routine is hidden for the configured commute', () {
+    final now = DateTime(2026, 9, 6, 12);
+    final history = [
+      trip('Home', 'Campus', DateTime(2026, 9, 1)),
+      trip('Home', 'Campus', DateTime(2026, 9, 2)),
+      trip('Home', 'Campus', DateTime(2026, 9, 3)),
+    ];
+
+    expect(
+      SmartRoutineService.detect(
+        now: now,
+        history: history,
+        configuredCommutes: const [
+          DailyCommuteRoute(origin: ' home ', destination: 'CAMPUS'),
+        ],
+      ),
+      isNull,
+    );
+  });
+
+  test('smart routine reuses an existing favourite route', () async {
+    final route = sampleRoute();
+    final repository = MemoryRoutes()..routes = [route];
+    final service = SmartRoutineService(repository, apiService: PlanningApi());
+    final suggestion = RoutineSuggestion(
+      origin: route.origin.name.toLowerCase(),
+      destination: route.destination.name,
+      tripCount: 3,
+      commonWeekdays: const {1, 3, 5},
+      mostRecentTrip: DateTime(2026, 9, 5),
+    );
+
+    expect(await service.findOrCreateFavourite(suggestion), same(route));
+    expect(repository.routes, hasLength(1));
+  });
+
+  test(
+    'smart routine creates a favourite through existing route services',
+    () async {
+      final repository = MemoryRoutes();
+      final service = SmartRoutineService(
+        repository,
+        apiService: PlanningApi(),
+      );
+      final saved = await service.findOrCreateFavourite(
+        RoutineSuggestion(
+          origin: 'CURRENT ORIGIN',
+          destination: 'CURRENT DESTINATION',
+          tripCount: 3,
+          commonWeekdays: const {1, 3, 5},
+          mostRecentTrip: DateTime(2026, 9, 5),
+        ),
+      );
+
+      expect(saved.id, isNotNull);
+      expect(saved.origin.name, 'CURRENT ORIGIN');
+      expect(saved.destination.name, 'CURRENT DESTINATION');
+      expect(repository.routes, hasLength(1));
+    },
+  );
+
+  testWidgets(
+    'dashboard shows and dismisses a smart routine for this session',
+    (tester) async {
+      final now = DateTime.now();
+      await launch(
+        tester,
+        PersonalTravelScreen(
+          service: ProfileServiceStub(
+            history: [
+              trip(
+                'PV128 Setapak',
+                'TAR UMT',
+                now.subtract(const Duration(days: 1)),
+              ),
+              trip(
+                'PV128 Setapak',
+                'TAR UMT',
+                now.subtract(const Duration(days: 2)),
+              ),
+              trip(
+                'PV128 Setapak',
+                'TAR UMT',
+                now.subtract(const Duration(days: 3)),
+              ),
+            ],
+          ),
+          savedRoutesRepository: MemoryRoutes(),
+        ),
+      );
+
+      expect(find.text('SMART ROUTINE SUGGESTION'), findsOneWidget);
+      expect(find.text('3 trips in the last 30 days'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('dismiss-routine-suggestion')));
+      await tester.pump();
+      expect(find.text('SMART ROUTINE SUGGESTION'), findsNothing);
+    },
+  );
+
   test(
     'saved payload is JSON safe and restores station IDs for replanning',
     () {

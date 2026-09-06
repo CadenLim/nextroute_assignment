@@ -1,7 +1,8 @@
 begin;
 
 create table if not exists public.daily_commutes (
-  user_id uuid primary key references auth.users(id) on delete cascade,
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
   saved_route_id uuid references public.saved_routes(id) on delete set null,
   origin text not null check (length(btrim(origin)) > 0),
   destination text not null check (length(btrim(destination)) > 0),
@@ -20,57 +21,10 @@ create table if not exists public.daily_commutes (
     check (active_days <@ array[1, 2, 3, 4, 5, 6, 7]::smallint[])
 );
 
-alter table public.daily_commutes enable row level security;
+create index if not exists daily_commutes_user_updated_idx
+  on public.daily_commutes (user_id, updated_at desc);
 
 revoke all on public.daily_commutes from anon;
-
-drop policy if exists "Users can view their daily commute" on public.daily_commutes;
-create policy "Users can view their daily commute"
-on public.daily_commutes for select
-to authenticated
-using ((select auth.uid()) = user_id);
-
-drop policy if exists "Users can create their daily commute" on public.daily_commutes;
-create policy "Users can create their daily commute"
-on public.daily_commutes for insert
-to authenticated
-with check (
-  (select auth.uid()) = user_id
-  and (
-    saved_route_id is null
-    or exists (
-      select 1
-      from public.saved_routes
-      where saved_routes.id = daily_commutes.saved_route_id
-        and saved_routes.user_id = (select auth.uid())
-    )
-  )
-);
-
-drop policy if exists "Users can update their daily commute" on public.daily_commutes;
-create policy "Users can update their daily commute"
-on public.daily_commutes for update
-to authenticated
-using ((select auth.uid()) = user_id)
-with check (
-  (select auth.uid()) = user_id
-  and (
-    saved_route_id is null
-    or exists (
-      select 1
-      from public.saved_routes
-      where saved_routes.id = daily_commutes.saved_route_id
-        and saved_routes.user_id = (select auth.uid())
-    )
-  )
-);
-
-drop policy if exists "Users can delete their daily commute" on public.daily_commutes;
-create policy "Users can delete their daily commute"
-on public.daily_commutes for delete
-to authenticated
-using ((select auth.uid()) = user_id);
-
 grant select, insert, update, delete on public.daily_commutes to authenticated;
 
 commit;

@@ -24,23 +24,7 @@ create table public.saved_routes (
 create index saved_routes_user_created_idx
   on public.saved_routes (user_id, created_at desc);
 
-alter table public.saved_routes enable row level security;
-
 revoke all on public.saved_routes from anon;
 grant select, insert, update, delete on public.saved_routes to authenticated;
-
-create policy "Read own saved routes" on public.saved_routes
-  for select to authenticated using ((select auth.uid()) = user_id);
-
-create policy "Save own routes" on public.saved_routes
-  for insert to authenticated with check ((select auth.uid()) = user_id);
-
-create policy "Rename own saved routes" on public.saved_routes
-  for update to authenticated
-  using ((select auth.uid()) = user_id)
-  with check ((select auth.uid()) = user_id);
-
-create policy "Delete own saved routes" on public.saved_routes
-  for delete to authenticated using ((select auth.uid()) = user_id);
 
 commit;

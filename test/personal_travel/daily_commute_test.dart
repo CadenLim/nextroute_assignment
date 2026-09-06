@@ -8,21 +8,38 @@ import 'package:timezone/data/latest.dart' as tz_data;
 import 'package:timezone/timezone.dart' as tz;
 
 class MemoryCommuteRepository implements DailyCommuteRepository {
-  DailyCommute? value;
+  final List<DailyCommute> values = [];
   int saves = 0;
 
+  DailyCommute? get value => values.firstOrNull;
+
+  set value(DailyCommute? commute) {
+    values
+      ..clear()
+      ..addAll(
+        commute == null
+            ? const []
+            : [commute.id == null ? commute.copyWith(id: 'existing') : commute],
+      );
+  }
+
   @override
-  Future<DailyCommute?> load() async => value;
+  Future<List<DailyCommute>> loadAll() async => values.toList();
 
   @override
   Future<DailyCommute> upsert(DailyCommute commute) async {
     saves++;
-    value = commute;
-    return commute;
+    final saved = commute.id == null
+        ? commute.copyWith(id: 'commute-$saves')
+        : commute;
+    values.removeWhere((item) => item.id == saved.id);
+    values.add(saved);
+    return saved;
   }
 
   @override
-  Future<void> delete() async => value = null;
+  Future<void> delete(String id) async =>
+      values.removeWhere((commute) => commute.id == id);
 }
 
 class MemorySavedRoutes implements SavedRoutesRepository {
@@ -81,7 +98,8 @@ class CommuteNotifications extends LocalPushNotificationService {
   Future<bool> requestPermission() async => permission;
 
   @override
-  Future<void> cancelDailyCommuteNotifications() async => cancellations++;
+  Future<void> cancelDailyCommuteNotifications(DailyCommute commute) async =>
+      cancellations++;
 
   @override
   Future<void> scheduleDailyCommuteNotifications(DailyCommute commute) async {
@@ -153,6 +171,115 @@ void main() {
       commute.notificationWeekdayForArrivalDay(DateTime.monday),
       DateTime.sunday,
     );
+  });
+
+  test('calculates the next real reminder date and time', () {
+    final commute = DailyCommute(
+      userId: 'user-1',
+      savedRouteId: 'route-1',
+      origin: 'Home',
+      destination: 'TAR UMT',
+      arriveByMinutes: 9 * 60,
+      activeDays: const {DateTime.monday, DateTime.wednesday},
+      reminderEnabled: true,
+      reminderMinutesBefore: 10,
+      estimatedDurationMinutes: 35,
+    );
+
+    expect(
+      commute.nextReminderAfter(DateTime(2026, 9, 7, 8, 16)),
+      DateTime(2026, 9, 9, 8, 15),
+    );
+    expect(
+      commute
+          .copyWith(reminderEnabled: false)
+          .nextReminderAfter(DateTime(2026, 9, 7)),
+      isNull,
+    );
+  });
+
+  test('selects the nearest upcoming enabled reminder from multiple', () {
+    final first = DailyCommute(
+      id: 'first',
+      userId: 'user-1',
+      savedRouteId: 'route-1',
+      origin: 'Home',
+      destination: 'Office',
+      arriveByMinutes: 10 * 60,
+      activeDays: const {DateTime.monday},
+      reminderEnabled: true,
+      reminderMinutesBefore: 10,
+      estimatedDurationMinutes: 30,
+    );
+    final nearer = first.copyWith(
+      id: 'nearer',
+      destination: 'Campus',
+      arriveByMinutes: 9 * 60,
+    );
+    final disabled = first.copyWith(
+      id: 'disabled',
+      arriveByMinutes: 8 * 60,
+      reminderEnabled: false,
+    );
+
+    final next = DailyCommuteService.nextReminder([
+      first,
+      disabled,
+      nearer,
+    ], DateTime(2026, 9, 7, 7));
+    expect(next!.commute.id, 'nearer');
+    expect(next.time, DateTime(2026, 9, 7, 8, 20));
+  });
+
+  test('each reminder and weekday receives a unique notification ID', () {
+    final notifications = LocalPushNotificationService();
+    final first = DailyCommute(
+      id: 'reminder-a',
+      userId: 'user-1',
+      savedRouteId: 'route-1',
+      origin: 'Home',
+      destination: 'Office',
+      arriveByMinutes: 9 * 60,
+      activeDays: const {1, 2},
+      reminderEnabled: true,
+      reminderMinutesBefore: 10,
+      estimatedDurationMinutes: 30,
+    );
+    final second = first.copyWith(id: 'reminder-b');
+    final ids = <int>{
+      for (final commute in [first, second])
+        for (final day in commute.activeDays)
+          notifications.notificationId(commute, day),
+    };
+    expect(ids, hasLength(4));
+  });
+
+  test('saving a second reminder does not overwrite the first', () async {
+    final route = commuteRoute();
+    final repository = MemoryCommuteRepository();
+    final service = DailyCommuteService(
+      repository: repository,
+      apiService: CommuteApi(route),
+      notificationService: CommuteNotifications(),
+      userIdProvider: () => 'user-1',
+    );
+    await service.save(
+      route: route,
+      arriveByMinutes: 9 * 60,
+      activeDays: {1, 3, 5},
+      reminderEnabled: true,
+      reminderMinutesBefore: 10,
+    );
+    await service.save(
+      route: route,
+      arriveByMinutes: 18 * 60,
+      activeDays: {2, 4},
+      reminderEnabled: false,
+      reminderMinutesBefore: 15,
+    );
+
+    expect(await service.loadAll(), hasLength(2));
+    expect(repository.values.map((item) => item.id).toSet(), hasLength(2));
   });
 
   test(
@@ -229,7 +356,7 @@ void main() {
     );
     repository.value = commute;
 
-    final disabled = await service.setReminderEnabled(commute, false);
+    final disabled = await service.setReminderEnabled(repository.value!, false);
     expect(disabled.reminderEnabled, isFalse);
     expect(notifications.cancellations, 1);
     expect(notifications.scheduled, isNull);
@@ -239,7 +366,7 @@ void main() {
     expect(notifications.cancellations, 2);
     expect(notifications.scheduled, same(enabled));
 
-    await service.delete();
+    await service.delete(enabled);
     expect(repository.value, isNull);
     expect(notifications.cancellations, 3);
   });
@@ -270,6 +397,106 @@ void main() {
     expect(find.text('Daily Commute'), findsOneWidget);
     expect(find.byKey(const Key('commute-route')), findsOneWidget);
     expect(find.byKey(const Key('save-daily-commute')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('commute-arrive-by')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('arrive-hour-wheel')), findsOneWidget);
+    expect(find.byKey(const Key('arrive-minute-wheel')), findsOneWidget);
+    expect(find.byKey(const Key('arrive-period-wheel')), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('routine suggestion prefills route and detected weekdays', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final route = commuteRoute();
+    final repository = MemoryCommuteRepository();
+    final service = DailyCommuteService(
+      repository: repository,
+      apiService: CommuteApi(route),
+      notificationService: CommuteNotifications(),
+      userIdProvider: () => 'user-1',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DailyCommuteSettingsScreen(
+          service: service,
+          savedRoutesRepository: MemorySavedRoutes(route),
+          initialRoute: route,
+          initialActiveDays: const {
+            DateTime.monday,
+            DateTime.wednesday,
+            DateTime.friday,
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('save-daily-commute')));
+    await tester.tap(find.byKey(const Key('save-daily-commute')));
+    await tester.pumpAndSettle();
+
+    expect(repository.value!.savedRouteId, route.id);
+    expect(repository.value!.activeDays, {1, 3, 5});
+  });
+
+  testWidgets('Smart Reminders overview lists multiple reminders', (
+    tester,
+  ) async {
+    final route = commuteRoute();
+    final repository = MemoryCommuteRepository()
+      ..values.addAll([
+        DailyCommute(
+          id: 'morning',
+          userId: 'user-1',
+          savedRouteId: route.id,
+          origin: 'Home',
+          destination: 'Campus',
+          arriveByMinutes: 9 * 60,
+          activeDays: const {1, 3, 5},
+          reminderEnabled: true,
+          reminderMinutesBefore: 10,
+          estimatedDurationMinutes: 35,
+        ),
+        DailyCommute(
+          id: 'evening',
+          userId: 'user-1',
+          savedRouteId: route.id,
+          origin: 'Campus',
+          destination: 'Home',
+          arriveByMinutes: 18 * 60,
+          activeDays: const {1, 3, 5},
+          reminderEnabled: false,
+          reminderMinutesBefore: 15,
+          estimatedDurationMinutes: 35,
+        ),
+      ]);
+    final service = DailyCommuteService(
+      repository: repository,
+      apiService: CommuteApi(route),
+      notificationService: CommuteNotifications(),
+      userIdProvider: () => 'user-1',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: DailyCommuteOverviewSheet(
+            service: service,
+            savedRoutesRepository: MemorySavedRoutes(route),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Home → Campus'), findsOneWidget);
+    expect(find.text('Campus → Home'), findsOneWidget);
+    expect(find.byType(Switch), findsNWidgets(2));
+    expect(find.text('Add'), findsOneWidget);
   });
 }

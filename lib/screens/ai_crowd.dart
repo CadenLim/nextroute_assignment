@@ -5,6 +5,23 @@ import '../services/api_service.dart';
 // Period filter modes for the Station Ridership Ranking tab (Tab 5).
 enum _RankingPeriod { overall, month, day }
 
+// Which sub-page of Tab 5 is showing: the existing Station Ranking view,
+// or the new Compare Stations view.
+enum _Tab5View { ranking, compare }
+
+// Shape of one row returned by ApiService.getStationRidershipTotals() —
+// named here just so the Compare Stations fields below don't have to
+// repeat the full anonymous record type. Structurally identical to what
+// _rankingData already uses.
+typedef _StationRidershipRow = ({
+String station,
+double avgRidership,
+int totalRidership,
+int recordCount,
+DateTime? minDate,
+DateTime? maxDate,
+});
+
 // ── Type-to-search station picker ────────────────────────────────────────
 // Drop-in replacement for DropdownButtonFormField<String> when the list of
 // choices is long (station names). Lets the user either tap and scroll a
@@ -369,6 +386,24 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   // never overwritten by a later Month/Day fetch's narrower range.
   DateTime? _rankingDatasetMinDate;
   DateTime? _rankingDatasetMaxDate;
+
+  // Which sub-page of Tab 5 is currently shown.
+  _Tab5View _tab5View = _Tab5View.ranking;
+
+  // ── Tab 5: Compare Stations state ──
+  // Same underlying query as Station Ranking
+  // (_api.getStationRidershipTotals — real per-station averages from
+  // Supabase, no hardcoded ridership); this view just reads off the two
+  // selected stations' rows instead of listing every station.
+  String? _compareStationA;
+  String? _compareStationB;
+  _RankingPeriod _comparePeriod = _RankingPeriod.overall;
+  DateTime? _compareMonth;
+  DateTime? _compareDay;
+  bool _loadingCompare = false;
+  String? _compareError;
+  _StationRidershipRow? _compareDataA;
+  _StationRidershipRow? _compareDataB;
 
   // ── Shared visual-hierarchy tokens (all four tabs) ──
   // Single source of truth for section spacing/padding/radius, so the
@@ -773,6 +808,90 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     }
   }
 
+  // ── Tab 5: Compare Stations ──
+  // Reuses the same "station_ridership_totals" query as the Ranking view
+  // (Overall) / station_ridership_totals_for_range() (Month/Day) — one
+  // real, grouped Supabase query for every station — and simply reads off
+  // the two selected stations' rows. No separate endpoint, no per-station
+  // looping, no hardcoded ridership.
+  Future<void> _runCompare() async {
+    final stationA = _compareStationA;
+    final stationB = _compareStationB;
+    if (stationA == null || stationB == null) return;
+
+    DateTime? startDate;
+    DateTime? endDate;
+    switch (_comparePeriod) {
+      case _RankingPeriod.overall:
+        break;
+      case _RankingPeriod.month:
+        if (_compareMonth == null) return;
+        startDate = DateTime(_compareMonth!.year, _compareMonth!.month, 1);
+        endDate = DateTime(_compareMonth!.year, _compareMonth!.month + 1, 0);
+        break;
+      case _RankingPeriod.day:
+        if (_compareDay == null) return;
+        startDate = _compareDay;
+        endDate = _compareDay;
+        break;
+    }
+
+    setState(() {
+      _loadingCompare = true;
+      _compareError = null;
+    });
+    try {
+      final results = await _api.getStationRidershipTotals(startDate: startDate, endDate: endDate);
+      if (!mounted) return;
+      setState(() {
+        _compareDataA = _findStationRow(results, stationA);
+        _compareDataB = _findStationRow(results, stationB);
+        _loadingCompare = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _compareError = 'Could not load the comparison right now:\n$e';
+        _loadingCompare = false;
+      });
+    }
+  }
+
+  _StationRidershipRow? _findStationRow(List<_StationRidershipRow> rows, String station) {
+    for (final r in rows) {
+      if (r.station == station) return r;
+    }
+    return null;
+  }
+
+  void _onComparePeriodChanged(_RankingPeriod period) {
+    setState(() => _comparePeriod = period);
+    if (period == _RankingPeriod.overall ||
+        (period == _RankingPeriod.month && _compareMonth != null) ||
+        (period == _RankingPeriod.day && _compareDay != null)) {
+      _runCompare();
+    }
+  }
+
+  void _onCompareMonthChanged(DateTime? month) {
+    setState(() => _compareMonth = month);
+    if (month != null) _runCompare();
+  }
+
+  Future<void> _pickCompareDay() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _compareDay ?? _rankingDatasetMaxDate ?? now,
+      firstDate: _rankingDatasetMinDate ?? DateTime(2020),
+      lastDate: _rankingDatasetMaxDate ?? now,
+    );
+    if (picked != null) {
+      setState(() => _compareDay = picked);
+      _runCompare();
+    }
+  }
+
   Future<void> _pickTime() async {
     final picked = await showTimePicker(context: context, initialTime: _time);
     if (picked != null) {
@@ -885,7 +1004,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   _buildPeakHoursTab(),
                   _buildConnectionsTab(),
                   _buildHistoryTab(),
-                  _buildStationRankingTab(),
+                  _buildTab5(),
                 ],
               ),
             ),
@@ -2565,6 +2684,38 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   //   C. Top 5 least-busy stations
   //   D. Ranking insight (busiest / least-busy station, in plain language)
 
+  // Tab 5 has two sub-pages sharing one tab slot: Station Ranking (existing)
+  // and Compare Stations (new). This just picks which one to render; the
+  // toggle itself lives in _tab5ViewSwitch() and is rendered at the top of
+  // each sub-page.
+  Widget _buildTab5() {
+    return _tab5View == _Tab5View.ranking ? _buildStationRankingTab() : _buildCompareStationsTab();
+  }
+
+  // Segmented-looking chip pair for switching between the two Tab 5
+  // sub-pages. Uses the same ChoiceChip look as the period filters below,
+  // so it reads as part of the existing UI rather than a new control.
+  Widget _tab5ViewSwitch() {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        ChoiceChip(
+          avatar: const Icon(Icons.leaderboard, size: 15),
+          label: const Text('Station Ranking'),
+          selected: _tab5View == _Tab5View.ranking,
+          onSelected: (_) => setState(() => _tab5View = _Tab5View.ranking),
+        ),
+        ChoiceChip(
+          avatar: const Icon(Icons.compare_arrows, size: 15),
+          label: const Text('Compare Stations'),
+          selected: _tab5View == _Tab5View.compare,
+          onSelected: (_) => setState(() => _tab5View = _Tab5View.compare),
+        ),
+      ],
+    );
+  }
+
   // Real earliest–latest date across every station's data (from the
   // min_date/max_date the ranking query already returns per station) —
   // shown as "Based on Jan–Mar 2026 data" when available. Not a fixed
@@ -2654,6 +2805,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          _tab5ViewSwitch(),
+          const SizedBox(height: 12),
           const Text('Station Ridership Ranking',
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 4),
@@ -2803,6 +2956,349 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               Text('${vsNetworkAvg.toStringAsFixed(2)}× network average',
                   style: TextStyle(fontSize: 10, color: isTop ? color : Colors.black45)),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Tab 5 UI: Compare Stations ──────────────────────────────────────────
+  //
+  // Real per-station ridership averages for two chosen stations, from the
+  // same "station_ridership_totals" query the Ranking page uses. No new
+  // data source, no hardcoded ridership.
+  // Sections:
+  //   A. Station A / Station B pickers + period filter (Overall/Month/Day)
+  //   B. Average ridership for each + the ridership difference
+  //   C. A simple comparison bar chart
+  //   D. One-line insight comparing the two stations
+  Widget _buildCompareStationsTab() {
+    final dataA = _compareDataA;
+    final dataB = _compareDataB;
+    final canCompare = _compareStationA != null && _compareStationB != null;
+    final sameStation = canCompare && _compareStationA == _compareStationB;
+    final haveResults = dataA != null && dataB != null;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _tab5ViewSwitch(),
+          const SizedBox(height: 12),
+          const Text('Compare Stations',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
+          const SizedBox(height: 4),
+          const Text(
+            'See how two stations\' average ridership stacks up.',
+            style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
+          ),
+          const SizedBox(height: _sectionGap),
+
+          // A. Station pickers + period filter
+          _sectionCard(
+            title: 'SELECT STATIONS',
+            icon: Icons.compare_arrows,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                StationSearchField(
+                  label: 'Station A',
+                  stations: _stations,
+                  value: _compareStationA,
+                  onChanged: (val) {
+                    setState(() => _compareStationA = val);
+                    _runCompare();
+                  },
+                ),
+                const SizedBox(height: 12),
+                StationSearchField(
+                  label: 'Station B',
+                  stations: _stations,
+                  value: _compareStationB,
+                  onChanged: (val) {
+                    setState(() => _compareStationB = val);
+                    _runCompare();
+                  },
+                ),
+                const SizedBox(height: 14),
+                _comparePeriodFilter(),
+              ],
+            ),
+          ),
+          const SizedBox(height: _sectionGap),
+
+          if (!canCompare)
+            _emptyState('Select Station A and Station B to compare their ridership.')
+          else if (sameStation)
+            _emptyState('Select two different stations to compare.')
+          else ...[
+              if (_loadingCompare && !haveResults) ...[
+                Row(
+                  children: [
+                    const SizedBox(
+                        width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5))),
+                    const SizedBox(width: 10),
+                    const Text('Loading comparison…', style: TextStyle(fontSize: 12.5, color: Colors.black54)),
+                  ],
+                ),
+                const SizedBox(height: _sectionGap),
+              ],
+
+              if (_compareError != null) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(_sectionCardPadding),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.06),
+                    borderRadius: BorderRadius.circular(_sectionCardRadius),
+                    border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+                  ),
+                  child: Text(_compareError!, style: const TextStyle(fontSize: 12, color: Colors.black87)),
+                ),
+                const SizedBox(height: _sectionGap),
+              ],
+
+              if (haveResults) ...[
+                // B. Average ridership + difference
+                _sectionCard(
+                  title: 'AVERAGE DAILY RIDERSHIP',
+                  icon: Icons.bar_chart,
+                  child: _compareAverageSection(dataA, dataB),
+                ),
+                const SizedBox(height: _sectionGap),
+
+                // C. Simple comparison bar chart (reuses the same bar row
+                // style as the History tab's weekly pattern chart).
+                _sectionCard(
+                  title: 'RIDERSHIP COMPARISON',
+                  icon: Icons.stacked_bar_chart,
+                  child: _compareBarChart(dataA, dataB),
+                ),
+                const SizedBox(height: _sectionGap),
+
+                // D. One-line insight
+                _compareInsightCard(dataA, dataB),
+              ] else if (!_loadingCompare)
+                _emptyState('No ridership records found for one or both stations in this period.'),
+            ],
+        ],
+      ),
+    );
+  }
+
+  // Period filter row for Compare Stations — identical Overall/Month/Day
+  // controls to the Ranking page's filter, bound to the compare-specific
+  // state so switching one page's period never affects the other.
+  Widget _comparePeriodFilter() {
+    const monthNames = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    final months = _rankingAvailableMonths();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            ChoiceChip(
+              label: const Text('Overall'),
+              selected: _comparePeriod == _RankingPeriod.overall,
+              onSelected: (_) => _onComparePeriodChanged(_RankingPeriod.overall),
+            ),
+            ChoiceChip(
+              label: const Text('Month'),
+              selected: _comparePeriod == _RankingPeriod.month,
+              onSelected: (_) => _onComparePeriodChanged(_RankingPeriod.month),
+            ),
+            ChoiceChip(
+              label: const Text('Day'),
+              selected: _comparePeriod == _RankingPeriod.day,
+              onSelected: (_) => _onComparePeriodChanged(_RankingPeriod.day),
+            ),
+          ],
+        ),
+        if (_comparePeriod == _RankingPeriod.month) ...[
+          const SizedBox(height: 8),
+          DropdownButtonFormField<DateTime>(
+            value: _compareMonth,
+            isDense: true,
+            decoration: InputDecoration(
+              labelText: 'Select month',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            ),
+            items: months
+                .map((m) => DropdownMenuItem(value: m, child: Text('${monthNames[m.month - 1]} ${m.year}')))
+                .toList(),
+            onChanged: _onCompareMonthChanged,
+          ),
+        ],
+        if (_comparePeriod == _RankingPeriod.day) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _pickCompareDay,
+            icon: const Icon(Icons.calendar_today, size: 15),
+            label: Text(_compareDay != null ? DateFormat('d MMM yyyy').format(_compareDay!) : 'Select a date'),
+          ),
+        ],
+      ],
+    );
+  }
+
+  // Two stat blocks (Station A / Station B average ridership) plus a real
+  // ridership-difference line underneath — both values and the difference
+  // are computed from the fetched Supabase rows, nothing hardcoded.
+  Widget _compareAverageSection(_StationRidershipRow a, _StationRidershipRow b) {
+    const colorA = Color(0xFF4F46E5);
+    const colorB = Color(0xFF16A34A);
+    final diff = a.avgRidership - b.avgRidership;
+    final higher = diff >= 0 ? a.station : b.station;
+    // Percentage is the difference relative to the lower of the two real
+    // averages (i.e. "X% higher than the lower station"), guarded against
+    // a zero average rather than dividing by it.
+    final lowerAvg = diff >= 0 ? b.avgRidership : a.avgRidership;
+    final diffPct = lowerAvg > 0 ? (diff.abs() / lowerAvg * 100) : 0.0;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: _compareStatBlock(a.station, a.avgRidership, colorA)),
+            Container(
+              width: 1,
+              height: 40,
+              margin: const EdgeInsets.symmetric(horizontal: 12),
+              color: Colors.grey.withValues(alpha: 0.2),
+            ),
+            Expanded(child: _compareStatBlock(b.station, b.avgRidership, colorB)),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+          decoration: BoxDecoration(
+            color: Colors.grey.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            diff.abs() < 0.5
+                ? 'Ridership Difference: 0/day (0.0%, essentially tied)'
+                : 'Ridership Difference: ${_formatNumber(diff.abs())}/day (${diffPct.toStringAsFixed(1)}% higher at $higher)',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _compareStatBlock(String station, double avgRidership, Color color) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(station,
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.black87),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis),
+        const SizedBox(height: 4),
+        Text('${_formatNumber(avgRidership)}/day',
+            style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: color)),
+      ],
+    );
+  }
+
+  // A simple two-bar comparison: the full station name sits above its bar
+  // rather than beside it, so long names never get truncated. Same bar
+  // fill/track colors and rounded look as the rest of the app, just
+  // stacked instead of inline — no Highest/Lowest tags, just the bars.
+  Widget _compareBarChart(_StationRidershipRow a, _StationRidershipRow b) {
+    final maxAvg = a.avgRidership >= b.avgRidership ? a.avgRidership : b.avgRidership;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _compareBarRow(a.station, a.avgRidership, maxAvg, color: const Color(0xFF4F46E5)),
+        const SizedBox(height: 14),
+        _compareBarRow(b.station, b.avgRidership, maxAvg, color: const Color(0xFF16A34A)),
+      ],
+    );
+  }
+
+  // One bar in the comparison chart: full station name on its own line,
+  // then the proportional bar (real avgRidership ÷ the larger of the two
+  // averages) with its value at the trailing end.
+  Widget _compareBarRow(String station, double avg, double maxAvg, {required Color color}) {
+    final factor = maxAvg == 0 ? 0.0 : avg / maxAvg;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          station,
+          style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Expanded(
+              child: Container(
+                height: 14,
+                decoration:
+                BoxDecoration(color: Colors.grey.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(4)),
+                child: FractionallySizedBox(
+                  alignment: Alignment.centerLeft,
+                  widthFactor: factor.clamp(0.03, 1.0),
+                  child: Container(decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4))),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            SizedBox(
+              width: 64,
+              child: Text(
+                '${_formatNumber(avg)}/day',
+                textAlign: TextAlign.right,
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  // One short, plain-language insight — derived entirely from the two
+  // fetched averages (ratio/difference), no hardcoded ridership.
+  Widget _compareInsightCard(_StationRidershipRow a, _StationRidershipRow b) {
+    const accent = Color(0xFF4F46E5);
+    final diff = a.avgRidership - b.avgRidership;
+    final String message;
+    if (diff.abs() < 0.5) {
+      message = '${a.station} and ${b.station} have almost identical average ridership over this period.';
+    } else {
+      final higher = diff > 0 ? a.station : b.station;
+      final lower = diff > 0 ? b.station : a.station;
+      final higherAvg = diff > 0 ? a.avgRidership : b.avgRidership;
+      final lowerAvg = diff > 0 ? b.avgRidership : a.avgRidership;
+      final ratioText = lowerAvg > 0 ? ' (about ${(higherAvg / lowerAvg).toStringAsFixed(1)}× busier)' : '';
+      message = '$higher sees noticeably higher ridership than $lower$ratioText.';
+    }
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: accent.withValues(alpha: 0.15)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.insights, size: 18, color: accent),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(message, style: const TextStyle(fontSize: 12.5, color: Colors.black87)),
           ),
         ],
       ),

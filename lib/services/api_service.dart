@@ -679,7 +679,7 @@ class ApiService {
         'departure_time': departureTime,
         'estimated_arrival_time': estimatedArrivalTime,
         'transit_steps': transitSteps,
-        'status': 'completed',
+        'status': 'in_progress',
       });
     } catch (e) {
       throw Exception('Failed to save navigation to database: ${e.toString()}');
@@ -758,14 +758,46 @@ class ApiService {
     return avg;
   }
 
+  // Per-station real average/total ridership for every station at once —
+  // from the "station_ridership_totals" view, which does the GROUP BY
+  // AVG/SUM/COUNT work for all stations directly in Postgres. One query,
+  // one round-trip — replaces the old approach of calling
+  // getStationTotalRecords() once per station (which meant 100+ separate
+  // requests and could trip Supabase's statement timeout). See the SQL to
+  // create this view in the accompanying note.
+  //
+  // Cached after the first successful *unfiltered* call — pass
+  // forceRefresh: true to bypass the cache and actually re-query
+  // Supabase. Passing startDate/endDate (for the Ranking tab's Month/Day
+  // period filter) always queries fresh via the
+  // station_ridership_totals_for_range() function instead of the view,
+  // and is never cached, since the range changes with user selection.
   Future<List<({String station, double avgRidership, int totalRidership, int recordCount, DateTime? minDate, DateTime? maxDate})>>
-  getStationRidershipTotals({bool forceRefresh = false}) async {
-    if (!forceRefresh && _stationRidershipTotalsCache != null) return _stationRidershipTotalsCache!;
-    final response = await Supabase.instance.client
-        .from('station_ridership_totals')
-        .select('station, avg_ridership, total_ridership, record_count, min_date, max_date')
-        .order('avg_ridership', ascending: false);
-    final results = response
+  getStationRidershipTotals({DateTime? startDate, DateTime? endDate, bool forceRefresh = false}) async {
+    final isOverall = startDate == null && endDate == null;
+    if (isOverall && !forceRefresh && _stationRidershipTotalsCache != null) {
+      return _stationRidershipTotalsCache!;
+    }
+    // Explicitly typed (not inferred from a ?: ternary): .from().select()
+    // and .rpc() have different static return types, so a ternary
+    // combining them collapses to `dynamic` — and once the receiver is
+    // dynamic, the .map() below silently loses its type info too and
+    // produces a plain List<dynamic>, which then fails the check against
+    // this method's declared return type. Assigning into an explicitly
+    // typed variable first keeps everything statically typed.
+    final List<Map<String, dynamic>> rows;
+    if (isOverall) {
+      rows = await Supabase.instance.client
+          .from('station_ridership_totals')
+          .select('station, avg_ridership, total_ridership, record_count, min_date, max_date')
+          .order('avg_ridership', ascending: false);
+    } else {
+      rows = await Supabase.instance.client.rpc('station_ridership_totals_for_range', params: {
+        'start_date': DateFormat('yyyy-MM-dd').format(startDate!),
+        'end_date': DateFormat('yyyy-MM-dd').format(endDate!),
+      });
+    }
+    final results = rows
         .map((row) => (
     station: row['station'] as String,
     avgRidership: (row['avg_ridership'] as num).toDouble(),
@@ -775,7 +807,7 @@ class ApiService {
     maxDate: row['max_date'] != null ? DateTime.tryParse(row['max_date'] as String) : null,
     ))
         .toList();
-    _stationRidershipTotalsCache = results;
+    if (isOverall) _stationRidershipTotalsCache = results;
     return results;
   }
 

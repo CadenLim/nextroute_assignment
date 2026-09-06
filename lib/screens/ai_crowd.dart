@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 
+// Period filter modes for the Station Ridership Ranking tab (Tab 5).
+enum _RankingPeriod { overall, month, day }
+
 // ── Type-to-search station picker ────────────────────────────────────────
 // Drop-in replacement for DropdownButtonFormField<String> when the list of
 // choices is long (station names). Lets the user either tap and scroll a
@@ -351,12 +354,21 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
   // ── Tab 5: Station Crowd Ranking state ──
   // Real per-station ridership from Supabase's "station_ridership_totals"
-  // view — one grouped query for every station, no hardcoded ridership,
-  // no modelling.
+  // view (Overall) or the station_ridership_totals_for_range() function
+  // (Month/Day) — one grouped query for every station, no hardcoded
+  // ridership, no modelling.
   bool _loadingRanking = false;
   String? _rankingError;
   List<({String station, double avgRidership, int totalRidership, int recordCount, DateTime? minDate, DateTime? maxDate})>?
   _rankingData;
+  _RankingPeriod _rankingPeriod = _RankingPeriod.overall;
+  DateTime? _rankingMonth; // first-of-month, set when _rankingPeriod == month
+  DateTime? _rankingDay; // set when _rankingPeriod == day
+  // The dataset's true earliest/latest date, captured once from the first
+  // Overall (unfiltered) load — used only to bound the Month/Day pickers,
+  // never overwritten by a later Month/Day fetch's narrower range.
+  DateTime? _rankingDatasetMinDate;
+  DateTime? _rankingDatasetMaxDate;
 
   // ── Shared visual-hierarchy tokens (all four tabs) ──
   // Single source of truth for section spacing/padding/radius, so the
@@ -634,23 +646,59 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   }
 
   // Station Crowd Ranking (Tab 5): a single query to the
-  // "station_ridership_totals" Supabase view, which computes real
-  // average/total ridership per station with a GROUP BY directly in
-  // Postgres. One round-trip for all stations — no per-station looping,
-  // no batching, no modelling, no hardcoded ridership.
+  // "station_ridership_totals" Supabase view (Overall) or the
+  // station_ridership_totals_for_range() function (Month/Day), which
+  // compute real average/total ridership per station with a GROUP BY
+  // directly in Postgres. One round-trip for all stations — no
+  // per-station looping, no batching, no modelling, no hardcoded
+  // ridership.
   //
-  // forceRefresh: true bypasses ApiService's in-memory cache so the
-  // refresh icon in the Ranking tab actually re-queries Supabase instead
-  // of just re-showing the same cached numbers.
+  // forceRefresh: true bypasses ApiService's in-memory cache for the
+  // Overall case so a manual re-pull actually re-queries Supabase instead
+  // of just re-showing the same cached numbers. Month/Day fetches are
+  // never cached, since the range changes with the user's selection.
   Future<void> _runStationRanking({bool forceRefresh = false}) async {
     if (_loadingRanking) return;
+
+    // Resolve the selected period into a concrete date range. If Month or
+    // Day is selected but nothing's been picked yet, wait for that pick
+    // instead of fetching — the picker's onChanged calls this again once
+    // a value is chosen.
+    DateTime? startDate;
+    DateTime? endDate;
+    switch (_rankingPeriod) {
+      case _RankingPeriod.overall:
+        break;
+      case _RankingPeriod.month:
+        if (_rankingMonth == null) return;
+        startDate = DateTime(_rankingMonth!.year, _rankingMonth!.month, 1);
+        endDate = DateTime(_rankingMonth!.year, _rankingMonth!.month + 1, 0);
+        break;
+      case _RankingPeriod.day:
+        if (_rankingDay == null) return;
+        startDate = _rankingDay;
+        endDate = _rankingDay;
+        break;
+    }
+
     setState(() {
       _loadingRanking = true;
       _rankingError = null;
     });
     try {
-      final results = await _api.getStationRidershipTotals(forceRefresh: forceRefresh);
+      final results = await _api.getStationRidershipTotals(
+        startDate: startDate,
+        endDate: endDate,
+        forceRefresh: forceRefresh,
+      );
       if (!mounted) return;
+      // Capture the dataset's true earliest/latest date once, from the
+      // first Overall (unfiltered) load — this bounds the Month/Day
+      // pickers and must not get overwritten by a later, narrower
+      // Month/Day fetch's own min/max.
+      if (startDate == null && endDate == null) {
+        _captureRankingDatasetBounds(results);
+      }
       setState(() {
         _rankingData = results.where((r) => r.recordCount > 0).toList();
         _loadingRanking = false;
@@ -661,6 +709,67 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         _rankingError = 'Could not load the station ranking right now:\n$e';
         _loadingRanking = false;
       });
+    }
+  }
+
+  void _captureRankingDatasetBounds(
+      List<({String station, double avgRidership, int totalRidership, int recordCount, DateTime? minDate, DateTime? maxDate})>
+      results) {
+    if (_rankingDatasetMinDate != null && _rankingDatasetMaxDate != null) return;
+    DateTime? minDate;
+    DateTime? maxDate;
+    for (final r in results) {
+      if (r.minDate != null && (minDate == null || r.minDate!.isBefore(minDate))) minDate = r.minDate;
+      if (r.maxDate != null && (maxDate == null || r.maxDate!.isAfter(maxDate))) maxDate = r.maxDate;
+    }
+    _rankingDatasetMinDate = minDate;
+    _rankingDatasetMaxDate = maxDate;
+  }
+
+  // Every calendar month between the dataset's earliest and latest date
+  // (inclusive) — populates the Month dropdown. Real data range only, not
+  // a fixed/hardcoded list.
+  List<DateTime> _rankingAvailableMonths() {
+    final min = _rankingDatasetMinDate;
+    final max = _rankingDatasetMaxDate;
+    if (min == null || max == null) return [];
+    final months = <DateTime>[];
+    var cursor = DateTime(min.year, min.month);
+    final end = DateTime(max.year, max.month);
+    while (!cursor.isAfter(end)) {
+      months.add(cursor);
+      cursor = DateTime(cursor.year, cursor.month + 1);
+    }
+    return months;
+  }
+
+  void _onRankingPeriodChanged(_RankingPeriod period) {
+    setState(() => _rankingPeriod = period);
+    // Overall and an already-picked Month/Day can fetch immediately;
+    // Month/Day with nothing picked yet just wait for the picker.
+    if (period == _RankingPeriod.overall ||
+        (period == _RankingPeriod.month && _rankingMonth != null) ||
+        (period == _RankingPeriod.day && _rankingDay != null)) {
+      _runStationRanking();
+    }
+  }
+
+  void _onRankingMonthChanged(DateTime? month) {
+    setState(() => _rankingMonth = month);
+    if (month != null) _runStationRanking();
+  }
+
+  Future<void> _pickRankingDay() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _rankingDay ?? _rankingDatasetMaxDate ?? now,
+      firstDate: _rankingDatasetMinDate ?? DateTime(2020),
+      lastDate: _rankingDatasetMaxDate ?? now,
+    );
+    if (picked != null) {
+      setState(() => _rankingDay = picked);
+      _runStationRanking();
     }
   }
 
@@ -2477,6 +2586,67 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return '${DateFormat('MMM yyyy').format(minDate)} – ${DateFormat('MMM yyyy').format(maxDate)}';
   }
 
+  // Period filter row for the Ranking tab: Overall / Month / Day chips,
+  // plus a compact month dropdown or date picker button underneath when
+  // Month or Day is selected. Deliberately not wrapped in a section
+  // card — just inline controls, per the tab's simplified layout.
+  Widget _rankingPeriodFilter() {
+    const monthNames = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    final months = _rankingAvailableMonths();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            ChoiceChip(
+              label: const Text('Overall'),
+              selected: _rankingPeriod == _RankingPeriod.overall,
+              onSelected: (_) => _onRankingPeriodChanged(_RankingPeriod.overall),
+            ),
+            ChoiceChip(
+              label: const Text('Month'),
+              selected: _rankingPeriod == _RankingPeriod.month,
+              onSelected: (_) => _onRankingPeriodChanged(_RankingPeriod.month),
+            ),
+            ChoiceChip(
+              label: const Text('Day'),
+              selected: _rankingPeriod == _RankingPeriod.day,
+              onSelected: (_) => _onRankingPeriodChanged(_RankingPeriod.day),
+            ),
+          ],
+        ),
+        if (_rankingPeriod == _RankingPeriod.month) ...[
+          const SizedBox(height: 8),
+          DropdownButtonFormField<DateTime>(
+            value: _rankingMonth,
+            isDense: true,
+            decoration: InputDecoration(
+              labelText: 'Select month',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            ),
+            items: months
+                .map((m) => DropdownMenuItem(value: m, child: Text('${monthNames[m.month - 1]} ${m.year}')))
+                .toList(),
+            onChanged: _onRankingMonthChanged,
+          ),
+        ],
+        if (_rankingPeriod == _RankingPeriod.day) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _pickRankingDay,
+            icon: const Icon(Icons.calendar_today, size: 15),
+            label: Text(_rankingDay != null ? DateFormat('d MMM yyyy').format(_rankingDay!) : 'Select a date'),
+          ),
+        ],
+      ],
+    );
+  }
+
   Widget _buildStationRankingTab() {
     final periodLabel = _rankingPeriodLabel();
     return SingleChildScrollView(
@@ -2491,8 +2661,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             'Compare stations by their typical daily ridership.',
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
+          const SizedBox(height: 8),
+          _rankingPeriodFilter(),
           if (periodLabel != null) ...[
-            const SizedBox(height: 2),
+            const SizedBox(height: 6),
             Text(
               'Based on $periodLabel data.',
               style: const TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),

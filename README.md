@@ -28,7 +28,10 @@ final rows = await Database.client.from('your_table').select();
 
 `config/supabase.json` is ignored by Git. The publishable key is intended for
 client applications. This coursework uses explicit SQL `GRANT`/`REVOKE`
-permissions instead of row-level security.
+permissions instead of row-level security. Never store real or sensitive user
+data in this assignment project: its application tables intentionally do not
+use Row Level Security. The private avatar bucket is the exception and keeps
+its policies on `storage.objects` so uploads and signed reads continue to work.
 
 ## Module 5: route-focused analytics and notifications
 

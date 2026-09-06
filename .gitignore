@@ -55,3 +55,5 @@ assets/gtfs/*_backup_*/
 
 # Supabase CLI local project metadata
 /supabase/.temp/
+
+nextroute_assignment_for_gpt.zip

@@ -1,10 +1,299 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/material.dart';
+import 'package:nextroute_assignment/screens/notification_centre.dart';
 import 'package:nextroute_assignment/models/analytics_notification_models.dart';
 import 'package:nextroute_assignment/services/notification_service.dart';
+import 'package:nextroute_assignment/services/module5_route_preferences.dart';
 
 void main() {
+  testWidgets('notification controls scroll in keyboard-sized embedded space', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(360, 500));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final repository = NotificationRepository(
+      _FakeNotificationLocalStorage(),
+      rowsLoader: () async => [_expiredRow()],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.topCenter,
+            child: SizedBox(
+              height: 250,
+              child: NotificationCentreScreen(
+                repository: repository,
+                embedded: true,
+                enableRealtime: false,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('History'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Expired • History'),
+      150,
+      scrollable: find.byWidgetPredicate(
+        (widget) =>
+            widget is Scrollable && widget.axisDirection == AxisDirection.down,
+      ),
+    );
+    await tester.pumpAndSettle();
+    final historyRect = tester.getRect(find.text('Expired • History'));
+    expect(historyRect.top, greaterThanOrEqualTo(0));
+    expect(historyRect.bottom, lessThanOrEqualTo(250));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+  testWidgets('bus delay details and search work on a narrow screen', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final repository = NotificationRepository(
+      _FakeNotificationLocalStorage(),
+      rowsLoader: () async => [
+        {
+          ..._row(id: 'delay', type: 'delay', routeId: 'U6000'),
+          'title': 'Bus delay test',
+          'delay_minutes': 9,
+          'vehicle_label': 'Bus 123',
+          'from_stop': 'Stop A',
+          'to_stop': 'Stop B',
+          'direction': 'Towards B',
+          'scheduled_arrival': '2026-09-05T02:30:00Z',
+          'estimated_arrival': '2026-09-05T02:39:00Z',
+          'estimate_method': 'schedule_stop_observation',
+        },
+      ],
+    );
+    final routes = Module5RoutePreferences();
+    addTearDown(routes.dispose);
+    await routes.replace(['U6000']);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NotificationCentreScreen(
+          repository: repository,
+          enableRealtime: false,
+          routePreferences: routes,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Estimated delay: 9 min'), findsOneWidget);
+    expect(find.textContaining('Scheduled arrival:'), findsOneWidget);
+    expect(find.textContaining('Estimated arrival:'), findsOneWidget);
+    expect(find.text('Observed at: Stop A'), findsOneWidget);
+    expect(find.text('Towards: Stop B'), findsOneWidget);
+    expect(find.text('Direction: Towards B'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), '123 stop b');
+    await tester.pumpAndSettle();
+    expect(find.text('Bus delay test'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), 'not-a-matching-route');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('No matching notifications'), findsOneWidget);
+    await tester.tap(find.byTooltip('Clear search'));
+    await tester.pumpAndSettle();
+    expect(find.text('Bus delay test'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+  test(
+    'expired messages remain in history, never in current or unread',
+    () async {
+      final repository = NotificationRepository(
+        _FakeNotificationLocalStorage(),
+        rowsLoader: () async => [_row(id: 'current'), _expiredRow()],
+      );
+      final notifications = await repository.loadNotifications();
+      expect(notifications, hasLength(2));
+      expect(repository.unreadCount(notifications), 1);
+      expect(
+        repository
+            .filterNotifications(notifications, NotificationFilter.all)
+            .single
+            .id,
+        'current',
+      );
+      expect(
+        repository
+            .filterNotifications(notifications, NotificationFilter.unread)
+            .single
+            .id,
+        'current',
+      );
+      final history = repository.filterNotifications(
+        notifications,
+        NotificationFilter.history,
+      );
+      expect(history.single.id, 'expired');
+      expect(history.single.message, 'Real Supabase notification content.');
+      expect(
+        repository.filterNotifications([
+          history.single,
+        ], NotificationFilter.service),
+        isEmpty,
+      );
+      expect(
+        history.single.copyWith(isRead: true).expiresAt,
+        history.single.expiresAt,
+      );
+    },
+  );
+
+  test(
+    'expiration boundary is inclusive and withdrawn rows are hidden',
+    () async {
+      final row = _expiredRow();
+      final notification = TransitNotification.fromSupabase(row, isRead: false);
+      expect(notification.isExpiredAt(notification.expiresAt!), isTrue);
+      expect(notification.isCurrentAt(notification.expiresAt!), isFalse);
+      final repository = NotificationRepository(
+        _FakeNotificationLocalStorage(),
+        rowsLoader: () async => [
+          row,
+          {..._row(id: 'withdrawn'), 'is_active': false},
+        ],
+      );
+      expect((await repository.loadNotifications()).map((n) => n.id), [
+        'expired',
+      ]);
+    },
+  );
+
+  test(
+    'history remains readable when its current-alert preference is disabled',
+    () async {
+      final repository = NotificationRepository(
+        _FakeNotificationLocalStorage(
+          preferencesJson: jsonEncode(
+            const NotificationPreferences.defaults()
+                .copyWith(serviceAlertsEnabled: false)
+                .toJson(),
+          ),
+        ),
+        rowsLoader: () async => [_row(id: 'muted-current'), _expiredRow()],
+      );
+      final notifications = await repository.loadNotifications();
+      expect(notifications.single.id, 'expired');
+      expect(repository.unreadCount(notifications), 0);
+    },
+  );
+
+  test(
+    'mark all read affects current notices and preserves older saved IDs',
+    () async {
+      final storage = _FakeNotificationLocalStorage(
+        notificationRecords: ['older-page-read-id'],
+      );
+      final repository = NotificationRepository(
+        storage,
+        rowsLoader: () async => [_row(id: 'current'), _expiredRow()],
+      );
+      await repository.loadNotifications();
+      final updated = await repository.markAllAsRead();
+      expect(updated.singleWhere((n) => n.id == 'current').isRead, isTrue);
+      expect(updated.singleWhere((n) => n.id == 'expired').isRead, isFalse);
+      expect(
+        storage.notificationRecords,
+        containsAll(['older-page-read-id', 'current']),
+      );
+    },
+  );
+
+  test('expired or withdrawn notifications cannot trigger push', () async {
+    final push = _RecordingPush();
+    final repository = NotificationRepository(
+      _FakeNotificationLocalStorage(
+        preferencesJson: jsonEncode(
+          const NotificationPreferences.defaults()
+              .copyWith(pushNotificationsEnabled: true)
+              .toJson(),
+        ),
+      ),
+      pushService: push,
+    );
+    await repository.showPushIfEnabled(
+      TransitNotification.fromSupabase(_expiredRow(), isRead: false),
+    );
+    await repository.showPushIfEnabled(
+      TransitNotification.fromSupabase({
+        ..._row(id: 'withdrawn'),
+        'is_active': false,
+      }, isRead: false),
+    );
+    expect(push.shown, 0);
+    await repository.showPushIfEnabled(
+      TransitNotification.fromSupabase(_row(id: 'current'), isRead: false),
+    );
+    expect(push.shown, 1);
+  });
+
+  testWidgets('History displays expired message and date on mobile', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final repository = NotificationRepository(
+      _FakeNotificationLocalStorage(),
+      rowsLoader: () async => [_expiredRow()],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NotificationCentreScreen(
+          repository: repository,
+          enableRealtime: false,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Choose My Routes'), findsWidgets);
+    expect(find.text('0 unread (current)'), findsOneWidget);
+    await tester.tap(find.text('History'));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -300));
+    await tester.pumpAndSettle();
+    expect(find.text('Real Supabase notification content.'), findsOneWidget);
+    expect(find.text('Expired • History'), findsOneWidget);
+    expect(find.textContaining('Expired:'), findsOneWidget);
+    expect(
+      find.text('Unread'),
+      findsOneWidget,
+    ); // Filter chip only, not a card badge.
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('refresh remains available for an empty inbox', (tester) async {
+    var loads = 0;
+    final repository = NotificationRepository(
+      _FakeNotificationLocalStorage(),
+      rowsLoader: () async {
+        loads++;
+        return [];
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NotificationCentreScreen(
+          repository: repository,
+          enableRealtime: false,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Refresh notifications'));
+    await tester.pumpAndSettle();
+    expect(loads, 2);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
   test(
     'loads real Supabase rows without creating demo notifications',
     () async {
@@ -143,7 +432,7 @@ void main() {
     );
     expect(
       repository
-          .filterNotifications(notifications, NotificationFilter.push)
+          .filterNotifications(notifications, NotificationFilter.service)
           .single
           .id,
       'service',
@@ -205,6 +494,29 @@ void main() {
     expect(preferences.realtimeDataAlertsEnabled, isTrue);
     expect(preferences.pushNotificationsEnabled, isFalse);
   });
+}
+
+Map<String, dynamic> _expiredRow() => {
+  ..._row(
+    id: 'expired',
+    createdAt: DateTime.now()
+        .toUtc()
+        .subtract(const Duration(days: 2))
+        .toIso8601String(),
+  ),
+  'expires_at': DateTime.now()
+      .toUtc()
+      .subtract(const Duration(days: 1))
+      .toIso8601String(),
+  'is_active': true,
+};
+
+class _RecordingPush extends LocalPushNotificationService {
+  int shown = 0;
+  @override
+  Future<void> show(TransitNotification notification) async {
+    shown++;
+  }
 }
 
 Map<String, dynamic> _row({

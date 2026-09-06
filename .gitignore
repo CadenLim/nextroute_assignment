@@ -52,3 +52,6 @@ app.*.map.json
 
 # Ignore GTFS backup folders
 assets/gtfs/*_backup_*/
+
+# Supabase CLI local project metadata
+/supabase/.temp/

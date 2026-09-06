@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:nextroute_assignment/screens/notification_centre.dart';
 import 'package:nextroute_assignment/screens/service_analytics.dart';
 import 'package:nextroute_assignment/services/notification_service.dart';
+import 'package:nextroute_assignment/services/module5_route_preferences.dart';
 
 class AnalyticsCentreScreen extends StatefulWidget {
   const AnalyticsCentreScreen({super.key});
@@ -12,6 +13,7 @@ class AnalyticsCentreScreen extends StatefulWidget {
 
 class _AnalyticsCentreScreenState extends State<AnalyticsCentreScreen> {
   late final NotificationRepository _repository;
+  late final Module5RoutePreferences _routePreferences;
   int _selectedSection = 0;
   int _unreadCount = 0;
 
@@ -22,7 +24,15 @@ class _AnalyticsCentreScreenState extends State<AnalyticsCentreScreen> {
       SharedPreferencesNotificationLocalStorage(),
       pushService: LocalPushNotificationService(),
     );
+    _routePreferences = Module5RoutePreferences();
+    _routePreferences.load();
     _refreshUnreadCount();
+  }
+
+  @override
+  void dispose() {
+    _routePreferences.dispose();
+    super.dispose();
   }
 
   Future<void> _refreshUnreadCount() async {
@@ -59,11 +69,15 @@ class _AnalyticsCentreScreenState extends State<AnalyticsCentreScreen> {
               child: IndexedStack(
                 index: _selectedSection,
                 children: [
-                  const ServiceAnalyticsScreen(embedded: true),
+                  ServiceAnalyticsScreen(
+                    embedded: true,
+                    routePreferences: _routePreferences,
+                  ),
                   NotificationCentreScreen(
                     embedded: true,
                     repository: _repository,
                     onNotificationsChanged: _refreshUnreadCount,
+                    routePreferences: _routePreferences,
                   ),
                 ],
               ),

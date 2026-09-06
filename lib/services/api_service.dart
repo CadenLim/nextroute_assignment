@@ -679,7 +679,7 @@ class ApiService {
         'departure_time': departureTime,
         'estimated_arrival_time': estimatedArrivalTime,
         'transit_steps': transitSteps,
-        'status': 'in_progress',
+        'status': 'completed',
       });
     } catch (e) {
       throw Exception('Failed to save navigation to database: ${e.toString()}');

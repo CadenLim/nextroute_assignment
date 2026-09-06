@@ -16,10 +16,10 @@ Registration retains name, email and password and verifies a `signup` code.
 Codes contain 6 digits, matching the project email OTP length.
 
 This is an app-enforced two-step flow, not Supabase server-enforced MFA. Supabase
-still exposes its password and email OTP endpoints independently; this change
-does not add an AAL2 requirement to database policies. Do not describe it as
-server-enforced two-factor authentication. Password-session credentials are
-never copied to the app's shared client or persisted to device storage.
+still exposes its password and email OTP endpoints independently. Do not
+describe it as server-enforced two-factor authentication. Password-session
+credentials are never copied to the app's shared client or persisted to device
+storage.
 
 ## Supabase settings
 

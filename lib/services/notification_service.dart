@@ -778,7 +778,7 @@ class DailyCommuteService {
       throw StateError('No route is currently available for this commute.');
     }
     final preferred = routes.cast<Map<String, dynamic>?>().firstWhere(
-      (result) => result?['sig'] == route.signature,
+      (result) => result != null && route.matchesJourney(result),
       orElse: () => null,
     );
     final selected = preferred ?? routes.first;
@@ -792,14 +792,29 @@ class DailyCommuteService {
 
   Future<DailyCommute> save({
     String? reminderId,
-    required SavedRoute route,
+    SavedRoute? route,
+    String? origin,
+    String? destination,
+    int? estimatedDurationMinutes,
     required int arriveByMinutes,
     required Set<int> activeDays,
     required bool reminderEnabled,
     required int reminderMinutesBefore,
   }) async {
-    if (route.id == null) {
-      throw ArgumentError('Select a saved favourite route.');
+    final routeId = route?.id;
+    final commuteOrigin = route?.origin.name ?? origin?.trim();
+    final commuteDestination = route?.destination.name ?? destination?.trim();
+    final duration = route == null
+        ? estimatedDurationMinutes
+        : await estimateDuration(route);
+    if (commuteOrigin == null ||
+        commuteOrigin.isEmpty ||
+        commuteDestination == null ||
+        commuteDestination.isEmpty) {
+      throw ArgumentError('Choose an origin and destination.');
+    }
+    if (duration == null || duration <= 0) {
+      throw ArgumentError('Choose a valid travel duration.');
     }
     if (activeDays.isEmpty) {
       throw ArgumentError('Select at least one active day.');
@@ -812,9 +827,9 @@ class DailyCommuteService {
     }
     await _ensureUniqueSettings(
       reminderId: reminderId,
-      savedRouteId: route.id,
-      origin: route.origin.name,
-      destination: route.destination.name,
+      savedRouteId: routeId,
+      origin: commuteOrigin,
+      destination: commuteDestination,
       arriveByMinutes: arriveByMinutes,
       activeDays: activeDays,
       reminderEnabled: reminderEnabled,
@@ -825,7 +840,6 @@ class DailyCommuteService {
       if (!allowed) throw const NotificationPermissionException();
     }
 
-    final duration = await estimateDuration(route);
     final userId =
         userIdProvider?.call() ??
         (_client ?? Supabase.instance.client).auth.currentUser?.id;
@@ -834,9 +848,9 @@ class DailyCommuteService {
       DailyCommute(
         id: reminderId,
         userId: userId,
-        savedRouteId: route.id,
-        origin: route.origin.name,
-        destination: route.destination.name,
+        savedRouteId: routeId,
+        origin: commuteOrigin,
+        destination: commuteDestination,
         arriveByMinutes: arriveByMinutes,
         activeDays: activeDays,
         reminderEnabled: reminderEnabled,

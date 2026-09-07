@@ -23,13 +23,18 @@ SavedRoute sampleRoute({
   String name = 'Work',
   List<String> ids = const ['rail_b', 'rail_a'],
   String signature = 'DIR_rail_KJ',
+  String lineName = 'Kelana Jaya',
+  List<String> serviceSequence = const [],
+  List<String> transportModes = const [],
 }) => SavedRoute(
   id: 'saved-1',
   name: name,
   origin: station('KL SENTRAL', ids),
   destination: station('KLCC', ['rail_c']),
   signature: signature,
-  lineName: 'Kelana Jaya',
+  lineName: lineName,
+  serviceSequence: serviceSequence,
+  transportModes: transportModes,
 );
 
 TravelHistoryEntry trip(
@@ -72,6 +77,8 @@ class MemoryRoutes implements SavedRoutesRepository {
         destination: route.destination,
         signature: route.signature,
         lineName: route.lineName,
+        serviceSequence: route.serviceSequence,
+        transportModes: route.transportModes,
       ),
     );
   }
@@ -187,6 +194,9 @@ class PlanningApi extends ApiService {
   ];
   int searches = 0;
   StationModel? requestedOrigin;
+  StationModel? requestedDestination;
+  String? requiredOriginId;
+  String? requiredDestinationId;
 
   @override
   Future<List<StationModel>> loadAllStations() async => stations;
@@ -198,6 +208,16 @@ class PlanningApi extends ApiService {
   ) async {
     searches++;
     requestedOrigin = origin;
+    requestedDestination = destination;
+    final expectedOriginId = requiredOriginId;
+    if (expectedOriginId != null && !origin.ids.contains(expectedOriginId)) {
+      return [];
+    }
+    final expectedDestinationId = requiredDestinationId;
+    if (expectedDestinationId != null &&
+        !destination.ids.contains(expectedDestinationId)) {
+      return [];
+    }
     return results;
   }
 }
@@ -470,7 +490,8 @@ void main() {
       final saved = await service.findOrCreateFavourite(suggestion);
 
       expect(api.searches, 0);
-      expect(saved.signature, 'DIR_250_KJ');
+      expect(saved.signature, startsWith('stable-route-v1:'));
+      expect(saved.stableServiceSequence, ['250']);
       expect(saved.origin.ids, ['bus_1utama']);
       expect(saved.destination.ids, ['rail_klcc']);
       expect(repository.routes, hasLength(1));
@@ -552,20 +573,22 @@ void main() {
       expect(restored.destination.ids, ['rail_c']);
       expect(restored.routeKey, original.routeKey);
       expect(payload['user_id'], 'user-a');
+      expect(payload['route_signature'], startsWith('stable-route-v1:'));
       expect(payload.containsKey('scheduledDepart'), false);
     },
   );
 
   test(
-    'route identity ignores title and ID ordering, but includes direction and route',
+    'route identity uses direction and services but ignores dynamic signature',
     () {
       final original = sampleRoute();
       expect(
         sampleRoute(name: 'Renamed', ids: ['rail_a', 'rail_b']).routeKey,
         original.routeKey,
       );
+      expect(sampleRoute(signature: 'OTHER').routeKey, original.routeKey);
       expect(
-        sampleRoute(signature: 'OTHER').routeKey,
+        sampleRoute(lineName: 'Kajang Line').routeKey,
         isNot(original.routeKey),
       );
       final reverse = SavedRoute(
@@ -579,18 +602,237 @@ void main() {
     },
   );
 
+  test('favourite identity ignores all time and trip-result fields', () {
+    final firstJourney = {
+      'sig': 'trip-a-at-0800',
+      'name': '251 -> 250',
+      'scheduledDepart': '08:00',
+      'scheduledArrival': '08:45',
+      'wait': 2,
+      'duration': '45 min',
+      'rank': 1,
+      'tripId': 'weekday-trip-a',
+      'legs': [
+        {'mode': 'Bus', 'name': '251'},
+        {'mode': 'Walk', 'name': 'Transfer'},
+        {'mode': 'Bus', 'name': '250'},
+      ],
+    };
+    final currentJourney = {
+      'sig': 'trip-z-at-1730',
+      'name': '251 → 250',
+      'scheduledDepart': '17:30',
+      'scheduledArrival': '18:40',
+      'wait': 18,
+      'duration': '70 min',
+      'rank': 9,
+      'tripId': 'updated-timetable-trip-z',
+      'legs': [
+        {'mode': 'Bus', 'name': '251'},
+        {'mode': 'Walk', 'name': 'Transfer'},
+        {'mode': 'Bus', 'name': '250'},
+      ],
+    };
+    final favourite = sampleRoute(
+      signature: SavedRoute.stableSignatureFromJourney(firstJourney),
+      lineName: '251 → 250',
+      serviceSequence: SavedRoute.servicesFromJourney(firstJourney),
+      transportModes: SavedRoute.transportModesFromJourney(firstJourney),
+    );
+
+    expect(favourite.matchesJourney(currentJourney), isTrue);
+    expect(
+      SavedRoute.stableSignatureFromJourney(currentJourney),
+      favourite.signature,
+    );
+    expect(
+      favourite.matchesJourney({
+        ...currentJourney,
+        'name': '251 → 252',
+        'legs': [
+          {'mode': 'Bus', 'name': '251'},
+          {'mode': 'Bus', 'name': '252'},
+        ],
+      }),
+      isFalse,
+    );
+
+    final setapakFavourite = sampleRoute(
+      signature: SavedRoute.stableSignatureFor(
+        const ['251', '250'],
+        const ['Bus', 'Bus'],
+      ),
+      lineName: '251 → 250',
+      serviceSequence: const ['251', '250'],
+      transportModes: const ['Bus', 'Bus'],
+    );
+    expect(
+      setapakFavourite.matchesJourney({
+        'sig': 'new-trip-and-transfer-data',
+        'name': '251 -> 250 (via SRI PELANGI CONDO)',
+        'legs': [
+          {'mode': 'Bus', 'name': '251'},
+          {'mode': 'Transfer', 'name': 'SRI PELANGI CONDO'},
+          {'mode': 'Bus', 'name': '250'},
+        ],
+      }),
+      isTrue,
+    );
+  });
+
   test(
     'resolves current GTFS IDs and does not guess a replacement station',
     () {
       final saved = sampleRoute();
       final current = station('New station label', ['rail_b', 'rail_new']);
-      expect(saved.resolveOrigin([current])!.ids, ['rail_b', 'rail_new']);
+      expect(saved.resolveOrigin([current])!.ids, [
+        'rail_a',
+        'rail_b',
+        'rail_new',
+      ]);
       expect(
         saved.resolveOrigin([
           station('KL SENTRAL', ['unrelated']),
         ]),
         isNull,
       );
+    },
+  );
+
+  test('restores the intended station when nearby stations share an ID', () {
+    final savedOrigin = StationModel(
+      ids: const ['shared-stop', 'pv128-platform'],
+      name: 'PV128 SETAPAK',
+      lines: const {'251'},
+      category: 'Bus',
+      lat: 3.202,
+      lon: 101.714,
+    );
+    final saved = SavedRoute(
+      name: 'Home',
+      origin: savedOrigin,
+      destination: station('TAMAN BUNGA RAYA', ['destination']),
+      signature: SavedRoute.stableSignatureFor(
+        const ['251', '250'],
+        const ['Bus', 'Bus'],
+      ),
+      lineName: '251 → 250',
+      serviceSequence: const ['251', '250'],
+    );
+    final wrongNearbyStation = StationModel(
+      ids: const ['shared-stop'],
+      name: 'WANGSA MAJU',
+      lines: const {'251'},
+      category: 'Bus',
+      lat: 3.198,
+      lon: 101.710,
+    );
+    final intendedStation = StationModel(
+      ids: const ['shared-stop', 'pv128-current'],
+      name: 'PV128 SETAPAK',
+      lines: const {'251'},
+      category: 'Bus',
+      lat: 3.2021,
+      lon: 101.7141,
+    );
+
+    final restored = saved.resolveOrigin([wrongNearbyStation, intendedStation]);
+
+    expect(restored, isNotNull);
+    expect(restored!.name, 'PV128 SETAPAK');
+    expect(restored.ids, ['pv128-current', 'pv128-platform', 'shared-stop']);
+    expect(restored.lat, savedOrigin.lat);
+    expect(restored.lon, savedOrigin.lon);
+  });
+
+  testWidgets(
+    'reopening keeps the complete saved station IDs used by route search',
+    (tester) async {
+      tester.view.physicalSize = const Size(1000, 1200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final origin = StationModel(
+        ids: const ['pv128-main', 'pv128-t250-platform'],
+        name: 'PV128 SETAPAK',
+        lines: const {'T250'},
+        category: 'Bus',
+        lat: 3.202,
+        lon: 101.714,
+      );
+      final destination = StationModel(
+        ids: const ['pv16-main', 'pv16-t250-platform'],
+        name: 'PV16',
+        lines: const {'T250'},
+        category: 'Bus',
+        lat: 3.208,
+        lon: 101.72,
+      );
+      final favourite = SavedRoute(
+        id: 'setapak-pv16',
+        name: 'PV128 to PV16',
+        origin: origin,
+        destination: destination,
+        signature: SavedRoute.stableSignatureFor(const ['T250'], const ['Bus']),
+        lineName: 'T250',
+        serviceSequence: const ['T250'],
+        transportModes: const ['Bus'],
+      );
+      final api = PlanningApi()
+        ..stations = [
+          StationModel(
+            ids: const ['pv128-main'],
+            name: 'PV128 SETAPAK',
+            lines: const {'T250'},
+            category: 'Bus',
+            lat: 3.202,
+            lon: 101.714,
+          ),
+          StationModel(
+            ids: const ['pv16-main'],
+            name: 'PV16',
+            lines: const {'T250'},
+            category: 'Bus',
+            lat: 3.208,
+            lon: 101.72,
+          ),
+        ]
+        ..requiredOriginId = 'pv128-t250-platform'
+        ..requiredDestinationId = 'pv16-t250-platform'
+        ..results = [
+          {
+            'sig': 'current-t250-trip',
+            'name': 'T250',
+            'duration': '7 min',
+            'fare': 'RM 1.00',
+            'scheduledDepart': '17:36',
+            'legs': [
+              {'mode': 'Bus', 'name': 'T250'},
+            ],
+          },
+        ];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: JourneyPlanningScreen(
+            savedRoute: favourite,
+            apiService: api,
+            savedRoutesRepository: MemoryRoutes(),
+            authenticate: (_) async => true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(api.requestedOrigin!.ids, contains('pv128-t250-platform'));
+      expect(api.requestedDestination!.ids, contains('pv16-t250-platform'));
+      expect(find.text('T250'), findsWidgets);
+      expect(find.text('7 min'), findsNWidgets(2));
+      expect(
+        find.text('No routes found. Try another origin or destination.'),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
     },
   );
 
@@ -641,7 +883,7 @@ void main() {
     },
   );
 
-  testWidgets('Plan again returns the selected favourite', (tester) async {
+  testWidgets('View live route returns the selected favourite', (tester) async {
     final repository = MemoryRoutes()..routes = [sampleRoute()];
     SavedRoute? result;
     await launch(
@@ -664,7 +906,7 @@ void main() {
     );
     await tester.tap(find.text('Open'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Plan again'));
+    await tester.tap(find.text('View live route'));
     await tester.pumpAndSettle();
     expect(result!.routeKey, sampleRoute().routeKey);
   });
@@ -684,7 +926,7 @@ void main() {
         ),
       );
       expect(api.searches, 1);
-      expect(api.requestedOrigin!.ids, ['rail_a']);
+      expect(api.requestedOrigin!.ids, ['rail_a', 'rail_b']);
       expect(find.text('10 min'), findsWidgets);
       await tester.ensureVisible(find.text('Save route'));
       await tester.tap(find.text('Save route'));
@@ -701,11 +943,249 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Save'));
       await tester.pumpAndSettle();
-      expect(repository.routes.single.signature, 'DIR_rail_KJ');
+      expect(
+        repository.routes.single.signature,
+        startsWith('stable-route-v1:'),
+      );
+      expect(repository.routes.single.stableServiceSequence, ['KELANA JAYA']);
+      expect(repository.routes.single.stableTransportModes, ['RAIL']);
       expect(find.text('Saved'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets(
+    'replanning matches the same line sequence when its signature changed',
+    (tester) async {
+      tester.view.physicalSize = const Size(1000, 1200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final api = PlanningApi()
+        ..results = [
+          {
+            'sig': 'OTHER',
+            'name': 'T250 -> 251 (via Wangsa Maju)',
+            'duration': '10 min',
+            'fare': 'RM 2.00',
+            'scheduledDepart': '12:00',
+            'legs': [
+              {'mode': 'Bus', 'name': 'T250'},
+              {'mode': 'Bus', 'name': '251'},
+            ],
+          },
+          {
+            'sig': 'CURRENT_SIGNATURE',
+            'name': 'T250 -> 250 (via Wangsa Maju)',
+            'duration': '30 min',
+            'fare': 'RM 3.00',
+            'scheduledDepart': '13:00',
+            'legs': [
+              {'mode': 'Bus', 'name': 'T250'},
+              {'mode': 'Bus', 'name': '250'},
+            ],
+          },
+        ];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: JourneyPlanningScreen(
+            savedRoute: sampleRoute(
+              signature: 'STALE_SIGNATURE',
+              lineName: 'T250 → 250 (via Old Wangsa Maju)',
+            ),
+            apiService: api,
+            savedRoutesRepository: MemoryRoutes(),
+            authenticate: (_) async => true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('30 min'), findsNWidgets(2));
+      expect(
+        find.text(
+          'Your saved route is unavailable. Showing other routes for these locations.',
+        ),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('replanning restores the saved three-service Wangsa Maju route', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final api = PlanningApi()
+      ..results = [
+        {
+          'sig': '2X_T222_OTHER_LINE_5_OTHER_303',
+          'name': 'T222 -> Line 5 (Kelana Jaya) -> 303',
+          'duration': '40 min',
+          'fare': 'RM 4.48',
+          'scheduledDepart': '12:00',
+          'legs': [
+            {'mode': 'Bus', 'name': 'T222'},
+            {'mode': 'Walk', 'name': 'Transfer'},
+            {'mode': 'Rail', 'name': 'Line 5 (Kelana Jaya)'},
+            {'mode': 'Walk', 'name': 'Transfer'},
+            {'mode': 'Bus', 'name': '303'},
+          ],
+        },
+        {
+          'sig': 'ALTERNATIVE_2',
+          'name': 'T222 -> Line 5 (Kelana Jaya) -> 302',
+          'duration': '41 min',
+          'fare': 'RM 4.48',
+          'scheduledDepart': '12:10',
+          'legs': [
+            {'mode': 'Bus', 'name': 'T222'},
+            {'mode': 'Rail', 'name': 'Line 5 (Kelana Jaya)'},
+            {'mode': 'Bus', 'name': '302'},
+          ],
+        },
+        {
+          'sig': 'ALTERNATIVE_3',
+          'name': 'T222 -> Line 5 (Kelana Jaya) -> 304',
+          'duration': '42 min',
+          'fare': 'RM 4.48',
+          'scheduledDepart': '12:20',
+          'legs': [
+            {'mode': 'Bus', 'name': 'T222'},
+            {'mode': 'Rail', 'name': 'Line 5 (Kelana Jaya)'},
+            {'mode': 'Bus', 'name': '304'},
+          ],
+        },
+        {
+          'sig': 'ALTERNATIVE_4',
+          'name': 'T222 -> Line 5 (Kelana Jaya) -> 305',
+          'duration': '43 min',
+          'fare': 'RM 4.48',
+          'scheduledDepart': '12:30',
+          'legs': [
+            {'mode': 'Bus', 'name': 'T222'},
+            {'mode': 'Rail', 'name': 'Line 5 (Kelana Jaya)'},
+            {'mode': 'Bus', 'name': '305'},
+          ],
+        },
+        {
+          'sig': '2X_T222_NEW_STATION_LINE_5_NEW_STOP_300',
+          'name': 'T222 -> Line 5 (Kelana Jaya) -> 300',
+          'duration': '44 min',
+          'fare': 'RM 4.48',
+          'scheduledDepart': '13:00',
+          'legs': [
+            {'mode': 'Bus', 'name': 'T222'},
+            // Internal planner metadata may represent an interchange as its
+            // own leg even though the visible service sequence is unchanged.
+            {'mode': 'Transfer', 'name': 'Interchange'},
+            {'mode': 'Rail', 'name': 'Line 5 (Kelana Jaya)'},
+            {'mode': 'Walk', 'name': 'Transfer'},
+            {'mode': 'Bus', 'name': '300'},
+          ],
+        },
+      ];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: JourneyPlanningScreen(
+          savedRoute: sampleRoute(
+            signature: SavedRoute.stableSignatureFor(
+              const ['T222', 'Line 5 (Kelana Jaya)', '300'],
+              const ['Bus', 'Rail', 'Bus'],
+            ),
+            lineName: 'T222 → Line 5 (Kelana Jaya) → 300',
+            serviceSequence: const ['T222', 'Line 5 (Kelana Jaya)', '300'],
+            transportModes: const ['Bus', 'Transfer', 'Rail', 'Bus'],
+          ),
+          apiService: api,
+          savedRoutesRepository: MemoryRoutes(),
+          authenticate: (_) async => true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Current route status'), findsOneWidget);
+    expect(find.text('Refresh live status'), findsOneWidget);
+    final matchingCard = find.ancestor(
+      of: find.text('T222 -> Line 5 (Kelana Jaya) -> 300'),
+      matching: find.byType(AnimatedContainer),
+    );
+    expect(
+      find.descendant(of: matchingCard, matching: find.byIcon(Icons.check)),
+      findsOneWidget,
+    );
+    expect(
+      find.text(
+        'Your saved route is unavailable. Showing other routes for these locations.',
+      ),
+      findsNothing,
+    );
+    await tester.tap(find.text('Refresh live status'));
+    await tester.pumpAndSettle();
+    expect(api.searches, 2);
+    expect(
+      find.text(
+        'Your saved route is unavailable. Showing other routes for these locations.',
+      ),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Journey Planning returns a route for Daily Commute', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final api = PlanningApi();
+    SavedRoute? selected;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              onPressed: () async {
+                selected = await Navigator.push<SavedRoute>(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => JourneyPlanningScreen(
+                      savedRoute: sampleRoute(),
+                      selectForDailyCommute: true,
+                      apiService: api,
+                      savedRoutesRepository: MemoryRoutes(),
+                      authenticate: (_) async => true,
+                    ),
+                  ),
+                );
+              },
+              child: const Text('Choose route'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Choose route'));
+    await tester.pumpAndSettle();
+    expect(find.text('Choose commute route'), findsOneWidget);
+    await tester.ensureVisible(find.text('Use for Daily Commute'));
+    await tester.tap(find.text('Use for Daily Commute'));
+    await tester.pumpAndSettle();
+
+    expect(selected, isNotNull);
+    expect(selected!.id, isNull);
+    expect(selected!.signature, startsWith('stable-route-v1:'));
+    expect(selected!.stableServiceSequence, ['KELANA JAYA']);
+    expect(selected!.origin.name, 'KL SENTRAL');
+    expect(selected!.destination.name, 'KLCC');
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('missing saved station asks for new locations without searching', (
     tester,

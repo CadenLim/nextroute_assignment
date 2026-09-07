@@ -341,7 +341,11 @@ void main() {
       expect(find.text('Route name'), findsOneWidget);
       await tester.tap(find.text('Save'));
       await tester.pumpAndSettle();
-      expect(repository.routes.single.signature, sampleRoute().signature);
+      expect(
+        repository.routes.single.signature,
+        startsWith('stable-route-v1:'),
+      );
+      expect(repository.routes.single.stableServiceSequence, ['KELANA JAYA']);
     },
   );
 

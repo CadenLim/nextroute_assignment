@@ -22,8 +22,12 @@ class StationModel {
   final double lon;
 
   StationModel({
-    required this.ids, required this.name, required this.lines,
-    required this.category, required this.lat, required this.lon,
+    required this.ids,
+    required this.name,
+    required this.lines,
+    required this.category,
+    required this.lat,
+    required this.lon,
   });
 }
 
@@ -37,8 +41,12 @@ class LiveVehicle {
   final String licensePlate;
 
   LiveVehicle({
-    required this.id, required this.lat, required this.lon,
-    required this.bearing, required this.routeId, required this.licensePlate,
+    required this.id,
+    required this.lat,
+    required this.lon,
+    required this.bearing,
+    required this.routeId,
+    required this.licensePlate,
   });
 }
 
@@ -67,7 +75,17 @@ class ApiService {
   List<String>? _stationListCache;
   List<String>? _odOriginsCache;
   double? _networkAverageCache;
-  List<({String station, double avgRidership, int totalRidership, int recordCount, DateTime? minDate, DateTime? maxDate})>? _stationRidershipTotalsCache;
+  List<
+    ({
+      String station,
+      double avgRidership,
+      int totalRidership,
+      int recordCount,
+      DateTime? minDate,
+      DateTime? maxDate,
+    })
+  >?
+  _stationRidershipTotalsCache;
 
   List<StationModel> _cachedStations = [];
   final Map<String, List<Map<String, dynamic>>> _allTripStopTimes = {};
@@ -81,9 +99,21 @@ class ApiService {
     name = name.replaceAll(RegExp(r'^[A-Za-z]{1,4}\d+\s*[-–]?\s*'), '');
     name = name.replaceAll(RegExp(r'^\([^)]+\)\s*'), '');
     name = name.replaceAll(RegExp(r'\s*\([^)]+\)'), '');
-    name = name.replaceAll(RegExp(r'\b(STESEN|STATION|BUS TERMINAL|HUB|HENTIAN)\b', caseSensitive: false), '');
-    name = name.replaceAll(RegExp(r'\b(MRT|LRT|MONORAIL|KTM|BRT)\b', caseSensitive: false), '');
-    name = name.replaceAll(RegExp(r'\bCONDOMINIUM\b', caseSensitive: false), 'CONDO');
+    name = name.replaceAll(
+      RegExp(
+        r'\b(STESEN|STATION|BUS TERMINAL|HUB|HENTIAN)\b',
+        caseSensitive: false,
+      ),
+      '',
+    );
+    name = name.replaceAll(
+      RegExp(r'\b(MRT|LRT|MONORAIL|KTM|BRT)\b', caseSensitive: false),
+      '',
+    );
+    name = name.replaceAll(
+      RegExp(r'\bCONDOMINIUM\b', caseSensitive: false),
+      'CONDO',
+    );
     name = name.replaceAll('/', ' ');
     name = name.replaceAll('-', ' ');
     name = name.replaceAll(RegExp(r'\s+'), ' ').trim();
@@ -109,31 +139,60 @@ class ApiService {
     return map[cleanName] ?? cleanName;
   }
 
-  double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+  double _calculateDistance(
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) {
     var p = 0.017453292519943295;
-    var a = 0.5 - cos((lat2 - lat1) * p) / 2 + cos(lat1 * p) * cos(lat2 * p) * (1 - cos((lon2 - lon1) * p)) / 2;
+    var a =
+        0.5 -
+        cos((lat2 - lat1) * p) / 2 +
+        cos(lat1 * p) * cos(lat2 * p) * (1 - cos((lon2 - lon1) * p)) / 2;
     return 12742 * asin(sqrt(a));
   }
 
   Duration _parseDuration(String timeStr) {
     final parts = timeStr.split(':');
     if (parts.length != 3) return Duration.zero;
-    return Duration(hours: int.tryParse(parts[0]) ?? 0, minutes: int.tryParse(parts[1]) ?? 0, seconds: int.tryParse(parts[2]) ?? 0);
+    return Duration(
+      hours: int.tryParse(parts[0]) ?? 0,
+      minutes: int.tryParse(parts[1]) ?? 0,
+      seconds: int.tryParse(parts[2]) ?? 0,
+    );
   }
 
   Future<void> _ensureGtfsFullyCached() async {
     if (_isGtfsFullyCached) return;
     for (String folder in ['rail', 'bus', 'mrt_feeder']) {
       try {
-        final String rawRoutes = await rootBundle.loadString('assets/gtfs/$folder/routes.txt');
-        _allRouteMetadata.addAll(_parseRouteMetadata(rawRoutes.replaceAll('\r\n', '\n'), folder));
+        final String rawRoutes = await rootBundle.loadString(
+          'assets/gtfs/$folder/routes.txt',
+        );
+        _allRouteMetadata.addAll(
+          _parseRouteMetadata(rawRoutes.replaceAll('\r\n', '\n'), folder),
+        );
 
-        final String rawTrips = await rootBundle.loadString('assets/gtfs/$folder/trips.txt');
-        final tripToRoute = _parseTrips(rawTrips.replaceAll('\r\n', '\n'), folder);
+        final String rawTrips = await rootBundle.loadString(
+          'assets/gtfs/$folder/trips.txt',
+        );
+        final tripToRoute = _parseTrips(
+          rawTrips.replaceAll('\r\n', '\n'),
+          folder,
+        );
         _tripToRouteCache.addAll(tripToRoute);
 
-        final String rawStopTimes = await rootBundle.loadString('assets/gtfs/$folder/stop_times.txt');
-        _allTripStopTimes.addAll(_parseStopTimes(rawStopTimes.replaceAll('\r\n', '\n'), tripToRoute, folder));
+        final String rawStopTimes = await rootBundle.loadString(
+          'assets/gtfs/$folder/stop_times.txt',
+        );
+        _allTripStopTimes.addAll(
+          _parseStopTimes(
+            rawStopTimes.replaceAll('\r\n', '\n'),
+            tripToRoute,
+            folder,
+          ),
+        );
       } catch (e) {
         debugPrint('GTFS load error for $folder: $e');
       }
@@ -159,26 +218,43 @@ class ApiService {
       }
     }
 
-    final filePaths = ['assets/gtfs/rail/stops.txt', 'assets/gtfs/mrt_feeder/stops.txt', 'assets/gtfs/bus/stops.txt'];
+    final filePaths = [
+      'assets/gtfs/rail/stops.txt',
+      'assets/gtfs/mrt_feeder/stops.txt',
+      'assets/gtfs/bus/stops.txt',
+    ];
 
     for (String path in filePaths) {
       try {
         final String rawFile = await rootBundle.loadString(path);
         final String safeRaw = rawFile.replaceAll('\r\n', '\n');
 
-        List<List<dynamic>> csvTable = const CsvToListConverter(eol: '\n', shouldParseNumbers: false).convert(safeRaw.replaceAll('\uFEFF', ''));
+        List<List<dynamic>> csvTable = const CsvToListConverter(
+          eol: '\n',
+          shouldParseNumbers: false,
+        ).convert(safeRaw.replaceAll('\uFEFF', ''));
         if (csvTable.isEmpty) continue;
 
-        final header = csvTable[0].map((e) => e.toString().trim().toLowerCase()).toList();
+        final header = csvTable[0]
+            .map((e) => e.toString().trim().toLowerCase())
+            .toList();
 
-        int idIndex = header.indexOf('stop_id'); if (idIndex == -1) idIndex = 0;
-        int nameIndex = header.indexOf('stop_name'); if (nameIndex == -1) nameIndex = 1;
-        int latIndex = header.indexOf('stop_lat'); if (latIndex == -1) latIndex = 2;
-        int lonIndex = header.indexOf('stop_lon'); if (lonIndex == -1) lonIndex = 3;
+        int idIndex = header.indexOf('stop_id');
+        if (idIndex == -1) idIndex = 0;
+        int nameIndex = header.indexOf('stop_name');
+        if (nameIndex == -1) nameIndex = 1;
+        int latIndex = header.indexOf('stop_lat');
+        if (latIndex == -1) latIndex = 2;
+        int lonIndex = header.indexOf('stop_lon');
+        if (lonIndex == -1) lonIndex = 3;
         int parentIndex = header.indexOf('parent_station');
 
-        String folder = path.contains('rail') ? 'rail' : (path.contains('mrt_feeder') ? 'mrt_feeder' : 'bus');
-        String category = path.contains('rail') ? 'Rail' : (path.contains('mrt_feeder') ? 'MRT Feeder' : 'Bus');
+        String folder = path.contains('rail')
+            ? 'rail'
+            : (path.contains('mrt_feeder') ? 'mrt_feeder' : 'bus');
+        String category = path.contains('rail')
+            ? 'Rail'
+            : (path.contains('mrt_feeder') ? 'MRT Feeder' : 'Bus');
 
         for (int i = 1; i < csvTable.length; i++) {
           final row = csvTable[i];
@@ -187,26 +263,45 @@ class ApiService {
             if (rawStopId.isEmpty) continue;
 
             final stopId = '${folder}_$rawStopId';
-            final stopNameClean = _cleanStationName(row[nameIndex].toString().trim());
+            final stopNameClean = _cleanStationName(
+              row[nameIndex].toString().trim(),
+            );
             final stopName = _normalizeToMasterInterchange(stopNameClean);
 
             String? parentId;
-            if (parentIndex != -1 && row.length > parentIndex && row[parentIndex].toString().trim().isNotEmpty) {
+            if (parentIndex != -1 &&
+                row.length > parentIndex &&
+                row[parentIndex].toString().trim().isNotEmpty) {
               parentId = '${folder}_${row[parentIndex].toString().trim()}';
             }
 
             double lat = 0.0, lon = 0.0;
-            if (latIndex != -1 && row.length > latIndex) lat = double.tryParse(row[latIndex].toString()) ?? 0.0;
-            if (lonIndex != -1 && row.length > lonIndex) lon = double.tryParse(row[lonIndex].toString()) ?? 0.0;
+            if (latIndex != -1 && row.length > latIndex)
+              lat = double.tryParse(row[latIndex].toString()) ?? 0.0;
+            if (lonIndex != -1 && row.length > lonIndex)
+              lon = double.tryParse(row[lonIndex].toString()) ?? 0.0;
 
             String inferredLine = category;
-            if (stopId.contains('_KJ') || rawStopId.startsWith('KJ')) inferredLine = 'Line 5 (Kelana Jaya)';
-            else if (stopId.contains('_KG') || rawStopId.startsWith('KG') || rawStopId.startsWith('SBK')) inferredLine = 'Line 9 (Kajang)';
-            else if (stopId.contains('_AG') || rawStopId.startsWith('AG')) inferredLine = 'Line 3 (Ampang)';
-            else if (stopId.contains('_SP') || rawStopId.startsWith('SP')) inferredLine = 'Line 4 (Sri Petaling)';
-            else if (stopId.contains('_MR') || rawStopId.startsWith('MR')) inferredLine = 'Line 8 (Monorail)';
-            else if (stopId.contains('_PY') || rawStopId.startsWith('PY') || rawStopId.startsWith('SSP')) inferredLine = 'Line 12 (Putrajaya)';
-            else if (stopId.contains('_SB') || rawStopId.startsWith('SB') || rawStopId.startsWith('BRT') || stopName.contains('SUNWAY LAGOON')) {
+            if (stopId.contains('_KJ') || rawStopId.startsWith('KJ'))
+              inferredLine = 'Line 5 (Kelana Jaya)';
+            else if (stopId.contains('_KG') ||
+                rawStopId.startsWith('KG') ||
+                rawStopId.startsWith('SBK'))
+              inferredLine = 'Line 9 (Kajang)';
+            else if (stopId.contains('_AG') || rawStopId.startsWith('AG'))
+              inferredLine = 'Line 3 (Ampang)';
+            else if (stopId.contains('_SP') || rawStopId.startsWith('SP'))
+              inferredLine = 'Line 4 (Sri Petaling)';
+            else if (stopId.contains('_MR') || rawStopId.startsWith('MR'))
+              inferredLine = 'Line 8 (Monorail)';
+            else if (stopId.contains('_PY') ||
+                rawStopId.startsWith('PY') ||
+                rawStopId.startsWith('SSP'))
+              inferredLine = 'Line 12 (Putrajaya)';
+            else if (stopId.contains('_SB') ||
+                rawStopId.startsWith('SB') ||
+                rawStopId.startsWith('BRT') ||
+                stopName.contains('SUNWAY LAGOON')) {
               inferredLine = 'B1 (BRT Sunway)';
               category = 'Rail';
             }
@@ -228,8 +323,12 @@ class ApiService {
 
             while (stationMap.containsKey(mapKey)) {
               final existing = stationMap[mapKey]!;
-              if (lat != 0.0 && lon != 0.0 && existing.lat != 0.0 && existing.lon != 0.0 &&
-                  _calculateDistance(existing.lat, existing.lon, lat, lon) <= 0.25) {
+              if (lat != 0.0 &&
+                  lon != 0.0 &&
+                  existing.lat != 0.0 &&
+                  existing.lon != 0.0 &&
+                  _calculateDistance(existing.lat, existing.lon, lat, lon) <=
+                      0.25) {
                 existing.ids.add(stopId);
                 if (parentId != null) existing.ids.add(parentId);
                 existing.lines.addAll(actualRoutesServed);
@@ -245,7 +344,12 @@ class ApiService {
               final idsSet = {stopId};
               if (parentId != null) idsSet.add(parentId);
               stationMap[mapKey] = StationModel(
-                ids: idsSet.toList(), name: stopName, lines: actualRoutesServed, category: category, lat: lat, lon: lon,
+                ids: idsSet.toList(),
+                name: stopName,
+                lines: actualRoutesServed,
+                category: category,
+                lat: lat,
+                lon: lon,
               );
             }
           }
@@ -268,17 +372,28 @@ class ApiService {
 
   bool _matchesStation(StationModel station, String stopId) {
     if (station.ids.contains(stopId)) return true;
-    final cleanId = stopId.contains('_') ? stopId.split('_').sublist(1).join('_') : stopId;
+    final cleanId = stopId.contains('_')
+        ? stopId.split('_').sublist(1).join('_')
+        : stopId;
     for (var id in station.ids) {
-      final cleanStationId = id.contains('_') ? id.split('_').sublist(1).join('_') : id;
+      final cleanStationId = id.contains('_')
+          ? id.split('_').sublist(1).join('_')
+          : id;
       if (cleanStationId == cleanId) return true;
     }
     return false;
   }
 
-  List<String> _getIntermediateStops(List<Map<String, dynamic>> tripStops, int startIndex, int endIndex, Map<String, StationModel> stopIdToStation) {
+  List<String> _getIntermediateStops(
+    List<Map<String, dynamic>> tripStops,
+    int startIndex,
+    int endIndex,
+    Map<String, StationModel> stopIdToStation,
+  ) {
     List<String> intermediateStops = [];
-    if (startIndex >= 0 && endIndex > startIndex && (endIndex - startIndex) > 1) {
+    if (startIndex >= 0 &&
+        endIndex > startIndex &&
+        (endIndex - startIndex) > 1) {
       for (int i = startIndex + 1; i < endIndex; i++) {
         final stm = stopIdToStation[tripStops[i]['stop_id']];
         if (stm != null && stm.name.isNotEmpty) {
@@ -318,13 +433,19 @@ class ApiService {
     return 3.00;
   }
 
-  Future<List<Map<String, dynamic>>> findRoutes(StationModel origin, StationModel destination) async {
+  Future<List<Map<String, dynamic>>> findRoutes(
+    StationModel origin,
+    StationModel destination,
+  ) async {
     try {
       final List<Map<String, dynamic>> results = [];
 
       await _ensureGtfsFullyCached();
 
-      final Map<String, StationModel> stopIdToStation = { for (var s in _cachedStations) for (var id in s.ids) id: s };
+      final Map<String, StationModel> stopIdToStation = {
+        for (var s in _cachedStations)
+          for (var id in s.ids) id: s,
+      };
       final nowMinutes = DateTime.now().hour * 60 + DateTime.now().minute;
 
       int getWaitTime(int tripMins) {
@@ -340,8 +461,12 @@ class ApiService {
         final stops = _allTripStopTimes[tripId]!;
         if (stops.length < 2) continue;
 
-        int oIdx = stops.indexWhere((s) => _matchesStation(origin, s['stop_id']));
-        int dIdx = stops.lastIndexWhere((s) => _matchesStation(destination, s['stop_id']));
+        int oIdx = stops.indexWhere(
+          (s) => _matchesStation(origin, s['stop_id']),
+        );
+        int dIdx = stops.lastIndexWhere(
+          (s) => _matchesStation(destination, s['stop_id']),
+        );
 
         if (oIdx != -1 && dIdx != -1 && oIdx < dIdx) {
           String rId = stops[oIdx]['route_id'];
@@ -349,8 +474,14 @@ class ApiService {
           int wait = getWaitTime(oMins);
 
           if (!bestDirect.containsKey(rId) || wait < bestDirect[rId]!['wait']) {
-            int dur = (_timeToMinutes(stops[dIdx]['arrival_time']) - oMins).abs();
-            List<String> intermediates = _getIntermediateStops(stops, oIdx, dIdx, stopIdToStation);
+            int dur = (_timeToMinutes(stops[dIdx]['arrival_time']) - oMins)
+                .abs();
+            List<String> intermediates = _getIntermediateStops(
+              stops,
+              oIdx,
+              dIdx,
+              stopIdToStation,
+            );
 
             bestDirect[rId] = {
               'wait': wait,
@@ -371,9 +502,16 @@ class ApiService {
             final stm = stopIdToStation[stops[i]['stop_id']];
             if (stm != null) {
               reachFromOrigin.putIfAbsent(stm, () => {});
-              if (!reachFromOrigin[stm]!.containsKey(rId) || wait < reachFromOrigin[stm]![rId]!['wait']) {
-                int dur = (_timeToMinutes(stops[i]['arrival_time']) - oMins).abs();
-                List<String> intermediates = _getIntermediateStops(stops, oIdx, i, stopIdToStation);
+              if (!reachFromOrigin[stm]!.containsKey(rId) ||
+                  wait < reachFromOrigin[stm]![rId]!['wait']) {
+                int dur = (_timeToMinutes(stops[i]['arrival_time']) - oMins)
+                    .abs();
+                List<String> intermediates = _getIntermediateStops(
+                  stops,
+                  oIdx,
+                  i,
+                  stopIdToStation,
+                );
 
                 reachFromOrigin[stm]![rId] = {
                   'wait': wait,
@@ -393,9 +531,18 @@ class ApiService {
             final stm = stopIdToStation[stops[i]['stop_id']];
             if (stm != null) {
               reachToDest.putIfAbsent(stm, () => {});
-              int dur = (_timeToMinutes(stops[dIdx]['arrival_time']) - _timeToMinutes(stops[i]['arrival_time'])).abs();
-              if (!reachToDest[stm]!.containsKey(rId) || (dur == 0 ? 15 : dur) < reachToDest[stm]![rId]!['dur']) {
-                List<String> intermediates = _getIntermediateStops(stops, i, dIdx, stopIdToStation);
+              int dur =
+                  (_timeToMinutes(stops[dIdx]['arrival_time']) -
+                          _timeToMinutes(stops[i]['arrival_time']))
+                      .abs();
+              if (!reachToDest[stm]!.containsKey(rId) ||
+                  (dur == 0 ? 15 : dur) < reachToDest[stm]![rId]!['dur']) {
+                List<String> intermediates = _getIntermediateStops(
+                  stops,
+                  i,
+                  dIdx,
+                  stopIdToStation,
+                );
 
                 reachToDest[stm]![rId] = {
                   'dur': dur == 0 ? 15 : dur,
@@ -418,22 +565,41 @@ class ApiService {
       // a name check here.
 
       for (final rId in bestDirect.keys) {
-        final m = _allRouteMetadata[rId] ?? {'short_name': rId, 'color': Colors.blue, 'folder': 'bus'};
+        final m =
+            _allRouteMetadata[rId] ??
+            {'short_name': rId, 'color': Colors.blue, 'folder': 'bus'};
         final data = bestDirect[rId]!;
         final departStr = (data['depart'] as String).substring(0, 5);
-        final List<String> intermediateNames = (data['stops'] as List<String>?) ?? [];
+        final List<String> intermediateNames =
+            (data['stops'] as List<String>?) ?? [];
 
-        final directFare = _fareForLeg(m['folder'], _calculateDistance(origin.lat, origin.lon, destination.lat, destination.lon));
+        final directFare = _fareForLeg(
+          m['folder'],
+          _calculateDistance(
+            origin.lat,
+            origin.lon,
+            destination.lat,
+            destination.lon,
+          ),
+        );
         results.add({
-          'id': rId, 'name': m['short_name'], 'duration': '${data['dur']} min',
-          'fare': 'RM ${directFare.toStringAsFixed(2)}', 'badge': 'Direct', 'color': m['color'], 'sig': 'DIR_$rId',
-          'wait': data['wait'], 'scheduledDepart': departStr,
+          'id': rId,
+          'name': m['short_name'],
+          'duration': '${data['dur']} min',
+          'fare': 'RM ${directFare.toStringAsFixed(2)}',
+          'badge': 'Direct',
+          'color': m['color'],
+          'sig': 'DIR_$rId',
+          'wait': data['wait'],
+          'scheduledDepart': departStr,
           'legs': [
             {
               'mode': m['folder'] == 'rail' ? 'Rail' : 'Bus',
               'name': m['short_name'],
               'duration': '${data['dur']} min',
-              'icon': m['folder'] == 'rail' ? Icons.train : Icons.directions_bus,
+              'icon': m['folder'] == 'rail'
+                  ? Icons.train
+                  : Icons.directions_bus,
               'color': m['color'],
               'desc': 'Board ${m['short_name']} at ${origin.name} ($departStr)',
               'intermediate_stops': intermediateNames,
@@ -441,8 +607,8 @@ class ApiService {
               'shapeId': _tripToShapeCache[data['trip']] ?? '',
               'from': {'lat': origin.lat, 'lon': origin.lon},
               'to': {'lat': destination.lat, 'lon': destination.lon},
-            }
-          ]
+            },
+          ],
         });
       }
 
@@ -451,56 +617,119 @@ class ApiService {
           for (final r1Id in reachFromOrigin[stm]!.keys) {
             for (final r2Id in reachToDest[stm]!.keys) {
               if (r1Id == r2Id) continue;
-              final m1 = _allRouteMetadata[r1Id] ?? {'short_name': r1Id, 'color': Colors.red, 'folder': 'bus'};
-              final m2 = _allRouteMetadata[r2Id] ?? {'short_name': r2Id, 'color': Colors.blue, 'folder': 'rail'};
+              final m1 =
+                  _allRouteMetadata[r1Id] ??
+                  {'short_name': r1Id, 'color': Colors.red, 'folder': 'bus'};
+              final m2 =
+                  _allRouteMetadata[r2Id] ??
+                  {'short_name': r2Id, 'color': Colors.blue, 'folder': 'rail'};
 
-              int walkMins = (m1['folder'] == 'rail' && m2['folder'] == 'rail') ? 3 : 5;
+              int walkMins = (m1['folder'] == 'rail' && m2['folder'] == 'rail')
+                  ? 3
+                  : 5;
               final d1 = reachFromOrigin[stm]![r1Id]!['dur'];
               final d2 = reachToDest[stm]![r2Id]!['dur'];
               final wait = reachFromOrigin[stm]![r1Id]!['wait'];
-              final departStr = (reachFromOrigin[stm]![r1Id]!['depart'] as String).substring(0, 5);
+              final departStr =
+                  (reachFromOrigin[stm]![r1Id]!['depart'] as String).substring(
+                    0,
+                    5,
+                  );
 
-              final List<String> iStops1 = (reachFromOrigin[stm]![r1Id]!['stops'] as List<String>?) ?? [];
-              final List<String> iStops2 = (reachToDest[stm]![r2Id]!['stops'] as List<String>?) ?? [];
+              final List<String> iStops1 =
+                  (reachFromOrigin[stm]![r1Id]!['stops'] as List<String>?) ??
+                  [];
+              final List<String> iStops2 =
+                  (reachToDest[stm]![r2Id]!['stops'] as List<String>?) ?? [];
 
               final total = d1 + d2 + walkMins;
-              final oneTransferFare = _fareForLeg(m1['folder'], _calculateDistance(origin.lat, origin.lon, stm.lat, stm.lon)) +
-                  _fareForLeg(m2['folder'], _calculateDistance(stm.lat, stm.lon, destination.lat, destination.lon));
+              final oneTransferFare =
+                  _fareForLeg(
+                    m1['folder'],
+                    _calculateDistance(
+                      origin.lat,
+                      origin.lon,
+                      stm.lat,
+                      stm.lon,
+                    ),
+                  ) +
+                  _fareForLeg(
+                    m2['folder'],
+                    _calculateDistance(
+                      stm.lat,
+                      stm.lon,
+                      destination.lat,
+                      destination.lon,
+                    ),
+                  );
 
               results.add({
-                'id': 'MIX', 'name': '${m1['short_name']} -> ${m2['short_name']} (via ${stm.name})',
-                'duration': '$total min', 'fare': 'RM ${oneTransferFare.toStringAsFixed(2)}', 'badge': '1 Transfer', 'color': Colors.orange, 'sig': '1X_${m1['short_name']}_${stm.name}_${m2['short_name']}',
-                'wait': wait, 'scheduledDepart': departStr,
+                'id': 'MIX',
+                'name':
+                    '${m1['short_name']} -> ${m2['short_name']} (via ${stm.name})',
+                'duration': '$total min',
+                'fare': 'RM ${oneTransferFare.toStringAsFixed(2)}',
+                'badge': '1 Transfer',
+                'color': Colors.orange,
+                'sig': '1X_${m1['short_name']}_${stm.name}_${m2['short_name']}',
+                'wait': wait,
+                'scheduledDepart': departStr,
                 'legs': [
                   {
-                    'mode': m1['folder'] == 'rail' ? 'Rail' : 'Bus', 'name': m1['short_name'], 'duration': '$d1 min',
-                    'icon': m1['folder'] == 'rail' ? Icons.train : Icons.directions_bus, 'color': m1['color'], 'desc': 'Board ${m1['short_name']} at ${origin.name} ($departStr)',
-                    'intermediate_stops': iStops1, 'folder': m1['folder'],
-                    'shapeId': _tripToShapeCache[reachFromOrigin[stm]![r1Id]!['trip']] ?? '',
+                    'mode': m1['folder'] == 'rail' ? 'Rail' : 'Bus',
+                    'name': m1['short_name'],
+                    'duration': '$d1 min',
+                    'icon': m1['folder'] == 'rail'
+                        ? Icons.train
+                        : Icons.directions_bus,
+                    'color': m1['color'],
+                    'desc':
+                        'Board ${m1['short_name']} at ${origin.name} ($departStr)',
+                    'intermediate_stops': iStops1,
+                    'folder': m1['folder'],
+                    'shapeId':
+                        _tripToShapeCache[reachFromOrigin[stm]![r1Id]!['trip']] ??
+                        '',
                     'from': {'lat': origin.lat, 'lon': origin.lon},
                     'to': {'lat': stm.lat, 'lon': stm.lon},
                   },
                   {
-                    'mode': 'Walk', 'name': 'Interchange', 'duration': '$walkMins min', 'icon': Icons.directions_walk, 'color': Colors.grey, 'desc': 'Transfer at ${stm.name}',
+                    'mode': 'Walk',
+                    'name': 'Interchange',
+                    'duration': '$walkMins min',
+                    'icon': Icons.directions_walk,
+                    'color': Colors.grey,
+                    'desc': 'Transfer at ${stm.name}',
                     'from': {'lat': stm.lat, 'lon': stm.lon},
                     'to': {'lat': stm.lat, 'lon': stm.lon},
                   },
                   {
-                    'mode': m2['folder'] == 'rail' ? 'Rail' : 'Bus', 'name': m2['short_name'], 'duration': '$d2 min',
-                    'icon': m2['folder'] == 'rail' ? Icons.train : Icons.directions_bus, 'color': m2['color'], 'desc': 'Board ${m2['short_name']} -> Arrive at ${destination.name}',
-                    'intermediate_stops': iStops2, 'folder': m2['folder'],
-                    'shapeId': _tripToShapeCache[reachToDest[stm]![r2Id]!['trip']] ?? '',
+                    'mode': m2['folder'] == 'rail' ? 'Rail' : 'Bus',
+                    'name': m2['short_name'],
+                    'duration': '$d2 min',
+                    'icon': m2['folder'] == 'rail'
+                        ? Icons.train
+                        : Icons.directions_bus,
+                    'color': m2['color'],
+                    'desc':
+                        'Board ${m2['short_name']} -> Arrive at ${destination.name}',
+                    'intermediate_stops': iStops2,
+                    'folder': m2['folder'],
+                    'shapeId':
+                        _tripToShapeCache[reachToDest[stm]![r2Id]!['trip']] ??
+                        '',
                     'from': {'lat': stm.lat, 'lon': stm.lon},
                     'to': {'lat': destination.lat, 'lon': destination.lon},
-                  }
-                ]
+                  },
+                ],
               });
             }
           }
         }
       }
 
-      Map<StationModel, Map<StationModel, Map<String, dynamic>>> railBridges = {};
+      Map<StationModel, Map<StationModel, Map<String, dynamic>>> railBridges =
+          {};
       for (final tripId in _allTripStopTimes.keys) {
         if (!tripId.startsWith('rail_')) continue;
         final stops = _allTripStopTimes[tripId]!;
@@ -513,13 +742,27 @@ class ApiService {
             if (stm2 == null || !reachToDest.containsKey(stm2)) continue;
 
             String rId = stops[i]['route_id'];
-            int dur = (_timeToMinutes(stops[j]['arrival_time']) - _timeToMinutes(stops[i]['arrival_time'])).abs();
+            int dur =
+                (_timeToMinutes(stops[j]['arrival_time']) -
+                        _timeToMinutes(stops[i]['arrival_time']))
+                    .abs();
             if (dur == 0) dur = 10;
 
             railBridges.putIfAbsent(stm1, () => {});
-            if (!railBridges[stm1]!.containsKey(stm2) || dur < railBridges[stm1]![stm2]!['dur']) {
-              List<String> intermediates = _getIntermediateStops(stops, i, j, stopIdToStation);
-              railBridges[stm1]![stm2] = {'rId': rId, 'dur': dur, 'stops': intermediates, 'trip': tripId};
+            if (!railBridges[stm1]!.containsKey(stm2) ||
+                dur < railBridges[stm1]![stm2]!['dur']) {
+              List<String> intermediates = _getIntermediateStops(
+                stops,
+                i,
+                j,
+                stopIdToStation,
+              );
+              railBridges[stm1]![stm2] = {
+                'rId': rId,
+                'dur': dur,
+                'stops': intermediates,
+                'trip': tripId,
+              };
             }
           }
         }
@@ -530,11 +773,24 @@ class ApiService {
           final bridge = railBridges[stm1]![stm2]!;
           for (final r1Id in reachFromOrigin[stm1]!.keys) {
             for (final r3Id in reachToDest[stm2]!.keys) {
-              if (r1Id == bridge['rId'] || bridge['rId'] == r3Id || r1Id == r3Id) continue;
+              if (r1Id == bridge['rId'] ||
+                  bridge['rId'] == r3Id ||
+                  r1Id == r3Id)
+                continue;
 
-              final m1 = _allRouteMetadata[r1Id] ?? {'short_name': r1Id, 'color': Colors.red, 'folder': 'bus'};
-              final m2 = _allRouteMetadata[bridge['rId']] ?? {'short_name': bridge['rId'], 'color': Colors.blue, 'folder': 'rail'};
-              final m3 = _allRouteMetadata[r3Id] ?? {'short_name': r3Id, 'color': Colors.green, 'folder': 'rail'};
+              final m1 =
+                  _allRouteMetadata[r1Id] ??
+                  {'short_name': r1Id, 'color': Colors.red, 'folder': 'bus'};
+              final m2 =
+                  _allRouteMetadata[bridge['rId']] ??
+                  {
+                    'short_name': bridge['rId'],
+                    'color': Colors.blue,
+                    'folder': 'rail',
+                  };
+              final m3 =
+                  _allRouteMetadata[r3Id] ??
+                  {'short_name': r3Id, 'color': Colors.green, 'folder': 'rail'};
 
               int walk1 = (m1['folder'] == 'rail') ? 3 : 5;
               int walk2 = (m3['folder'] == 'rail') ? 3 : 5;
@@ -543,36 +799,125 @@ class ApiService {
               final d2 = bridge['dur'];
               final d3 = reachToDest[stm2]![r3Id]!['dur'];
               final wait = reachFromOrigin[stm1]![r1Id]!['wait'];
-              final departStr = (reachFromOrigin[stm1]![r1Id]!['depart'] as String).substring(0, 5);
+              final departStr =
+                  (reachFromOrigin[stm1]![r1Id]!['depart'] as String).substring(
+                    0,
+                    5,
+                  );
 
-              final List<String> iStops1 = (reachFromOrigin[stm1]![r1Id]!['stops'] as List<String>?) ?? [];
-              final List<String> iStopsBridge = (bridge['stops'] as List<String>?) ?? [];
-              final List<String> iStops3 = (reachToDest[stm2]![r3Id]!['stops'] as List<String>?) ?? [];
+              final List<String> iStops1 =
+                  (reachFromOrigin[stm1]![r1Id]!['stops'] as List<String>?) ??
+                  [];
+              final List<String> iStopsBridge =
+                  (bridge['stops'] as List<String>?) ?? [];
+              final List<String> iStops3 =
+                  (reachToDest[stm2]![r3Id]!['stops'] as List<String>?) ?? [];
 
-              final twoTransferFare = _fareForLeg(m1['folder'], _calculateDistance(origin.lat, origin.lon, stm1.lat, stm1.lon)) +
-                  _fareForLeg(m2['folder'], _calculateDistance(stm1.lat, stm1.lon, stm2.lat, stm2.lon)) +
-                  _fareForLeg(m3['folder'], _calculateDistance(stm2.lat, stm2.lon, destination.lat, destination.lon));
+              final twoTransferFare =
+                  _fareForLeg(
+                    m1['folder'],
+                    _calculateDistance(
+                      origin.lat,
+                      origin.lon,
+                      stm1.lat,
+                      stm1.lon,
+                    ),
+                  ) +
+                  _fareForLeg(
+                    m2['folder'],
+                    _calculateDistance(stm1.lat, stm1.lon, stm2.lat, stm2.lon),
+                  ) +
+                  _fareForLeg(
+                    m3['folder'],
+                    _calculateDistance(
+                      stm2.lat,
+                      stm2.lon,
+                      destination.lat,
+                      destination.lon,
+                    ),
+                  );
 
               results.add({
-                'id': 'MIX2', 'name': '${m1['short_name']} -> ${m2['short_name']} -> ${m3['short_name']}',
-                'duration': '${d1 + d2 + d3 + walk1 + walk2} min', 'fare': 'RM ${twoTransferFare.toStringAsFixed(2)}', 'badge': '2 Transfers', 'color': Colors.purple,
-                'sig': '2X_${m1['short_name']}_${stm1.name}_${m2['short_name']}_${stm2.name}_${m3['short_name']}',
-                'wait': wait, 'scheduledDepart': departStr,
+                'id': 'MIX2',
+                'name':
+                    '${m1['short_name']} -> ${m2['short_name']} -> ${m3['short_name']}',
+                'duration': '${d1 + d2 + d3 + walk1 + walk2} min',
+                'fare': 'RM ${twoTransferFare.toStringAsFixed(2)}',
+                'badge': '2 Transfers',
+                'color': Colors.purple,
+                'sig':
+                    '2X_${m1['short_name']}_${stm1.name}_${m2['short_name']}_${stm2.name}_${m3['short_name']}',
+                'wait': wait,
+                'scheduledDepart': departStr,
                 'legs': [
-                  { 'mode': m1['folder'] == 'rail' ? 'Rail' : 'Bus', 'name': m1['short_name'], 'duration': '$d1 min', 'icon': m1['folder'] == 'rail' ? Icons.train : Icons.directions_bus, 'color': m1['color'], 'desc': 'Board at ${origin.name} ($departStr)', 'intermediate_stops': iStops1, 'folder': m1['folder'],
-                    'shapeId': _tripToShapeCache[reachFromOrigin[stm1]![r1Id]!['trip']] ?? '',
-                    'from': {'lat': origin.lat, 'lon': origin.lon}, 'to': {'lat': stm1.lat, 'lon': stm1.lon} },
-                  { 'mode': 'Walk', 'name': 'Transfer', 'duration': '$walk1 min', 'icon': Icons.directions_walk, 'color': Colors.grey, 'desc': 'Transfer at ${stm1.name}',
-                    'from': {'lat': stm1.lat, 'lon': stm1.lon}, 'to': {'lat': stm1.lat, 'lon': stm1.lon} },
-                  { 'mode': 'Rail', 'name': m2['short_name'], 'duration': '$d2 min', 'icon': Icons.train, 'color': m2['color'], 'desc': 'Connect via ${stm1.name}', 'intermediate_stops': iStopsBridge, 'folder': 'rail',
+                  {
+                    'mode': m1['folder'] == 'rail' ? 'Rail' : 'Bus',
+                    'name': m1['short_name'],
+                    'duration': '$d1 min',
+                    'icon': m1['folder'] == 'rail'
+                        ? Icons.train
+                        : Icons.directions_bus,
+                    'color': m1['color'],
+                    'desc': 'Board at ${origin.name} ($departStr)',
+                    'intermediate_stops': iStops1,
+                    'folder': m1['folder'],
+                    'shapeId':
+                        _tripToShapeCache[reachFromOrigin[stm1]![r1Id]!['trip']] ??
+                        '',
+                    'from': {'lat': origin.lat, 'lon': origin.lon},
+                    'to': {'lat': stm1.lat, 'lon': stm1.lon},
+                  },
+                  {
+                    'mode': 'Walk',
+                    'name': 'Transfer',
+                    'duration': '$walk1 min',
+                    'icon': Icons.directions_walk,
+                    'color': Colors.grey,
+                    'desc': 'Transfer at ${stm1.name}',
+                    'from': {'lat': stm1.lat, 'lon': stm1.lon},
+                    'to': {'lat': stm1.lat, 'lon': stm1.lon},
+                  },
+                  {
+                    'mode': 'Rail',
+                    'name': m2['short_name'],
+                    'duration': '$d2 min',
+                    'icon': Icons.train,
+                    'color': m2['color'],
+                    'desc': 'Connect via ${stm1.name}',
+                    'intermediate_stops': iStopsBridge,
+                    'folder': 'rail',
                     'shapeId': _tripToShapeCache[bridge['trip']] ?? '',
-                    'from': {'lat': stm1.lat, 'lon': stm1.lon}, 'to': {'lat': stm2.lat, 'lon': stm2.lon} },
-                  { 'mode': 'Walk', 'name': 'Transfer', 'duration': '$walk2 min', 'icon': Icons.directions_walk, 'color': Colors.grey, 'desc': 'Transfer at ${stm2.name}',
-                    'from': {'lat': stm2.lat, 'lon': stm2.lon}, 'to': {'lat': stm2.lat, 'lon': stm2.lon} },
-                  { 'mode': m3['folder'] == 'rail' ? 'Rail' : 'Bus', 'name': m3['short_name'], 'duration': '$d3 min', 'icon': m3['folder'] == 'rail' ? Icons.train : Icons.directions_bus, 'color': m3['color'], 'desc': 'Arrive at ${destination.name}', 'intermediate_stops': iStops3, 'folder': m3['folder'],
-                    'shapeId': _tripToShapeCache[reachToDest[stm2]![r3Id]!['trip']] ?? '',
-                    'from': {'lat': stm2.lat, 'lon': stm2.lon}, 'to': {'lat': destination.lat, 'lon': destination.lon} }
-                ]
+                    'from': {'lat': stm1.lat, 'lon': stm1.lon},
+                    'to': {'lat': stm2.lat, 'lon': stm2.lon},
+                  },
+                  {
+                    'mode': 'Walk',
+                    'name': 'Transfer',
+                    'duration': '$walk2 min',
+                    'icon': Icons.directions_walk,
+                    'color': Colors.grey,
+                    'desc': 'Transfer at ${stm2.name}',
+                    'from': {'lat': stm2.lat, 'lon': stm2.lon},
+                    'to': {'lat': stm2.lat, 'lon': stm2.lon},
+                  },
+                  {
+                    'mode': m3['folder'] == 'rail' ? 'Rail' : 'Bus',
+                    'name': m3['short_name'],
+                    'duration': '$d3 min',
+                    'icon': m3['folder'] == 'rail'
+                        ? Icons.train
+                        : Icons.directions_bus,
+                    'color': m3['color'],
+                    'desc': 'Arrive at ${destination.name}',
+                    'intermediate_stops': iStops3,
+                    'folder': m3['folder'],
+                    'shapeId':
+                        _tripToShapeCache[reachToDest[stm2]![r3Id]!['trip']] ??
+                        '',
+                    'from': {'lat': stm2.lat, 'lon': stm2.lon},
+                    'to': {'lat': destination.lat, 'lon': destination.lon},
+                  },
+                ],
               });
             }
           }
@@ -582,7 +927,8 @@ class ApiService {
       final Map<String, Map<String, dynamic>> uniqueResults = {};
       for (var r in results) {
         if (!uniqueResults.containsKey(r['sig']) ||
-            int.parse(r['duration'].split(' ')[0]) < int.parse(uniqueResults[r['sig']]!['duration'].split(' ')[0])) {
+            int.parse(r['duration'].split(' ')[0]) <
+                int.parse(uniqueResults[r['sig']]!['duration'].split(' ')[0])) {
           uniqueResults[r['sig']] = r;
         }
       }
@@ -626,15 +972,24 @@ class ApiService {
         return scoreA.compareTo(scoreB);
       });
 
-      return finalResults.take(4).toList();
+      // Consumers decide how many options to display. Favourite-route replanning
+      // must be able to find a saved service sequence even when it is no longer
+      // ranked in the current top four results.
+      return finalResults;
     } catch (e) {
       debugPrint('Error finding routes: $e');
       return [];
     }
   }
 
-  Map<String, Map<String, dynamic>> _parseRouteMetadata(String raw, String folder) {
-    final lines = const CsvToListConverter(eol: '\n', shouldParseNumbers: false).convert(raw.replaceAll('\uFEFF', '').replaceAll('\r\n', '\n')).where((row) => row.any((cell) => cell.toString().trim().isNotEmpty)).toList();
+  Map<String, Map<String, dynamic>> _parseRouteMetadata(
+    String raw,
+    String folder,
+  ) {
+    final lines = const CsvToListConverter(eol: '\n', shouldParseNumbers: false)
+        .convert(raw.replaceAll('\uFEFF', '').replaceAll('\r\n', '\n'))
+        .where((row) => row.any((cell) => cell.toString().trim().isNotEmpty))
+        .toList();
     final Map<String, Map<String, dynamic>> metadata = {};
     if (lines.isEmpty) return metadata;
 
@@ -651,16 +1006,23 @@ class ApiService {
       final routeId = '${folder}_${parts[idIdx]}';
 
       String routeShortName = '';
-      if (shortNameIdx != -1 && parts.length > shortNameIdx && parts[shortNameIdx].trim().isNotEmpty) {
+      if (shortNameIdx != -1 &&
+          parts.length > shortNameIdx &&
+          parts[shortNameIdx].trim().isNotEmpty) {
         routeShortName = parts[shortNameIdx].trim();
       }
-      if (routeShortName.isEmpty && longNameIdx != -1 && parts.length > longNameIdx && parts[longNameIdx].trim().isNotEmpty) {
+      if (routeShortName.isEmpty &&
+          longNameIdx != -1 &&
+          parts.length > longNameIdx &&
+          parts[longNameIdx].trim().isNotEmpty) {
         routeShortName = parts[longNameIdx].trim();
       }
 
       String effectiveFolder = folder;
 
-      if (routeShortName.contains('BRT') || routeShortName.contains('SBL') || routeId.contains('SBL')) {
+      if (routeShortName.contains('BRT') ||
+          routeShortName.contains('SBL') ||
+          routeId.contains('SBL')) {
         routeShortName = 'B1 (BRT Sunway)';
         effectiveFolder = 'rail';
       }
@@ -675,27 +1037,55 @@ class ApiService {
         }
       }
 
-      String routeColorHex = colorIdx != -1 && parts.length > colorIdx ? parts[colorIdx] : '';
+      String routeColorHex = colorIdx != -1 && parts.length > colorIdx
+          ? parts[colorIdx]
+          : '';
 
       if (effectiveFolder == 'rail') {
-        if (routeShortName.contains('Kelana Jaya') || routeShortName == 'KJL' || routeId.contains('KJL')) {
-          routeShortName = 'Line 5 (Kelana Jaya)'; routeColorHex = 'E11D48';
-        } else if (routeShortName.contains('Kajang') || routeShortName == 'KGL' || routeId.contains('KGL') || routeId.contains('SBK')) {
-          routeShortName = 'Line 9 (Kajang)'; routeColorHex = '15803D';
-        } else if (routeShortName.contains('Putrajaya') || routeShortName == 'PYL' || routeId.contains('PYL') || routeId.contains('SSP')) {
-          routeShortName = 'Line 12 (Putrajaya)'; routeColorHex = 'EAB308';
-        } else if (routeShortName.contains('Ampang') || routeShortName == 'AGL' || routeId.contains('AGL')) {
-          routeShortName = 'Line 3 (Ampang)'; routeColorHex = 'F97316';
-        } else if (routeShortName.contains('Sri Petaling') || routeShortName == 'SPL' || routeId.contains('SPL')) {
-          routeShortName = 'Line 4 (Sri Petaling)'; routeColorHex = '7F1D1D';
-        } else if (routeShortName.contains('Monorail') || routeShortName == 'MRL' || routeId.contains('MRL')) {
-          routeShortName = 'Line 8 (Monorail)'; routeColorHex = '84CC16';
-        } else if (routeShortName.contains('Sunway') || routeShortName.contains('BRT')) {
-          routeShortName = 'B1 (BRT Sunway)'; routeColorHex = '14532D';
-        } else if (routeShortName.contains('Seremban') || routeShortName == 'KTM Seremban') {
-          routeShortName = 'Line 1 (Seremban)'; routeColorHex = '2563EB';
-        } else if (routeShortName.contains('Port Klang') || routeShortName.contains('Pelabuhan')) {
-          routeShortName = 'Line 2 (Port Klang)'; routeColorHex = 'DC2626';
+        if (routeShortName.contains('Kelana Jaya') ||
+            routeShortName == 'KJL' ||
+            routeId.contains('KJL')) {
+          routeShortName = 'Line 5 (Kelana Jaya)';
+          routeColorHex = 'E11D48';
+        } else if (routeShortName.contains('Kajang') ||
+            routeShortName == 'KGL' ||
+            routeId.contains('KGL') ||
+            routeId.contains('SBK')) {
+          routeShortName = 'Line 9 (Kajang)';
+          routeColorHex = '15803D';
+        } else if (routeShortName.contains('Putrajaya') ||
+            routeShortName == 'PYL' ||
+            routeId.contains('PYL') ||
+            routeId.contains('SSP')) {
+          routeShortName = 'Line 12 (Putrajaya)';
+          routeColorHex = 'EAB308';
+        } else if (routeShortName.contains('Ampang') ||
+            routeShortName == 'AGL' ||
+            routeId.contains('AGL')) {
+          routeShortName = 'Line 3 (Ampang)';
+          routeColorHex = 'F97316';
+        } else if (routeShortName.contains('Sri Petaling') ||
+            routeShortName == 'SPL' ||
+            routeId.contains('SPL')) {
+          routeShortName = 'Line 4 (Sri Petaling)';
+          routeColorHex = '7F1D1D';
+        } else if (routeShortName.contains('Monorail') ||
+            routeShortName == 'MRL' ||
+            routeId.contains('MRL')) {
+          routeShortName = 'Line 8 (Monorail)';
+          routeColorHex = '84CC16';
+        } else if (routeShortName.contains('Sunway') ||
+            routeShortName.contains('BRT')) {
+          routeShortName = 'B1 (BRT Sunway)';
+          routeColorHex = '14532D';
+        } else if (routeShortName.contains('Seremban') ||
+            routeShortName == 'KTM Seremban') {
+          routeShortName = 'Line 1 (Seremban)';
+          routeColorHex = '2563EB';
+        } else if (routeShortName.contains('Port Klang') ||
+            routeShortName.contains('Pelabuhan')) {
+          routeShortName = 'Line 2 (Port Klang)';
+          routeColorHex = 'DC2626';
         }
       }
 
@@ -706,14 +1096,17 @@ class ApiService {
       metadata[routeId] = {
         'short_name': routeShortName,
         'color': Color(int.parse('0xFF$routeColorHex')),
-        'folder': effectiveFolder
+        'folder': effectiveFolder,
       };
     }
     return metadata;
   }
 
   Map<String, String> _parseTrips(String raw, String folder) {
-    final lines = const CsvToListConverter(eol: '\n', shouldParseNumbers: false).convert(raw.replaceAll('\uFEFF', '').replaceAll('\r\n', '\n')).where((row) => row.any((cell) => cell.toString().trim().isNotEmpty)).toList();
+    final lines = const CsvToListConverter(eol: '\n', shouldParseNumbers: false)
+        .convert(raw.replaceAll('\uFEFF', '').replaceAll('\r\n', '\n'))
+        .where((row) => row.any((cell) => cell.toString().trim().isNotEmpty))
+        .toList();
     final Map<String, String> tripToRoute = {};
     if (lines.isEmpty) return tripToRoute;
     final header = lines[0].map((e) => e.toString().trim()).toList();
@@ -727,7 +1120,9 @@ class ApiService {
       if (parts.length > tripIdIdx && parts.length > routeIdIdx) {
         final tripId = '${folder}_${parts[tripIdIdx]}';
         tripToRoute[tripId] = '${folder}_${parts[routeIdIdx]}';
-        if (shapeIdIdx != -1 && parts.length > shapeIdIdx && parts[shapeIdIdx].trim().isNotEmpty) {
+        if (shapeIdIdx != -1 &&
+            parts.length > shapeIdIdx &&
+            parts[shapeIdIdx].trim().isNotEmpty) {
           _tripToShapeCache[tripId] = parts[shapeIdIdx].trim();
         }
       }
@@ -735,8 +1130,15 @@ class ApiService {
     return tripToRoute;
   }
 
-  Map<String, List<Map<String, dynamic>>> _parseStopTimes(String raw, Map<String, String> tripToRoute, String folder) {
-    final lines = const CsvToListConverter(eol: '\n', shouldParseNumbers: false).convert(raw.replaceAll('\uFEFF', '').replaceAll('\r\n', '\n')).where((row) => row.any((cell) => cell.toString().trim().isNotEmpty)).toList();
+  Map<String, List<Map<String, dynamic>>> _parseStopTimes(
+    String raw,
+    Map<String, String> tripToRoute,
+    String folder,
+  ) {
+    final lines = const CsvToListConverter(eol: '\n', shouldParseNumbers: false)
+        .convert(raw.replaceAll('\uFEFF', '').replaceAll('\r\n', '\n'))
+        .where((row) => row.any((cell) => cell.toString().trim().isNotEmpty))
+        .toList();
     final Map<String, List<Map<String, dynamic>>> tripStopTimes = {};
     if (lines.isEmpty) return tripStopTimes;
 
@@ -746,13 +1148,18 @@ class ApiService {
     final arrivalTimeIdx = header.indexOf('arrival_time');
     final seqIdx = header.indexOf('stop_sequence');
 
-    if (tripIdIdx == -1 || stopIdIdx == -1 || arrivalTimeIdx == -1) return tripStopTimes;
+    if (tripIdIdx == -1 || stopIdIdx == -1 || arrivalTimeIdx == -1)
+      return tripStopTimes;
 
     for (final line in lines.skip(1)) {
       final parts = line.map((e) => e.toString().trim()).toList();
-      if (parts.length > stopIdIdx && parts.length > arrivalTimeIdx && parts.length > tripIdIdx) {
+      if (parts.length > stopIdIdx &&
+          parts.length > arrivalTimeIdx &&
+          parts.length > tripIdIdx) {
         final tripId = '${folder}_${parts[tripIdIdx]}';
-        final seq = seqIdx != -1 && parts.length > seqIdx ? int.tryParse(parts[seqIdx]) ?? 0 : 0;
+        final seq = seqIdx != -1 && parts.length > seqIdx
+            ? int.tryParse(parts[seqIdx]) ?? 0
+            : 0;
 
         if (!tripStopTimes.containsKey(tripId)) tripStopTimes[tripId] = [];
 
@@ -766,7 +1173,9 @@ class ApiService {
     }
 
     for (final tripId in tripStopTimes.keys) {
-      tripStopTimes[tripId]!.sort((a, b) => (a['seq'] as int).compareTo(b['seq'] as int));
+      tripStopTimes[tripId]!.sort(
+        (a, b) => (a['seq'] as int).compareTo(b['seq'] as int),
+      );
     }
 
     return tripStopTimes;
@@ -788,7 +1197,8 @@ class ApiService {
   }) async {
     try {
       final user = Supabase.instance.client.auth.currentUser;
-      if (user == null) throw Exception('User is not logged in. Please log in first.');
+      if (user == null)
+        throw Exception('User is not logged in. Please log in first.');
 
       await PersonalAssistanceFunctions().invoke(
         'journey-history',
@@ -803,26 +1213,30 @@ class ApiService {
             'departure_time': departureTime,
             'estimated_arrival_time': estimatedArrivalTime,
             'transit_steps': transitSteps,
-            'origin_station': originStation == null ? null : {
-              'ids': originStation.ids.toList()..sort(),
-              'name': originStation.name,
-              'lines': originStation.lines.toList()..sort(),
-              'category': originStation.category,
-              'lat': originStation.lat,
-              'lon': originStation.lon,
-            },
-            'destination_station': destinationStation == null ? null : {
-              'ids': destinationStation.ids.toList()..sort(),
-              'name': destinationStation.name,
-              'lines': destinationStation.lines.toList()..sort(),
-              'category': destinationStation.category,
-              'lat': destinationStation.lat,
-              'lon': destinationStation.lon,
-            },
+            'origin_station': originStation == null
+                ? null
+                : {
+                    'ids': originStation.ids.toList()..sort(),
+                    'name': originStation.name,
+                    'lines': originStation.lines.toList()..sort(),
+                    'category': originStation.category,
+                    'lat': originStation.lat,
+                    'lon': originStation.lon,
+                  },
+            'destination_station': destinationStation == null
+                ? null
+                : {
+                    'ids': destinationStation.ids.toList()..sort(),
+                    'name': destinationStation.name,
+                    'lines': destinationStation.lines.toList()..sort(),
+                    'category': destinationStation.category,
+                    'lat': destinationStation.lat,
+                    'lon': destinationStation.lon,
+                  },
             'route_signature': routeSignature,
             'line_name': lineName,
             'status': 'completed',
-          }
+          },
         },
       );
     } catch (e) {
@@ -839,20 +1253,27 @@ class ApiService {
     // KTMB is explicitly excluded, including direct calls from other screens.
     if (folder == 'ktmb' || folder == 'ktm') return [];
     if (folder == 'rail' || folder == 'rapid-rail-kl') {
-      debugPrint('LRT live positions unavailable: the MyRapid bus kiosk '
-          'provides bus GPS and static endpoint areas, not train positions.');
+      debugPrint(
+        'LRT live positions unavailable: the MyRapid bus kiosk '
+        'provides bus GPS and static endpoint areas, not train positions.',
+      );
       return [];
     }
     if (folder != 'bus' && folder != 'mrt_feeder') {
       throw ArgumentError.value(folder, 'folder', 'Unsupported live feed');
     }
     final category = folder == 'mrt_feeder'
-        ? 'rapid-bus-mrtfeeder' : 'rapid-bus-kl';
+        ? 'rapid-bus-mrtfeeder'
+        : 'rapid-bus-kl';
     try {
       await _ensureGtfsFullyCached();
-      final response = await http.get(Uri.parse(
-        'https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana?category=$category',
-      )).timeout(const Duration(seconds: 20));
+      final response = await http
+          .get(
+            Uri.parse(
+              'https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana?category=$category',
+            ),
+          )
+          .timeout(const Duration(seconds: 20));
       if (response.statusCode != 200) {
         debugPrint('GTFS-RT $folder: HTTP ${response.statusCode}');
         return [];
@@ -865,8 +1286,12 @@ class ApiService {
         if (!v.hasPosition()) continue;
         final lat = v.position.latitude;
         final lon = v.position.longitude;
-        if (!lat.isFinite || !lon.isFinite || lat.abs() > 90 ||
-            lon.abs() > 180 || (lat == 0 && lon == 0)) continue;
+        if (!lat.isFinite ||
+            !lon.isFinite ||
+            lat.abs() > 90 ||
+            lon.abs() > 180 ||
+            (lat == 0 && lon == 0))
+          continue;
         final rawRoute = v.trip.routeId.trim();
         final rawTrip = v.trip.tripId.trim();
         String? resolved;
@@ -877,10 +1302,15 @@ class ApiService {
           resolved = routeKey;
         }
         if (resolved == null && rawRoute.isNotEmpty) {
-          final matches = _allRouteMetadata.entries.where((entry) =>
-          entry.key.startsWith('${folder}_') &&
-              entry.value['short_name'].toString().trim().toUpperCase() ==
-                  rawRoute.toUpperCase()).map((entry) => entry.key).toSet();
+          final matches = _allRouteMetadata.entries
+              .where(
+                (entry) =>
+                    entry.key.startsWith('${folder}_') &&
+                    entry.value['short_name'].toString().trim().toUpperCase() ==
+                        rawRoute.toUpperCase(),
+              )
+              .map((entry) => entry.key)
+              .toSet();
           if (matches.length == 1) resolved = matches.single;
         }
         if (resolved == null && rawTrip.isNotEmpty) {
@@ -888,24 +1318,37 @@ class ApiService {
           if (resolved == null) {
             // Some feeds omit the static service prefix. Accept only an
             // underscore-delimited suffix that resolves to one route.
-            final matches = _tripToRouteCache.entries.where((entry) =>
-            entry.key.startsWith('${folder}_') &&
-                entry.key.substring(folder.length + 1).endsWith('_$rawTrip'))
-                .map((entry) => entry.value).toSet();
+            final matches = _tripToRouteCache.entries
+                .where(
+                  (entry) =>
+                      entry.key.startsWith('${folder}_') &&
+                      entry.key
+                          .substring(folder.length + 1)
+                          .endsWith('_$rawTrip'),
+                )
+                .map((entry) => entry.value)
+                .toSet();
             if (matches.length == 1) resolved = matches.single;
           }
         }
         final routeName = resolved == null
             ? (rawRoute.isEmpty ? 'Unknown route' : rawRoute)
-            : _allRouteMetadata[resolved]?['short_name']?.toString() ?? rawRoute;
-        vehicles.add(LiveVehicle(
-          id: '${folder}_${entity.id}', lat: lat, lon: lon,
-          bearing: v.position.hasBearing() && v.position.bearing.isFinite
-              ? v.position.bearing : 0.0,
-          routeId: routeName,
-          licensePlate: v.vehicle.hasLicensePlate()
-              ? v.vehicle.licensePlate : 'Unknown',
-        ));
+            : _allRouteMetadata[resolved]?['short_name']?.toString() ??
+                  rawRoute;
+        vehicles.add(
+          LiveVehicle(
+            id: '${folder}_${entity.id}',
+            lat: lat,
+            lon: lon,
+            bearing: v.position.hasBearing() && v.position.bearing.isFinite
+                ? v.position.bearing
+                : 0.0,
+            routeId: routeName,
+            licensePlate: v.vehicle.hasLicensePlate()
+                ? v.vehicle.licensePlate
+                : 'Unknown',
+          ),
+        );
       }
       debugPrint('GTFS-RT $folder: ${vehicles.length} vehicles');
       return vehicles;
@@ -943,12 +1386,14 @@ class ApiService {
     final records = <RidershipRecord>[];
     for (final row in response) {
       try {
-        records.add(RidershipRecord(
-          origin: row['origin'] as String,
-          destination: row['destination'] as String,
-          date: DateTime.parse(row['date'] as String),
-          ridership: (row['ridership'] as num).round(),
-        ));
+        records.add(
+          RidershipRecord(
+            origin: row['origin'] as String,
+            destination: row['destination'] as String,
+            date: DateTime.parse(row['date'] as String),
+            ridership: (row['ridership'] as num).round(),
+          ),
+        );
       } catch (_) {
         continue;
       }
@@ -957,7 +1402,9 @@ class ApiService {
     return records;
   }
 
-  Future<List<MapEntry<DateTime, int>>> getDailyTotalsForStation(String station) async {
+  Future<List<MapEntry<DateTime, int>>> getDailyTotalsForStation(
+    String station,
+  ) async {
     final records = await getStationTotalRecords(station);
     return records.map((r) => MapEntry(r.date, r.ridership)).toList();
   }
@@ -969,7 +1416,10 @@ class ApiService {
     return total / records.length;
   }
 
-  Future<double> getStationAverageForWeekday(String station, int weekday) async {
+  Future<double> getStationAverageForWeekday(
+    String station,
+    int weekday,
+  ) async {
     final records = await getStationTotalRecords(station);
     final matching = records.where((r) => r.date.weekday == weekday).toList();
     if (matching.isEmpty) return getStationAverageRidership(station);
@@ -988,8 +1438,23 @@ class ApiService {
     return avg;
   }
 
-  Future<List<({String station, double avgRidership, int totalRidership, int recordCount, DateTime? minDate, DateTime? maxDate})>>
-  getStationRidershipTotals({DateTime? startDate, DateTime? endDate, bool forceRefresh = false}) async {
+  Future<
+    List<
+      ({
+        String station,
+        double avgRidership,
+        int totalRidership,
+        int recordCount,
+        DateTime? minDate,
+        DateTime? maxDate,
+      })
+    >
+  >
+  getStationRidershipTotals({
+    DateTime? startDate,
+    DateTime? endDate,
+    bool forceRefresh = false,
+  }) async {
     final isOverall = startDate == null && endDate == null;
     if (isOverall && !forceRefresh && _stationRidershipTotalsCache != null) {
       return _stationRidershipTotalsCache!;
@@ -999,24 +1464,35 @@ class ApiService {
     if (isOverall) {
       rows = await Supabase.instance.client
           .from('station_ridership_totals')
-          .select('station, avg_ridership, total_ridership, record_count, min_date, max_date')
+          .select(
+            'station, avg_ridership, total_ridership, record_count, min_date, max_date',
+          )
           .order('avg_ridership', ascending: false);
     } else {
-      rows = await Supabase.instance.client.rpc('station_ridership_totals_for_range', params: {
-        'start_date': DateFormat('yyyy-MM-dd').format(startDate!),
-        'end_date': DateFormat('yyyy-MM-dd').format(endDate!),
-      });
+      rows = await Supabase.instance.client.rpc(
+        'station_ridership_totals_for_range',
+        params: {
+          'start_date': DateFormat('yyyy-MM-dd').format(startDate!),
+          'end_date': DateFormat('yyyy-MM-dd').format(endDate!),
+        },
+      );
     }
 
     final results = rows
-        .map((row) => (
-    station: row['station'] as String,
-    avgRidership: (row['avg_ridership'] as num).toDouble(),
-    totalRidership: (row['total_ridership'] as num).round(),
-    recordCount: (row['record_count'] as num).round(),
-    minDate: row['min_date'] != null ? DateTime.tryParse(row['min_date'] as String) : null,
-    maxDate: row['max_date'] != null ? DateTime.tryParse(row['max_date'] as String) : null,
-    ))
+        .map(
+          (row) => (
+            station: row['station'] as String,
+            avgRidership: (row['avg_ridership'] as num).toDouble(),
+            totalRidership: (row['total_ridership'] as num).round(),
+            recordCount: (row['record_count'] as num).round(),
+            minDate: row['min_date'] != null
+                ? DateTime.tryParse(row['min_date'] as String)
+                : null,
+            maxDate: row['max_date'] != null
+                ? DateTime.tryParse(row['max_date'] as String)
+                : null,
+          ),
+        )
         .toList();
 
     if (isOverall) _stationRidershipTotalsCache = results;
@@ -1035,7 +1511,9 @@ class ApiService {
   }
 
   Future<List<MapEntry<String, int>>> getTopDestinationsFrom(
-      String station, {int limit = 5}) async {
+    String station, {
+    int limit = 5,
+  }) async {
     final response = await Supabase.instance.client
         .from('od_totals')
         .select('destination, total_ridership')
@@ -1043,12 +1521,19 @@ class ApiService {
         .order('total_ridership', ascending: false)
         .limit(limit);
     return response
-        .map((row) => MapEntry(row['destination'] as String, (row['total_ridership'] as num).round()))
+        .map(
+          (row) => MapEntry(
+            row['destination'] as String,
+            (row['total_ridership'] as num).round(),
+          ),
+        )
         .toList();
   }
 
   Future<List<MapEntry<String, int>>> getTopOriginsInto(
-      String station, {int limit = 5}) async {
+    String station, {
+    int limit = 5,
+  }) async {
     final response = await Supabase.instance.client
         .from('od_totals')
         .select('origin, total_ridership')
@@ -1056,7 +1541,12 @@ class ApiService {
         .order('total_ridership', ascending: false)
         .limit(limit);
     return response
-        .map((row) => MapEntry(row['origin'] as String, (row['total_ridership'] as num).round()))
+        .map(
+          (row) => MapEntry(
+            row['origin'] as String,
+            (row['total_ridership'] as num).round(),
+          ),
+        )
         .toList();
   }
 
@@ -1065,7 +1555,10 @@ class ApiService {
         .from('od_totals')
         .select('total_ridership')
         .eq('origin', station);
-    return response.fold<int>(0, (sum, row) => sum + (row['total_ridership'] as num).round());
+    return response.fold<int>(
+      0,
+      (sum, row) => sum + (row['total_ridership'] as num).round(),
+    );
   }
 
   Future<int> getTotalIncoming(String station) async {
@@ -1073,17 +1566,27 @@ class ApiService {
         .from('od_totals')
         .select('total_ridership')
         .eq('destination', station);
-    return response.fold<int>(0, (sum, row) => sum + (row['total_ridership'] as num).round());
+    return response.fold<int>(
+      0,
+      (sum, row) => sum + (row['total_ridership'] as num).round(),
+    );
   }
 
-  Future<List<MapEntry<String, int>>> getBusiestConnections({int limit = 10}) async {
+  Future<List<MapEntry<String, int>>> getBusiestConnections({
+    int limit = 10,
+  }) async {
     final response = await Supabase.instance.client
         .from('od_totals')
         .select('origin, destination, total_ridership')
         .order('total_ridership', ascending: false)
         .limit(limit);
     return response
-        .map((row) => MapEntry('${row['origin']} → ${row['destination']}', (row['total_ridership'] as num).round()))
+        .map(
+          (row) => MapEntry(
+            '${row['origin']} → ${row['destination']}',
+            (row['total_ridership'] as num).round(),
+          ),
+        )
         .toList();
   }
 
@@ -1102,8 +1605,11 @@ class ApiService {
 
   Future<String> getRealtimeBusPositions() async {
     try {
-      final response = await http.get(Uri.parse(
-          'https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana?category=rapid-bus-kl'));
+      final response = await http.get(
+        Uri.parse(
+          'https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana?category=rapid-bus-kl',
+        ),
+      );
       if (response.statusCode == 200) {
         return 'Connected: Received ${response.bodyBytes.length} bytes of live data';
       }

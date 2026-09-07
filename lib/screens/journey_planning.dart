@@ -13,6 +13,8 @@ import '../services/estimated_lrt_layer.dart';
 import '../services/route_geometry.dart';
 import '../services/personal_travel_service.dart';
 import '../services/personal_assistance_functions.dart';
+import '../services/module5_user_route_context.dart';
+import 'analytics_centre.dart';
 import 'favourite_routes.dart';
 import 'auth_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -854,6 +856,14 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> with Auto
       final signedIn = Supabase.instance.client.auth.currentUser != null;
       if (mounted) {
         setState(() => _isStartingNavigation = false);
+        final activeBusRoutes = module5BusRoutesFromJourneySteps(dbSafeSteps);
+        // Module 5 tracking is local and cannot interrupt Journey navigation.
+        unawaited(Module5UserRouteContext.shared.startJourney(
+          busRoutes: activeBusRoutes,
+          origin: _originDisplayName,
+          destination: _destinationDisplayName,
+          expiresAt: DateTime.now().add(Duration(minutes: totalMins + 60)),
+        ));
         _showLiveNavigationModal(route, totalMins, departTime, arriveTime, signedIn, farePrice, dbSafeSteps);
       }
     } catch (e) {
@@ -893,6 +903,8 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> with Auto
         );
         await _loadRecentJourneys();
       }
+      // This only clears Module 5's device-local tracking state.
+      unawaited(Module5UserRouteContext.shared.endJourney());
       if (!mounted || !modalContext.mounted) return;
       Navigator.pop(modalContext);
       _resetSearch();
@@ -973,7 +985,21 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> with Auto
                             ],
                           ),
                         ),
-                        Text(arriveTime, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: 'View journey alerts',
+                              onPressed: () => Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => const AnalyticsCentreScreen(showBackButton: true),
+                                ),
+                              ),
+                              icon: const Icon(Icons.notifications_active_outlined, color: Colors.white),
+                            ),
+                            Text(arriveTime, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
                       ],
                     ),
                     const SizedBox(height: 16),

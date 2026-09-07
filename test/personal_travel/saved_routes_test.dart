@@ -222,6 +222,24 @@ void main() {
       'departure_time': '09:37',
       'estimated_arrival_time': '10:09',
       'created_at': '2026-09-07T09:37:00+08:00',
+      'origin_station': {
+        'ids': ['bus_1utama'],
+        'name': '1 UTAMA',
+        'lines': ['250'],
+        'category': 'Bus',
+        'lat': 3.15,
+        'lon': 101.61,
+      },
+      'destination_station': {
+        'ids': ['rail_klcc'],
+        'name': 'KLCC',
+        'lines': ['Kelana Jaya'],
+        'category': 'Rail',
+        'lat': 3.16,
+        'lon': 101.71,
+      },
+      'route_signature': 'DIR_250_KJ',
+      'line_name': '250 via Wangsa Maju',
       'transit_steps': [
         {
           'mode': 'Bus',
@@ -235,6 +253,10 @@ void main() {
     expect(entry.durationMinutes, 32);
     expect(entry.estimatedArrivalTime, '10:09');
     expect(entry.transitSteps, hasLength(1));
+    expect(entry.hasReusableRoute, isTrue);
+    expect(entry.originStation!.ids, ['bus_1utama']);
+    expect(entry.destinationStation!.ids, ['rail_klcc']);
+    expect(entry.routeSignature, 'DIR_250_KJ');
     expect(entry.transitSteps.single.name, '250 via Wangsa Maju');
     expect(entry.transitSteps.single.description, 'Board at Taman Bunga Raya');
   });
@@ -417,6 +439,43 @@ void main() {
     expect(await service.findOrCreateFavourite(suggestion), same(route));
     expect(repository.routes, hasLength(1));
   });
+
+  test(
+    'smart routine saves the successful history route without searching again',
+    () async {
+      final repository = MemoryRoutes();
+      final api = PlanningApi()..results = [];
+      final sourceTrip = TravelHistoryEntry(
+        origin: '1 UTAMA',
+        destination: 'KLCC',
+        fare: 5.25,
+        currency: 'MYR',
+        departureTime: '09:37',
+        createdAt: DateTime(2026, 9, 7),
+        lineName: '250 via Wangsa Maju',
+        originStation: station('1 UTAMA', ['bus_1utama']),
+        destinationStation: station('KLCC', ['rail_klcc']),
+        routeSignature: 'DIR_250_KJ',
+      );
+      final suggestion = RoutineSuggestion(
+        origin: sourceTrip.origin,
+        destination: sourceTrip.destination,
+        tripCount: 3,
+        commonWeekdays: const {1, 3, 5},
+        mostRecentTrip: sourceTrip.createdAt,
+        sourceTrip: sourceTrip,
+      );
+      final service = SmartRoutineService(repository, apiService: api);
+
+      final saved = await service.findOrCreateFavourite(suggestion);
+
+      expect(api.searches, 0);
+      expect(saved.signature, 'DIR_250_KJ');
+      expect(saved.origin.ids, ['bus_1utama']);
+      expect(saved.destination.ids, ['rail_klcc']);
+      expect(repository.routes, hasLength(1));
+    },
+  );
 
   test(
     'smart routine creates a favourite through existing route services',
@@ -718,6 +777,36 @@ void main() {
       find.descendant(of: heart, matching: find.byIcon(Icons.favorite)),
     );
     expect(icon.color, const Color(0xFFE11D48));
+  });
+
+  testWidgets('the Saved summary button removes the favourite route', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repository = MemoryRoutes()..routes = [sampleRoute()];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: JourneyPlanningScreen(
+          savedRoute: sampleRoute(),
+          apiService: PlanningApi(),
+          savedRoutesRepository: repository,
+          authenticate: (_) async => true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final toggle = find.byKey(const Key('toggle-saved-route'));
+    await tester.ensureVisible(toggle);
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+
+    expect(repository.routes, isEmpty);
+    expect(find.text('Save route'), findsOneWidget);
+    expect(find.text('Route removed from Favourite Routes.'), findsOneWidget);
   });
 
   testWidgets('Add Route switches to the main Journey tab when available', (

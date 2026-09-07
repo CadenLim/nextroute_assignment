@@ -71,6 +71,10 @@ Deno.serve(async (request) => {
         departure_time: journey.departure_time,
         estimated_arrival_time: journey.estimated_arrival_time,
         transit_steps: journey.transit_steps ?? [],
+        origin_station: journey.origin_station ?? null,
+        destination_station: journey.destination_station ?? null,
+        route_signature: journey.route_signature ?? null,
+        line_name: journey.line_name ?? null,
         status: journey.status ?? "completed",
       };
       const { data, error } = await admin

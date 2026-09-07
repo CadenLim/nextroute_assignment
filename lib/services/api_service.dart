@@ -718,6 +718,10 @@ class ApiService {
     required String departureTime,
     required String estimatedArrivalTime,
     required List<Map<String, dynamic>> transitSteps,
+    StationModel? originStation,
+    StationModel? destinationStation,
+    String routeSignature = '',
+    String lineName = '',
   }) async {
     try {
       await PersonalAssistanceFunctions().invoke(
@@ -733,6 +737,24 @@ class ApiService {
             'departure_time': departureTime,
             'estimated_arrival_time': estimatedArrivalTime,
             'transit_steps': transitSteps,
+            'origin_station': originStation == null ? null : {
+              'ids': originStation.ids.toList()..sort(),
+              'name': originStation.name,
+              'lines': originStation.lines.toList()..sort(),
+              'category': originStation.category,
+              'lat': originStation.lat,
+              'lon': originStation.lon,
+            },
+            'destination_station': destinationStation == null ? null : {
+              'ids': destinationStation.ids.toList()..sort(),
+              'name': destinationStation.name,
+              'lines': destinationStation.lines.toList()..sort(),
+              'category': destinationStation.category,
+              'lat': destinationStation.lat,
+              'lon': destinationStation.lon,
+            },
+            'route_signature': routeSignature,
+            'line_name': lineName,
             'status': 'completed',
           },
         },

@@ -255,6 +255,10 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
         _loadHistory(),
       ]);
     } catch (error) {
+      if (error is RoutineRouteUnavailableException && mounted) {
+        await _offerRoutineRouteRefresh(suggestion);
+        return;
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -266,6 +270,49 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
     } finally {
       if (mounted) setState(() => _isPreparingRoutine = false);
     }
+  }
+
+  Future<void> _offerRoutineRouteRefresh(RoutineSuggestion suggestion) async {
+    final continueToSettings = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.route_outlined, color: _blue),
+        title: const Text('Route needs refreshing'),
+        content: Text(
+          '${suggestion.origin} → ${suggestion.destination} does not have '
+          'reusable route details. Add or select a Favourite Journey to '
+          'continue setting up this Daily Commute.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('continue-routine-with-favourite'),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    if (continueToSettings != true || !mounted) return;
+    await Navigator.push<DailyCommute>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DailyCommuteSettingsScreen(
+          service: _dailyCommuteService,
+          savedRoutesRepository: _savedRoutesRepository,
+          initialActiveDays: suggestion.commonWeekdays,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    await Future.wait([
+      _loadDailyCommute(),
+      _loadSavedRoutes(),
+      _loadHistory(),
+    ]);
   }
 
   Future<void> _loadProfile({String? confirmedEmail}) async {

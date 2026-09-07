@@ -198,6 +198,7 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
         child: DailyCommuteOverviewSheet(
           service: _dailyCommuteService,
           savedRoutesRepository: widget.savedRoutesRepository,
+          onOpenJourneyPlanning: widget.onOpenJourneyPlanning,
         ),
       ),
     );
@@ -238,6 +239,12 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
             savedRoutesRepository: _savedRoutesRepository,
             initialRoute: route,
             initialActiveDays: suggestion.commonWeekdays,
+            addFavouriteJourney: widget.onOpenJourneyPlanning == null
+                ? null
+                : (settingsContext) async {
+                    Navigator.pop(settingsContext);
+                    widget.onOpenJourneyPlanning!();
+                  },
           ),
         ),
       );
@@ -548,17 +555,35 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
                 children: [
                   Row(
                     children: [
-                      const Icon(
-                        Icons.chevron_left,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                      const Text(
-                        'Home',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
+                      InkWell(
+                        key: const Key('dashboard-home'),
+                        onTap:
+                            widget.onOpenJourneyPlanning ??
+                            () => Navigator.maybePop(context),
+                        borderRadius: BorderRadius.circular(8),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 2,
+                            vertical: 6,
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.chevron_left,
+                                color: Colors.white,
+                                size: 20,
+                              ),
+                              Text(
+                                'Home',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                       const Spacer(),
@@ -2184,6 +2209,7 @@ class DailyCommuteSettingsScreen extends StatefulWidget {
     this.initialRoute,
     this.initialActiveDays,
     this.initialCommute,
+    this.addFavouriteJourney,
   });
 
   final DailyCommuteService? service;
@@ -2191,6 +2217,7 @@ class DailyCommuteSettingsScreen extends StatefulWidget {
   final SavedRoute? initialRoute;
   final Set<int>? initialActiveDays;
   final DailyCommute? initialCommute;
+  final Future<void> Function(BuildContext context)? addFavouriteJourney;
 
   @override
   State<DailyCommuteSettingsScreen> createState() =>
@@ -2223,6 +2250,7 @@ class _DailyCommuteSettingsScreenState
   bool _reminderEnabled = true;
   int _reminderMinutes = 10;
   String? _error;
+  int _routePickerRevision = 0;
 
   @override
   void initState() {
@@ -2423,6 +2451,54 @@ class _DailyCommuteSettingsScreenState
     if (mounted) await _load();
   }
 
+  Future<void> _addNewFavouriteJourney() async {
+    final previousIds = _routes
+        .map((route) => route.id)
+        .whereType<String>()
+        .toSet();
+    final callback = widget.addFavouriteJourney;
+    if (callback != null) {
+      await callback(context);
+    } else {
+      await Navigator.push<void>(
+        context,
+        MaterialPageRoute(builder: (_) => const JourneyPlanningScreen()),
+      );
+    }
+    if (!mounted) return;
+
+    try {
+      final routes = (await _routesRepository.load())
+          .where((route) => route.id != null)
+          .toList();
+      final added = routes
+          .where((route) => !previousIds.contains(route.id))
+          .firstOrNull;
+      final currentId = _selectedRoute?.id;
+      setState(() {
+        _routes = routes;
+        _selectedRoute =
+            added ?? routes.where((route) => route.id == currentId).firstOrNull;
+        _routePickerRevision++;
+        _error = null;
+      });
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = 'Unable to refresh Favourite Routes.');
+      }
+    }
+  }
+
+  Future<void> _selectRoute(String? id) async {
+    if (id == '__add_favourite_journey__') {
+      await _addNewFavouriteJourney();
+      return;
+    }
+    setState(() {
+      _selectedRoute = _routes.where((route) => route.id == id).firstOrNull;
+    });
+  }
+
   Future<void> _save() async {
     if (_saving) return;
     final route = _selectedRoute;
@@ -2496,16 +2572,18 @@ class _DailyCommuteSettingsScreenState
                     title: 'Route',
                     child: _routes.isEmpty
                         ? _emptyRoutes()
-                        : DropdownButtonFormField<String>(
+                        : KeyedSubtree(
                             key: const Key('commute-route'),
-                            initialValue: _selectedRoute?.id,
-                            isExpanded: true,
-                            decoration: _inputDecoration(
-                              Icons.route_outlined,
-                              'Favourite Route',
-                            ),
-                            items: _routes
-                                .map(
+                            child: DropdownButtonFormField<String>(
+                              key: ValueKey(_routePickerRevision),
+                              initialValue: _selectedRoute?.id,
+                              isExpanded: true,
+                              decoration: _inputDecoration(
+                                Icons.route_outlined,
+                                'Favourite Route',
+                              ),
+                              items: [
+                                ..._routes.map(
                                   (route) => DropdownMenuItem(
                                     value: route.id,
                                     child: Text(
@@ -2514,15 +2592,32 @@ class _DailyCommuteSettingsScreenState
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                   ),
-                                )
-                                .toList(),
-                            onChanged: (id) {
-                              setState(() {
-                                _selectedRoute = _routes
-                                    .where((route) => route.id == id)
-                                    .firstOrNull;
-                              });
-                            },
+                                ),
+                                const DropdownMenuItem(
+                                  value: '__add_favourite_journey__',
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        Icons.add_road_rounded,
+                                        color: _blue,
+                                      ),
+                                      SizedBox(width: 9),
+                                      Expanded(
+                                        child: Text(
+                                          'Add New Favourite Journey',
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: _blue,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                              onChanged: _saving ? null : _selectRoute,
+                            ),
                           ),
                   ),
                   if (_commute != null && _selectedRoute == null) ...[
@@ -2723,6 +2818,13 @@ class _DailyCommuteSettingsScreenState
           icon: const Icon(Icons.favorite_border),
           label: const Text('Open Favourite Routes'),
         ),
+        const SizedBox(height: 8),
+        FilledButton.icon(
+          key: const Key('add-favourite-journey'),
+          onPressed: _addNewFavouriteJourney,
+          icon: const Icon(Icons.add_road_rounded),
+          label: const Text('Add New Favourite Journey'),
+        ),
       ],
     );
   }
@@ -2850,10 +2952,12 @@ class DailyCommuteOverviewSheet extends StatefulWidget {
     super.key,
     this.service,
     this.savedRoutesRepository,
+    this.onOpenJourneyPlanning,
   });
 
   final DailyCommuteService? service;
   final SavedRoutesRepository? savedRoutesRepository;
+  final VoidCallback? onOpenJourneyPlanning;
 
   @override
   State<DailyCommuteOverviewSheet> createState() =>
@@ -2898,6 +3002,14 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
           service: _service,
           savedRoutesRepository: widget.savedRoutesRepository,
           initialCommute: commute,
+          addFavouriteJourney: widget.onOpenJourneyPlanning == null
+              ? null
+              : (settingsContext) async {
+                  Navigator.pop(settingsContext);
+                  if (!mounted) return;
+                  Navigator.pop(context);
+                  widget.onOpenJourneyPlanning!();
+                },
         ),
       ),
     );

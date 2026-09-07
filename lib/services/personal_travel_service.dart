@@ -296,20 +296,23 @@ class PasswordCodeLogin {
     String? projectUrl,
     String? publishableKey,
     http.Client Function()? passwordClientFactory,
+    LoginAttemptGuard? loginAttemptGuard,
   }) : _projectUrl = projectUrl ?? SupabaseConfig.url,
        _publishableKey = publishableKey ?? SupabaseConfig.publishableKey,
-       _passwordClientFactory = passwordClientFactory ?? http.Client.new;
+       _passwordClientFactory = passwordClientFactory ?? http.Client.new,
+       _loginAttemptGuard = loginAttemptGuard ?? SupabaseLoginAttemptGuard();
 
   final GoTrueClient auth;
   final String _projectUrl;
   final String _publishableKey;
   final http.Client Function() _passwordClientFactory;
+  final LoginAttemptGuard _loginAttemptGuard;
 
   Future<void> sendCode({
     required String email,
     required String password,
   }) async {
-    await verifyPassword(email: email, password: password);
+    await _loginAttemptGuard.verifyLogin(email: email, password: password);
     await auth.signInWithOtp(email: email, shouldCreateUser: false);
   }
 
@@ -362,6 +365,42 @@ class PasswordCodeLogin {
       }
     } finally {
       client.close();
+    }
+  }
+}
+
+abstract interface class LoginAttemptGuard {
+  Future<void> verifyLogin({required String email, required String password});
+}
+
+class SupabaseLoginAttemptGuard implements LoginAttemptGuard {
+  SupabaseLoginAttemptGuard({SupabaseClient? client})
+    : _client = client ?? Supabase.instance.client;
+
+  final SupabaseClient _client;
+
+  @override
+  Future<void> verifyLogin({
+    required String email,
+    required String password,
+  }) async {
+    final response = await _client.functions.invoke(
+      'auth-account-check',
+      body: {'email': email.trim(), 'password': password},
+    );
+    final data = response.data;
+    if (data is! Map || data['allowed'] is! bool) {
+      throw const AuthException(
+        'Unable to verify your login. Please try again.',
+      );
+    }
+    if (data['allowed'] != true) {
+      final message = data['message']?.toString();
+      throw AuthException(
+        message == null || message.isEmpty
+            ? 'Unable to verify your login. Please try again.'
+            : message,
+      );
     }
   }
 }

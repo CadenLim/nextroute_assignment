@@ -677,22 +677,34 @@ class SupabaseDailyCommuteRepository implements DailyCommuteRepository {
   @override
   Future<DailyCommute> upsert(DailyCommute commute) async {
     final commuteData = commute.toUpsert()..remove('user_id');
-    final response = await _functions.invoke(
-      'daily-commutes',
-      'upsert',
-      payload: {'commute': commuteData},
-    );
-    final row = Map<String, dynamic>.from(response['data'] as Map);
-    return DailyCommute.fromJson(row);
+    try {
+      final response = await _functions.invoke(
+        'daily-commutes',
+        'upsert',
+        payload: {'commute': commuteData},
+      );
+      final row = Map<String, dynamic>.from(response['data'] as Map);
+      return DailyCommute.fromJson(row);
+    } on FunctionsHttpException catch (error) {
+      if (error.status != 409) rethrow;
+      dynamic details = error.details;
+      if (details is String) {
+        try {
+          details = jsonDecode(details);
+        } catch (_) {}
+      }
+      final message = details is Map ? details['error']?.toString() : null;
+      throw StateError(
+        message == null || message.isEmpty
+            ? 'An identical Daily Commute already exists.'
+            : message,
+      );
+    }
   }
 
   @override
   Future<void> delete(String id) async {
-    await _functions.invoke(
-      'daily-commutes',
-      'delete',
-      payload: {'id': id},
-    );
+    await _functions.invoke('daily-commutes', 'delete', payload: {'id': id});
   }
 }
 
@@ -798,6 +810,16 @@ class DailyCommuteService {
     if (!const {5, 10, 15, 30}.contains(reminderMinutesBefore)) {
       throw ArgumentError('Choose a valid reminder time.');
     }
+    await _ensureUniqueSettings(
+      reminderId: reminderId,
+      savedRouteId: route.id,
+      origin: route.origin.name,
+      destination: route.destination.name,
+      arriveByMinutes: arriveByMinutes,
+      activeDays: activeDays,
+      reminderEnabled: reminderEnabled,
+      reminderMinutesBefore: reminderMinutesBefore,
+    );
     if (reminderEnabled && _notificationService.isSupported) {
       final allowed = await _notificationService.requestPermission();
       if (!allowed) throw const NotificationPermissionException();
@@ -834,6 +856,16 @@ class DailyCommuteService {
     DailyCommute commute,
     bool enabled,
   ) async {
+    await _ensureUniqueSettings(
+      reminderId: commute.id,
+      savedRouteId: commute.savedRouteId,
+      origin: commute.origin,
+      destination: commute.destination,
+      arriveByMinutes: commute.arriveByMinutes,
+      activeDays: commute.activeDays,
+      reminderEnabled: enabled,
+      reminderMinutesBefore: commute.reminderMinutesBefore,
+    );
     if (enabled && _notificationService.isSupported) {
       final allowed = await _notificationService.requestPermission();
       if (!allowed) throw const NotificationPermissionException();
@@ -853,5 +885,34 @@ class DailyCommuteService {
     if (id == null) throw ArgumentError('This reminder does not have an ID.');
     await repository.delete(id);
     await _notificationService.cancelDailyCommuteNotifications(commute);
+  }
+
+  Future<void> _ensureUniqueSettings({
+    required String? reminderId,
+    required String? savedRouteId,
+    required String origin,
+    required String destination,
+    required int arriveByMinutes,
+    required Set<int> activeDays,
+    required bool reminderEnabled,
+    required int reminderMinutesBefore,
+  }) async {
+    final commutes = await repository.loadAll();
+    final duplicate = commutes.any(
+      (commute) =>
+          commute.id != reminderId &&
+          commute.savedRouteId == savedRouteId &&
+          commute.origin.trim().toLowerCase() == origin.trim().toLowerCase() &&
+          commute.destination.trim().toLowerCase() ==
+              destination.trim().toLowerCase() &&
+          commute.arriveByMinutes == arriveByMinutes &&
+          commute.activeDays.length == activeDays.length &&
+          commute.activeDays.containsAll(activeDays) &&
+          commute.reminderEnabled == reminderEnabled &&
+          commute.reminderMinutesBefore == reminderMinutesBefore,
+    );
+    if (duplicate) {
+      throw StateError('An identical Daily Commute already exists.');
+    }
   }
 }

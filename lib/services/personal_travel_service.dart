@@ -430,6 +430,9 @@ class TravelHistoryEntry {
     required this.departureTime,
     required this.createdAt,
     required this.lineName,
+    this.durationMinutes = 0,
+    this.estimatedArrivalTime = '',
+    this.transitSteps = const [],
   });
 
   factory TravelHistoryEntry.fromJson(Map<String, dynamic> json) {
@@ -449,12 +452,25 @@ class TravelHistoryEntry {
       lineName = chosen?['name']?.toString() ?? 'Transit';
     }
 
+    final transitSteps = steps is List
+        ? steps
+              .whereType<Map>()
+              .map(
+                (step) =>
+                    TravelHistoryStep.fromJson(Map<String, dynamic>.from(step)),
+              )
+              .toList(growable: false)
+        : const <TravelHistoryStep>[];
+
     return TravelHistoryEntry(
       origin: json['origin']?.toString() ?? 'Unknown',
       destination: json['destination']?.toString() ?? 'Unknown',
       fare: (json['fare'] as num?)?.toDouble() ?? 0,
       currency: json['currency']?.toString() ?? 'MYR',
       departureTime: json['departure_time']?.toString() ?? '',
+      estimatedArrivalTime: json['estimated_arrival_time']?.toString() ?? '',
+      durationMinutes: (json['duration_minutes'] as num?)?.toInt() ?? 0,
+      transitSteps: transitSteps,
       createdAt:
           DateTime.tryParse(json['created_at']?.toString() ?? '')?.toLocal() ??
           DateTime.now(),
@@ -469,6 +485,32 @@ class TravelHistoryEntry {
   final String departureTime;
   final DateTime createdAt;
   final String lineName;
+  final int durationMinutes;
+  final String estimatedArrivalTime;
+  final List<TravelHistoryStep> transitSteps;
+}
+
+class TravelHistoryStep {
+  const TravelHistoryStep({
+    required this.mode,
+    required this.name,
+    required this.duration,
+    required this.description,
+  });
+
+  factory TravelHistoryStep.fromJson(Map<String, dynamic> json) {
+    return TravelHistoryStep(
+      mode: json['mode']?.toString() ?? 'Transit',
+      name: json['name']?.toString() ?? 'Transit',
+      duration: json['duration']?.toString() ?? '',
+      description: (json['description'] ?? json['desc'])?.toString() ?? '',
+    );
+  }
+
+  final String mode;
+  final String name;
+  final String duration;
+  final String description;
 }
 
 class RoutineSuggestion {

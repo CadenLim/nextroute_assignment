@@ -212,6 +212,78 @@ Future<void> launch(WidgetTester tester, Widget screen) async {
 }
 
 void main() {
+  test('travel history restores the saved journey details', () {
+    final entry = TravelHistoryEntry.fromJson({
+      'origin': 'TAMAN BUNGA RAYA',
+      'destination': 'UTAR PINTU 2',
+      'fare': 5.25,
+      'currency': 'MYR',
+      'duration_minutes': 32,
+      'departure_time': '09:37',
+      'estimated_arrival_time': '10:09',
+      'created_at': '2026-09-07T09:37:00+08:00',
+      'transit_steps': [
+        {
+          'mode': 'Bus',
+          'name': '250 via Wangsa Maju',
+          'duration': '27 min',
+          'desc': 'Board at Taman Bunga Raya',
+        },
+      ],
+    });
+
+    expect(entry.durationMinutes, 32);
+    expect(entry.estimatedArrivalTime, '10:09');
+    expect(entry.transitSteps, hasLength(1));
+    expect(entry.transitSteps.single.name, '250 via Wangsa Maju');
+    expect(entry.transitSteps.single.description, 'Board at Taman Bunga Raya');
+  });
+
+  testWidgets('tapping a travel history row opens journey details', (
+    tester,
+  ) async {
+    final createdAt = DateTime(2026, 9, 7, 9, 37);
+    final historyEntry = TravelHistoryEntry(
+      origin: 'TAMAN BUNGA RAYA',
+      destination: 'UTAR PINTU 2',
+      fare: 5.25,
+      currency: 'MYR',
+      departureTime: '09:37',
+      estimatedArrivalTime: '10:09',
+      durationMinutes: 32,
+      createdAt: createdAt,
+      lineName: '250 via Wangsa Maju',
+      transitSteps: const [
+        TravelHistoryStep(
+          mode: 'Bus',
+          name: '250 via Wangsa Maju',
+          duration: '27 min',
+          description: 'Board at Taman Bunga Raya',
+        ),
+      ],
+    );
+    await launch(
+      tester,
+      PersonalTravelScreen(
+        service: ProfileServiceStub(history: [historyEntry]),
+        savedRoutesRepository: MemoryRoutes(),
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('open-travel-history')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(Key('history-trip-${createdAt.toIso8601String()}')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Trip Details'), findsOneWidget);
+    expect(find.text('COMPLETED'), findsOneWidget);
+    expect(find.text('32 min'), findsOneWidget);
+    expect(find.text('RM 5.25'), findsWidgets);
+    expect(find.text('250 via Wangsa Maju'), findsWidgets);
+  });
+
   test('saved place keeps station data and resolves current GTFS IDs', () {
     final original = SavedPlace(
       type: SavedPlaceType.home,

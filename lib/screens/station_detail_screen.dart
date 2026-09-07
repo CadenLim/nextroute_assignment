@@ -108,22 +108,6 @@ class _InformationTab extends StatelessWidget {
         station.lines.join(', '),
         const Color(0xFF2563EB),
       ),
-      _InfoCard(
-        Icons.storage_outlined,
-        'Data source',
-        station.sources
-            .map((source) => 'data.gov.my GTFS ${source.replaceAll('_', ' ')}')
-            .join('\n'),
-        const Color(0xFF475569),
-      ),
-      const Padding(
-        padding: EdgeInsets.only(top: 2),
-        child: Text(
-          'Address is resolved from OpenStreetMap only when this page is '
-              'opened. Coordinates remain the navigation destination.',
-          style: TextStyle(color: Color(0xFF64748B), height: 1.4),
-        ),
-      ),
     ],
   );
 }
@@ -385,91 +369,98 @@ class _DepartureCard extends StatelessWidget {
     margin: const EdgeInsets.only(bottom: 12),
     child: Padding(
       padding: const EdgeInsets.all(16),
-      child: Row(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            constraints: const BoxConstraints(minWidth: 48),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              color: _blue,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Text(
-              group.route,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w800,
+          Row(
+            children: [
+              Container(
+                constraints: const BoxConstraints(minWidth: 48),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: _blue,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  group.route,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
               ),
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
                   group.destination,
                   style: const TextStyle(
                     color: _ink,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
-                if (group.frequencyNotes.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  ...group.frequencyNotes
-                      .map(
-                        (note) => Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Row(
-                        children: [
-                          const Icon(
-                            Icons.schedule_outlined,
-                            size: 16,
-                            color: Color(0xFF64748B),
-                          ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              note,
-                              style: const TextStyle(
-                                color: Color(0xFF64748B),
-                                fontSize: 13,
-                              ),
-                            ),
-                          ),
-                        ],
+              ),
+            ],
+          ),
+          if (group.frequencyNotes.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            ...group.frequencyNotes.map(
+              (note) => Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(top: 2),
+                      child: Icon(
+                        Icons.schedule_outlined,
+                        size: 16,
+                        color: Color(0xFF64748B),
                       ),
                     ),
-                  ),
-                ],
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: group.times.map((time) {
-                    return Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFEFF6FF),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
+                    const SizedBox(width: 8),
+                    Expanded(
                       child: Text(
-                        time,
+                        note,
+                        softWrap: true,
                         style: const TextStyle(
-                          color: _blue,
-                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF64748B),
+                          fontSize: 13,
+                          height: 1.35,
                         ),
                       ),
-                    );
-                  }).toList(),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
+          ],
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: group.times.map((time) {
+              return Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEFF6FF),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  time,
+                  style: const TextStyle(
+                    color: _blue,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              );
+            }).toList(),
           ),
         ],
       ),

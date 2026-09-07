@@ -505,6 +505,38 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
     }
   }
 
+  Future<void> _removeSavedRoute(Map<String, dynamic> route) async {
+    if (_isSavingRoute) return;
+    if (_originGtfsStation == null || _destinationGtfsStation == null) return;
+    final draft = _routeToSave(route, '');
+    setState(() => _isSavingRoute = true);
+    try {
+      final repository = _savedRoutesRepository ??= SupabaseSavedRoutesRepository();
+      final routes = await repository.load();
+      final saved = routes
+          .where((candidate) => candidate.routeKey == draft.routeKey && candidate.id != null)
+          .firstOrNull;
+      if (saved == null) {
+        if (mounted) setState(() => _savedRouteKeys.remove(draft.routeKey));
+        return;
+      }
+      await repository.delete(saved.id!);
+      if (!mounted) return;
+      setState(() => _savedRouteKeys.remove(draft.routeKey));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Route removed from Favourite Routes.')),
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to remove route. Please try again.')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSavingRoute = false);
+    }
+  }
+
   void _onSearchQueryChanged(String query) {
     setState(() {
       _filteredStations = _allStations
@@ -737,6 +769,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
 
   Future<void> _completeNavigation({
     required BuildContext modalContext,
+    required Map<String, dynamic> route,
     required bool signedIn,
     required double fare,
     required int totalMins,
@@ -756,6 +789,10 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
           departureTime: departTime,
           estimatedArrivalTime: arriveTime,
           transitSteps: transitSteps,
+          originStation: _originGtfsStation,
+          destinationStation: _destinationGtfsStation,
+          routeSignature: (route['sig'] ?? '').toString(),
+          lineName: (route['name'] ?? _getLineDetails(route)['name']).toString(),
         );
         await _loadRecentJourneys();
       }
@@ -890,6 +927,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                     ),
                     onPressed: () => _completeNavigation(
                       modalContext: context,
+                      route: route,
                       signedIn: signedIn,
                       fare: fare,
                       totalMins: totalMins,
@@ -1527,6 +1565,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
     if (_realRoutes.isEmpty) return const SizedBox();
 
     final route = _realRoutes[_selectedRouteIndex];
+    final isSaved = _savedRouteKeys.contains(_routeToSave(route, '').routeKey);
     final lineDetails = _getLineDetails(route);
 
     int transitMins = int.tryParse(route['duration'].toString().split(' ')[0]) ?? 20;
@@ -1638,18 +1677,21 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen> {
                     SizedBox(
                       width: double.infinity,
                       child: OutlinedButton.icon(
-                        onPressed: _isSavingRoute || _isStartingNavigation || _savedRouteKeys.contains(_routeToSave(route, '').routeKey)
+                        key: const Key('toggle-saved-route'),
+                        onPressed: _isSavingRoute || _isStartingNavigation
                             ? null
-                            : () => _saveRoute(route),
+                            : () => isSaved
+                                ? _removeSavedRoute(route)
+                                : _saveRoute(route),
                         icon: _isSavingRoute
                             ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                             : Icon(
-                          _savedRouteKeys.contains(_routeToSave(route, '').routeKey)
+                          isSaved
                               ? Icons.favorite
                               : Icons.favorite_border,
                         ),
                         label: Text(
-                          _savedRouteKeys.contains(_routeToSave(route, '').routeKey) ? 'Saved' : 'Save route',
+                          isSaved ? 'Saved' : 'Save route',
                         ),
                       ),
                     ),

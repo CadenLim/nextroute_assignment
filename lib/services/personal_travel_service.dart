@@ -433,12 +433,15 @@ class TravelHistoryEntry {
     this.durationMinutes = 0,
     this.estimatedArrivalTime = '',
     this.transitSteps = const [],
+    this.originStation,
+    this.destinationStation,
+    this.routeSignature = '',
   });
 
   factory TravelHistoryEntry.fromJson(Map<String, dynamic> json) {
-    var lineName = 'Transit';
+    var lineName = json['line_name']?.toString().trim() ?? '';
     final steps = json['transit_steps'];
-    if (steps is List && steps.isNotEmpty) {
+    if (lineName.isEmpty && steps is List && steps.isNotEmpty) {
       Map<String, dynamic>? chosen;
       for (final step in steps) {
         if (step is Map && step['mode']?.toString().toLowerCase() == 'rail') {
@@ -451,6 +454,7 @@ class TravelHistoryEntry {
       }
       lineName = chosen?['name']?.toString() ?? 'Transit';
     }
+    if (lineName.isEmpty) lineName = 'Transit';
 
     final transitSteps = steps is List
         ? steps
@@ -471,6 +475,9 @@ class TravelHistoryEntry {
       estimatedArrivalTime: json['estimated_arrival_time']?.toString() ?? '',
       durationMinutes: (json['duration_minutes'] as num?)?.toInt() ?? 0,
       transitSteps: transitSteps,
+      originStation: _historyStation(json['origin_station']),
+      destinationStation: _historyStation(json['destination_station']),
+      routeSignature: json['route_signature']?.toString() ?? '',
       createdAt:
           DateTime.tryParse(json['created_at']?.toString() ?? '')?.toLocal() ??
           DateTime.now(),
@@ -488,6 +495,23 @@ class TravelHistoryEntry {
   final int durationMinutes;
   final String estimatedArrivalTime;
   final List<TravelHistoryStep> transitSteps;
+  final StationModel? originStation;
+  final StationModel? destinationStation;
+  final String routeSignature;
+
+  bool get hasReusableRoute =>
+      originStation != null &&
+      destinationStation != null &&
+      routeSignature.trim().isNotEmpty;
+
+  static StationModel? _historyStation(Object? value) {
+    if (value is! Map) return null;
+    try {
+      return SavedRoute._stationFromJson(Map<String, dynamic>.from(value));
+    } catch (_) {
+      return null;
+    }
+  }
 }
 
 class TravelHistoryStep {
@@ -520,6 +544,7 @@ class RoutineSuggestion {
     required this.tripCount,
     required this.commonWeekdays,
     required this.mostRecentTrip,
+    this.sourceTrip,
   });
 
   final String origin;
@@ -527,8 +552,18 @@ class RoutineSuggestion {
   final int tripCount;
   final Set<int> commonWeekdays;
   final DateTime mostRecentTrip;
+  final TravelHistoryEntry? sourceTrip;
 
   String get routeKey => SmartRoutineService.routeKey(origin, destination);
+}
+
+class RoutineRouteUnavailableException implements Exception {
+  const RoutineRouteUnavailableException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 class SmartRoutineService {
@@ -586,15 +621,16 @@ class SmartRoutineService {
     if (candidates.isEmpty) return null;
 
     final trips = candidates.first;
-    final latest = trips
-        .map((trip) => trip.createdAt)
-        .reduce((left, right) => left.isAfter(right) ? left : right);
+    final latestTrip = trips.reduce(
+      (left, right) => left.createdAt.isAfter(right.createdAt) ? left : right,
+    );
     return RoutineSuggestion(
-      origin: trips.first.origin,
-      destination: trips.first.destination,
+      origin: latestTrip.origin,
+      destination: latestTrip.destination,
       tripCount: trips.length,
       commonWeekdays: trips.map((trip) => trip.createdAt.weekday).toSet(),
-      mostRecentTrip: latest,
+      mostRecentTrip: latestTrip.createdAt,
+      sourceTrip: latestTrip,
     );
   }
 
@@ -603,18 +639,32 @@ class SmartRoutineService {
     final existing = _matchingRoute(routes, suggestion);
     if (existing != null) return existing;
 
+    final sourceTrip = suggestion.sourceTrip;
+    if (sourceTrip?.hasReusableRoute == true) {
+      final draft = SavedRoute(
+        name: _favouriteName(suggestion.origin, suggestion.destination),
+        origin: sourceTrip!.originStation!,
+        destination: sourceTrip.destinationStation!,
+        signature: sourceTrip.routeSignature,
+        lineName: sourceTrip.lineName,
+      );
+      return _saveAndReload(draft);
+    }
+
     final stations = await _apiService.loadAllStations();
     final origin = _matchingStation(stations, suggestion.origin);
     final destination = _matchingStation(stations, suggestion.destination);
     if (origin == null || destination == null) {
-      throw StateError(
+      throw const RoutineRouteUnavailableException(
         'This route can no longer be matched to the current station list. '
         'Save it in Favourite Routes first.',
       );
     }
     final routeOptions = await _apiService.findRoutes(origin, destination);
     if (routeOptions.isEmpty) {
-      throw StateError('No current route is available for this routine.');
+      throw const RoutineRouteUnavailableException(
+        'No current route is available for this routine.',
+      );
     }
     final option = routeOptions.first;
     final draft = SavedRoute(
@@ -624,8 +674,12 @@ class SmartRoutineService {
       signature: option['sig']?.toString() ?? '',
       lineName: option['name']?.toString() ?? 'Transit',
     );
+    return _saveAndReload(draft);
+  }
+
+  Future<SavedRoute> _saveAndReload(SavedRoute draft) async {
     await _savedRoutesRepository.save(draft);
-    routes = await _savedRoutesRepository.load();
+    final routes = await _savedRoutesRepository.load();
     final saved = routes
         .where((route) => route.routeKey == draft.routeKey)
         .firstOrNull;

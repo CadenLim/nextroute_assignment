@@ -405,18 +405,16 @@ CrowdResult predictCrowd(int weekday, int minutesOfDay, double magnitudeFactor) 
 String getAiInsight(String station, CrowdLevel level, TimeOfDay time, int weekday) {
   final isWeekend = weekday == DateTime.saturday || weekday == DateTime.sunday;
   final t = time.format24Hour();
-  if (isWeekend) {
-    return '$station sees quiet weekend traffic at $t, based on real historical weekend averages. No significant congestion expected.';
-  }
+  final dayContext = isWeekend ? 'weekend' : 'weekday';
   switch (level) {
     case CrowdLevel.critical:
-      return 'Heavy commuters are expected at $station around $t, combining typical rush-hour timing with $station\'s real historical ridership volume for this day. Platform crowding is likely severe.';
+      return 'Very high crowd levels are expected at $station around $t on this $dayContext. Significant crowding is likely, so plan for extra time and possible waits to board.';
     case CrowdLevel.high:
-      return 'Passenger volume is expected to be high at $station around $t. Platforms will likely be congested and boarding may require waiting for the next train.';
+      return 'Higher crowd levels are expected at $station around $t on this $dayContext. Noticeable crowding is likely on platforms, so boarding may require waiting for the next train.';
     case CrowdLevel.moderate:
-      return 'Moderate passenger flow expected at $station around $t. Some crowding on platforms but conditions should remain manageable.';
+      return 'Moderate crowd levels are expected at $station around $t on this $dayContext. Some crowding may occur, but conditions should remain manageable.';
     case CrowdLevel.low:
-      return 'Light traffic expected at $station around $t. Comfortable boarding and ample seating should be available.';
+      return 'Crowd levels are expected to be low at $station around $t on this $dayContext. Comfortable boarding and ample seating should be available.';
   }
 }
 
@@ -448,32 +446,34 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
   // ── Tab 1: Crowd Estimate state ──
   String? _station;
-  int _weekday = DateTime.monday;
-  TimeOfDay _time = const TimeOfDay(hour: 7, minute: 30);
+  int? _weekday; // null until the user picks a day — no default selection
+  TimeOfDay? _time; // null until the user picks a time — no default selection
   CrowdResult? _crowdResult;
   double? _crowdResultDayAvg;
   double? _crowdResultFactor;
   int? _crowdResultRecordCount;
+  String? _crowdValidationMsg; // shown when Predict is pressed with fields missing
 
   // ── Tab 2: Peak Hours state ──
   String? _peakStation;
-  int _peakWeekday = DateTime.monday;
+  int? _peakWeekday; // null until the user picks a day — no default selection
   List<MapEntry<int, CrowdResult>>? _peakSlots;
   double? _peakDayAvg;
   double? _peakFactor;
+  String? _peakValidationMsg; // shown when Show Peak Pattern is pressed with fields missing
 
   // ── Tab 3: Ridership History state ──
   String? _historyStation;
   List<RidershipRecord>? _historyData;
   DateTime? _historyMonthFilter; // null = show all months
-  int? _historyDayOfWeekFilter; // null = All, else DateTime.monday..DateTime.sunday
-  final ScrollController _historyScrollController = ScrollController();
+  String? _historyValidationMsg; // shown when Load History is pressed with no station
 
-  // Calendar Heatmap (still Tab 3 / History, own independent month picker —
-  // deliberately separate from _historyMonthFilter above so switching the
-  // heatmap's month never affects the Summary/Trend/Weekly/Monthly sections
-  // above it, and vice versa).
-  DateTime? _heatmapMonth; // null = default to the most recent available month
+  // Calendar Heatmap (still Tab 3 / History) — when the History Filters
+  // month is "All months" the grid shows one month at a time, stepped
+  // with left/right arrows via this index into that station's available
+  // months. When a specific month is selected in History Filters, that
+  // month is shown directly and the arrows are hidden.
+  int? _heatmapAllMonthsIndex;
   _HeatmapSelection? _heatmapSelectedDay; // last tapped day, null until tapped
 
   // ── Tab 4: Connections (O-D) state ──
@@ -484,6 +484,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   int? _connIncoming;
   List<MapEntry<String, int>>? _connBusiestNetwork;
   bool _loadingConnections = false;
+  String? _connValidationMsg; // shown when Show Connections is pressed with no station
 
   // ── Tab 5: Station Crowd Ranking state ──
   // Real per-station ridership from Supabase's "station_ridership_totals"
@@ -536,12 +537,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     _loadData();
   }
 
-  @override
-  void dispose() {
-    _historyScrollController.dispose();
-    super.dispose();
-  }
-
   Future<void> _loadData({int attempt = 0}) async {
     try {
       final stations = await _api.getStationList();
@@ -552,10 +547,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         _stations = stations;
         _stationsWithOdData = odStations.toSet();
         _networkAverage = networkAvg;
-        _station = stations.isNotEmpty ? stations.first : null;
-        _peakStation = _station;
-        _historyStation = _station;
-        _connStation = _station;
+        // No auto-selected station — Crowd, Peak, Connections, and History
+        // all start with an empty "Select Station" field, same as
+        // Ranking/Compare, so the user always makes an explicit choice.
         _statsReady = stations.isNotEmpty;
         if (stations.isEmpty) _loadError = 'No station records found in the local dataset.';
       });
@@ -662,10 +656,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   }
 
   // Weekly Ridership Pattern (Tab 3): groups whatever real records are
-  // currently on screen (month-filtered, but NOT day-of-week filtered, so
-  // all seven days can be compared side by side) by day-of-week and
-  // averages the real ridership for each day. Purely derived from actual
-  // records — no modelling, no fixed/hardcoded ridership figures. Days
+  // currently on screen (month-filtered) by day-of-week and averages the
+  // real ridership for each day. Purely derived from actual records — no
+  // modelling, no fixed/hardcoded ridership figures. Days
   // with no records in the current month filter simply don't appear.
   List<({int weekday, double avg, int count})> _computeWeeklyPattern(
       List<RidershipRecord> records) {
@@ -766,32 +759,70 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   // are outside operating hours, so no crowd prediction is offered for
   // them — this only gates the Crowd Prediction tab's UI/flow; it does
   // not touch any calculation or dataset value.
-  bool get _isOutsideOperatingHours => _time.hour < 6;
+  bool get _isOutsideOperatingHours => _time != null && _time!.hour < 6;
 
   Future<void> _runCrowdEstimate() async {
     final station = _station;
-    if (station == null) return;
-    if (_isOutsideOperatingHours) return; // no service — nothing to predict
-    final dayAvg = await _api.getStationAverageForWeekday(station, _weekday);
+    final weekday = _weekday;
+    final time = _time;
+    // Required-field validation: never fall back to a default day/time —
+    // if anything's missing, tell the user and stop, without calculating.
+    final missing = <String>[
+      if (station == null) 'a station',
+      if (weekday == null) 'a day',
+      if (time == null) 'a time',
+    ];
+    if (missing.isNotEmpty) {
+      setState(() {
+        _crowdValidationMsg = 'Please select ${_joinMissing(missing)} to see the crowd estimate.';
+        _crowdResult = null;
+      });
+      return;
+    }
+    if (_isOutsideOperatingHours) {
+      setState(() => _crowdValidationMsg = null);
+      return; // no service — nothing to predict
+    }
+    final dayAvg = await _api.getStationAverageForWeekday(station!, weekday!);
     // Reuses the same daily-totals lookup that getStationAverageForWeekday
     // is built on, just to expose how many real records fed that average.
     final dailyTotals = await _api.getDailyTotalsForStation(station);
     if (!mounted) return;
-    final recordCount = dailyTotals.where((e) => e.key.weekday == _weekday).length;
-    final minutes = _time.hour * 60 + _time.minute;
+    final recordCount = dailyTotals.where((e) => e.key.weekday == weekday).length;
+    final minutes = time!.hour * 60 + time.minute;
     final factor = _magnitudeFactor(dayAvg);
     setState(() {
-      _crowdResult = predictCrowd(_weekday, minutes, factor);
+      _crowdValidationMsg = null;
+      _crowdResult = predictCrowd(weekday, minutes, factor);
       _crowdResultDayAvg = dayAvg;
       _crowdResultFactor = factor;
       _crowdResultRecordCount = recordCount;
     });
   }
 
+  // Joins a list of missing-field descriptions into a natural-language
+  // phrase, e.g. ["a station", "a day"] -> "a station and a day".
+  String _joinMissing(List<String> missing) {
+    if (missing.length == 1) return missing.first;
+    if (missing.length == 2) return '${missing[0]} and ${missing[1]}';
+    return '${missing.sublist(0, missing.length - 1).join(', ')}, and ${missing.last}';
+  }
+
   Future<void> _runPeakHours() async {
     final station = _peakStation;
-    if (station == null) return;
-    final dayAvg = await _api.getStationAverageForWeekday(station, _peakWeekday);
+    final weekday = _peakWeekday;
+    final missing = <String>[
+      if (station == null) 'a station',
+      if (weekday == null) 'a day',
+    ];
+    if (missing.isNotEmpty) {
+      setState(() {
+        _peakValidationMsg = 'Please select ${_joinMissing(missing)} to see the peak pattern.';
+        _peakSlots = null;
+      });
+      return;
+    }
+    final dayAvg = await _api.getStationAverageForWeekday(station!, weekday!);
     if (!mounted) return;
     // Sample hours chosen to reflect Rapid KL's actual operating pattern:
     // service runs 06:00–24:00 (00:00–06:00 excluded, matching Tab 1's
@@ -802,9 +833,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     final hours = [6, 7, 8, 9, 12, 15, 17, 18, 19];
     final factor = _magnitudeFactor(dayAvg);
     final slots = hours
-        .map((h) => MapEntry(h, predictCrowd(_peakWeekday, h * 60, factor)))
+        .map((h) => MapEntry(h, predictCrowd(weekday, h * 60, factor)))
         .toList();
     setState(() {
+      _peakValidationMsg = null;
       _peakSlots = slots;
       _peakDayAvg = dayAvg;
       _peakFactor = factor;
@@ -813,27 +845,31 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
   Future<void> _runHistory() async {
     final station = _historyStation;
-    if (station == null) return;
+    if (station == null) {
+      setState(() => _historyValidationMsg = 'Please select a station to load ridership history.');
+      return;
+    }
     final data = await _api.getStationTotalRecords(station);
     if (!mounted) return;
     setState(() {
+      _historyValidationMsg = null;
       _historyData = data;
       _historyMonthFilter = null; // reset filter on fresh load
-      _historyDayOfWeekFilter = null; // reset filter on fresh load
-      _heatmapMonth = null; // reset heatmap to default to the latest month
       _heatmapSelectedDay = null; // clear any previously tapped day
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_historyScrollController.hasClients) {
-        _historyScrollController.jumpTo(_historyScrollController.position.maxScrollExtent);
-      }
+      _heatmapAllMonthsIndex = null; // reset calendar navigation on fresh load
     });
   }
 
   Future<void> _runConnections() async {
     final station = _connStation;
-    if (station == null) return;
-    setState(() => _loadingConnections = true);
+    if (station == null) {
+      setState(() => _connValidationMsg = 'Please select a station to show its connections.');
+      return;
+    }
+    setState(() {
+      _connValidationMsg = null;
+      _loadingConnections = true;
+    });
     final topDest = await _api.getTopDestinationsFrom(station, limit: 5);
     final topOrig = await _api.getTopOriginsInto(station, limit: 5);
     final outgoing = await _api.getTotalOutgoing(station);
@@ -949,7 +985,18 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   }
 
   void _onRankingPeriodChanged(_RankingPeriod period) {
-    setState(() => _rankingPeriod = period);
+    setState(() {
+      _rankingPeriod = period;
+      // Month/Day with nothing picked yet must not keep showing results
+      // from whatever period was previously active — clear them and wait
+      // for the picker instead of displaying stale data.
+      final needsSelection = (period == _RankingPeriod.month && _rankingMonth == null) ||
+          (period == _RankingPeriod.day && _rankingDay == null);
+      if (needsSelection) {
+        _rankingData = null;
+        _rankingError = null;
+      }
+    });
     // Overall and an already-picked Month/Day can fetch immediately;
     // Month/Day with nothing picked yet just wait for the picker.
     if (period == _RankingPeriod.overall ||
@@ -1035,7 +1082,18 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   }
 
   void _onComparePeriodChanged(_RankingPeriod period) {
-    setState(() => _comparePeriod = period);
+    setState(() {
+      _comparePeriod = period;
+      // Month/Day with nothing picked yet must not keep showing results
+      // from whatever period was previously active.
+      final needsSelection = (period == _RankingPeriod.month && _compareMonth == null) ||
+          (period == _RankingPeriod.day && _compareDay == null);
+      if (needsSelection) {
+        _compareDataA = null;
+        _compareDataB = null;
+        _compareError = null;
+      }
+    });
     if (period == _RankingPeriod.overall ||
         (period == _RankingPeriod.month && _compareMonth != null) ||
         (period == _RankingPeriod.day && _compareDay != null)) {
@@ -1063,11 +1121,13 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   }
 
   Future<void> _pickTime() async {
-    final picked = await showTimePicker(context: context, initialTime: _time);
+    final picked = await showTimePicker(
+        context: context, initialTime: _time ?? const TimeOfDay(hour: 7, minute: 30));
     if (picked != null) {
       setState(() {
         _time = picked;
         _crowdResult = null;
+        _crowdValidationMsg = null;
       });
     }
   }
@@ -1148,25 +1208,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         ),
         body: Column(
           children: [
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
-              color: Colors.green.withValues(alpha: 0.1),
-              child: Row(
-                children: [
-                  const Icon(Icons.check_circle, color: Colors.green, size: 14),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Loaded ${_stations.length} stations · ${_stationsWithOdData.length} with O-D connection data',
-                      style: const TextStyle(
-                          color: Colors.green, fontSize: 12, fontWeight: FontWeight.bold),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            ),
             Expanded(
               child: TabBarView(
                 children: [
@@ -1266,6 +1307,33 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
+  // Consistent "please complete required fields" warning: shown instead
+  // of calculating or displaying results when a required input is
+  // missing. Never fills the gap with a default value — only tells the
+  // user what to pick.
+  Widget _validationMessage(String message) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
+      decoration: BoxDecoration(
+        color: Colors.orange.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.error_outline, size: 16, color: Colors.orange),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(message,
+                style: const TextStyle(fontSize: 12.5, color: Colors.deepOrange, fontWeight: FontWeight.w500)),
+          ),
+        ],
+      ),
+    );
+  }
+
   // ── Tab 1 UI ───────────────────────────────────────────────────────────
 
   // Sections (mirrors the Connections tab pattern):
@@ -1285,7 +1353,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 4),
           const Text(
-            'Real historical day-of-week average for this station, applied to a modelled time-of-day pattern.',
+            'Estimated crowd level based on historical ridership patterns.',
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: _sectionGap),
@@ -1301,17 +1369,18 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   label: 'Station',
                   stations: _stations,
                   value: _station,
-                  onChanged: (val) => setState(() { _station = val; _crowdResult = null; }),
+                  onChanged: (val) => setState(() { _station = val; _crowdResult = null; _crowdValidationMsg = null; }),
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<int>(
                   value: _weekday,
+                  hint: const Text('Select Day'),
                   decoration: InputDecoration(
                       labelText: 'Day', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
                   items: List.generate(7, (i) => i + 1)
                       .map((w) => DropdownMenuItem(value: w, child: Text(kWeekdayLabels[w - 1])))
                       .toList(),
-                  onChanged: (val) => setState(() { _weekday = val!; _crowdResult = null; }),
+                  onChanged: (val) => setState(() { _weekday = val; _crowdResult = null; _crowdValidationMsg = null; }),
                 ),
                 const SizedBox(height: 12),
                 InkWell(
@@ -1319,34 +1388,39 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   child: InputDecorator(
                     decoration: InputDecoration(
                         labelText: 'Time', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-                    child: Text(_time.format(context), style: const TextStyle(fontSize: 16)),
+                    child: Text(
+                      _time != null ? _time!.format(context) : 'Select Time',
+                      style: TextStyle(fontSize: 16, color: _time != null ? Colors.black87 : Colors.black45),
+                    ),
                   ),
                 ),
-                const SizedBox(height: 8),
-                Builder(builder: (context) {
-                  final category = timeCategoryFor(_time.hour * 60 + _time.minute);
-                  return Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: category.color.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: category.color.withValues(alpha: 0.25)),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(Icons.schedule, size: 14, color: category.color),
-                        const SizedBox(width: 6),
-                        Text('Time Category: ',
-                            style: TextStyle(fontSize: 12, color: category.color, fontWeight: FontWeight.w500)),
-                        Text(category.label,
-                            style: TextStyle(fontSize: 12, color: category.color, fontWeight: FontWeight.bold)),
-                        const SizedBox(width: 6),
-                        Text('(${category.rangeLabel})',
-                            style: TextStyle(fontSize: 11, color: category.color.withValues(alpha: 0.75))),
-                      ],
-                    ),
-                  );
-                }),
+                if (_time != null) ...[
+                  const SizedBox(height: 8),
+                  Builder(builder: (context) {
+                    final category = timeCategoryFor(_time!.hour * 60 + _time!.minute);
+                    return Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: category.color.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: category.color.withValues(alpha: 0.25)),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.schedule, size: 14, color: category.color),
+                          const SizedBox(width: 6),
+                          Text('Time Category: ',
+                              style: TextStyle(fontSize: 12, color: category.color, fontWeight: FontWeight.w500)),
+                          Text(category.label,
+                              style: TextStyle(fontSize: 12, color: category.color, fontWeight: FontWeight.bold)),
+                          const SizedBox(width: 6),
+                          Text('(${category.rangeLabel})',
+                              style: TextStyle(fontSize: 11, color: category.color.withValues(alpha: 0.75))),
+                        ],
+                      ),
+                    );
+                  }),
+                ],
                 const SizedBox(height: 16),
                 if (_isOutsideOperatingHours) ...[
                   Container(
@@ -1383,6 +1457,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     onPressed: _runCrowdEstimate,
                     label: const Text('Predict Crowd', style: TextStyle(color: Colors.white, fontSize: 16)),
                   ),
+                  if (_crowdValidationMsg != null) ...[
+                    const SizedBox(height: 12),
+                    _validationMessage(_crowdValidationMsg!),
+                  ],
                 ],
               ],
             ),
@@ -1446,10 +1524,18 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  Text(
-                    'Based on $_station\'s real average ${kWeekdayLabels[_weekday - 1]} ridership '
-                        '(~${(_crowdResultDayAvg ?? 0).round()} trips in local dataset).',
-                    style: const TextStyle(fontSize: 11, color: Colors.black45),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: _crowdResult!.level.color.withValues(alpha: 0.05),
+                      border: Border.all(color: _crowdResult!.level.color.withValues(alpha: 0.3)),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      getAiInsight(_station!, _crowdResult!.level, _time!, _weekday!),
+                      style: TextStyle(color: _crowdResult!.level.color, fontSize: 13, fontWeight: FontWeight.w500),
+                    ),
                   ),
                 ],
               ),
@@ -1464,40 +1550,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             ),
             const SizedBox(height: _sectionGap),
 
-            // D. Crowd alert insight
-            _sectionCard(
-              title: 'CROWD ALERT INSIGHT',
-              icon: Icons.notifications_active_outlined,
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: _crowdResult!.level.color.withValues(alpha: 0.05),
-                  border: Border.all(color: _crowdResult!.level.color.withValues(alpha: 0.3)),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  getAiInsight(_station!, _crowdResult!.level, _time, _weekday),
-                  style: TextStyle(color: _crowdResult!.level.color, fontSize: 13, fontWeight: FontWeight.w500),
-                ),
-              ),
-            ),
-            const SizedBox(height: _sectionGap),
-
-            // E. Calculation Breakdown
-            _sectionCard(
-              title: 'CALCULATION BREAKDOWN',
-              icon: Icons.calculate_outlined,
-              child: _buildCalculationBreakdown(),
-            ),
+            // D. Calculation Breakdown — collapsed by default; expand to
+            // see the step-by-step math behind the estimate.
+            _buildCalculationBreakdownCard(),
           ],
 
-          const SizedBox(height: _sectionGap),
-          _sectionCard(
-            title: 'DATA SOURCE / METHOD',
-            icon: Icons.info_outline,
-            child: _buildMethodologyCard(),
-          ),
           const SizedBox(height: _sectionGap),
           _sectionCard(
             title: 'CROWD LEVEL LEGEND',
@@ -1511,13 +1568,38 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
   // ── Calculation breakdown / methodology / legend (explainability) ──────
 
+  // "How is this estimated?" — collapsed by default. Wraps the existing
+  // step-by-step breakdown in a tappable, expandable card so it stays out
+  // of the way until someone wants to see the math.
+  Widget _buildCalculationBreakdownCard() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.03),
+        borderRadius: BorderRadius.circular(_sectionCardRadius),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.15)),
+      ),
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          initiallyExpanded: false,
+          tilePadding: const EdgeInsets.symmetric(horizontal: _sectionCardPadding, vertical: 2),
+          childrenPadding:
+          const EdgeInsets.fromLTRB(_sectionCardPadding, 0, _sectionCardPadding, _sectionCardPadding),
+          leading: const Icon(Icons.calculate_outlined, size: 18, color: Colors.black54),
+          title: const Text('How is this estimated?',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+          children: [_buildCalculationBreakdown()],
+        ),
+      ),
+    );
+  }
+
   Widget _buildCalculationBreakdown() {
     final dayAvg = _crowdResultDayAvg ?? 0;
     final factor = _crowdResultFactor ?? 0;
-    final recordCount = _crowdResultRecordCount ?? 0;
-    final category = timeCategoryFor(_time.hour * 60 + _time.minute);
-    final dayLabel = kWeekdayLabels[_weekday - 1];
-    final baseline = _baselineOccupancy(_weekday, _time.hour * 60 + _time.minute);
+    final dayLabel = kWeekdayLabels[_weekday! - 1];
+    final baseline = _baselineOccupancy(_weekday!, _time!.hour * 60 + _time!.minute);
     final occupancy = _crowdResult!.occupancy;
 
     return Column(
@@ -1533,7 +1615,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             border: Border.all(color: const Color(0xFF4F46E5).withValues(alpha: 0.2)),
           ),
           child: const Text(
-            'Estimated Occupancy = Time Category Baseline × Relative Station Factor',
+            'Estimated crowd = time-of-day pattern × network comparison',
             style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF4F46E5)),
           ),
         ),
@@ -1541,33 +1623,28 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
         _breakdownStep(
           step: 1,
-          title: 'Historical Station Average',
+          title: 'Historical ridership',
           lines: [
             '$dayLabel average: ${dayAvg.round()} trips/day',
-            '($recordCount historical records analysed)',
           ],
         ),
         _breakdownStep(
           step: 2,
-          title: 'Relative Station Factor',
+          title: 'Compared with network average',
           lines: [
             '${dayAvg.round()} ÷ ${_networkAverage.round()} = ${factor.toStringAsFixed(2)}x',
-            'This station is ${(factor * 100).round()}% as busy as the network average.',
           ],
         ),
         _breakdownStep(
           step: 3,
-          title: 'Time Category Baseline',
+          title: 'Time-of-day pattern',
           lines: [
-            'Time: ${_time.format(context)}',
-            'Baseline Occupancy: $baseline%',
-            '(${category.label} category, ${category.rangeLabel})',
-            'Baseline varies by exact time within a category to reflect the real rush-hour shape.',
+            '${_time!.format(context)} estimated baseline: $baseline%',
           ],
         ),
         _breakdownStep(
           step: 4,
-          title: 'Final Estimation',
+          title: 'Final estimate',
           lines: [
             '$baseline% × ${factor.toStringAsFixed(2)} = $occupancy%',
           ],
@@ -1576,7 +1653,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
         const Divider(height: 18),
         _breakdownRow(
-          'Final Estimated Occupancy',
+          'Estimated Crowd',
           '$occupancy%',
           emphasize: true,
           valueColor: _crowdResult!.level.color,
@@ -1614,7 +1691,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Step $step — $title',
+                Text(title,
                     style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black87)),
                 const SizedBox(height: 2),
                 ...lines.map((l) => Padding(
@@ -1657,9 +1734,16 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   // not the predicted occupancy for the selected time.
   Widget _buildStationDemandProfile() {
     final factor = _crowdResultFactor ?? 1.0;
-    final dayAvg = _crowdResultDayAvg ?? 0;
-    final dayLabel = kWeekdayLabels[_weekday - 1];
+    final dayLabel = kWeekdayLabels[_weekday! - 1];
     final (status, color, icon) = _demandInterpretation(factor);
+    final comparisonWord = factor < 0.95
+        ? 'lower'
+        : factor > 1.05
+        ? 'higher'
+        : 'similar';
+    final comparisonPhrase = comparisonWord == 'similar'
+        ? 'ridership similar to the average station'
+        : '$comparisonWord ridership than the average station';
 
     return Container(
       width: double.infinity,
@@ -1676,52 +1760,14 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             children: [
               Icon(icon, size: 15, color: color),
               const SizedBox(width: 6),
-              Text('$status (${factor.toStringAsFixed(2)}x)',
+              Text('$status (${factor.toStringAsFixed(2)}×)',
                   style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)),
             ],
           ),
           const SizedBox(height: 4),
           Text(
-            'Based on historical ridership data: $_station averages ${dayAvg.round()} trips/day '
-                'on ${dayLabel}s, vs the network-wide average.',
+            '$_station typically has $comparisonPhrase on ${dayLabel}s.',
             style: const TextStyle(fontSize: 11, color: Colors.black54),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMethodologyCard() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.blue.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.blue.withValues(alpha: 0.2)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.info_outline, size: 16, color: Colors.blue.shade700),
-          const SizedBox(width: 8),
-          Expanded(
-            child: RichText(
-              text: TextSpan(
-                style: TextStyle(fontSize: 12, color: Colors.blue.shade900, height: 1.5),
-                children: [
-                  const TextSpan(text: 'Data Source: ', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const TextSpan(text: 'Rapid Rail historical ridership dataset.\n'),
-                  const TextSpan(text: 'Method: ', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const TextSpan(
-                      text: 'Real daily ridership averages are combined with a rule-based '
-                          'commuter demand pattern to estimate crowd levels at different times of day. '),
-                  TextSpan(
-                      text: 'No machine learning model is used.',
-                      style: TextStyle(fontWeight: FontWeight.w600, color: Colors.blue.shade900)),
-                ],
-              ),
-            ),
           ),
         ],
       ),
@@ -1776,9 +1822,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 4),
           const Text(
-            'Based on historical station ridership and a rule-based commuter demand pattern. '
-                'The dataset contains daily totals only, so every hourly figure below is a modelled peak '
-                'estimate, not observed hourly ridership.',
+            'Identify the busiest predicted time periods based on historical ridership patterns.',
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: _sectionGap),
@@ -1794,17 +1838,18 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   label: 'Station',
                   stations: _stations,
                   value: _peakStation,
-                  onChanged: (val) => setState(() { _peakStation = val; _peakSlots = null; _peakDayAvg = null; _peakFactor = null; }),
+                  onChanged: (val) => setState(() { _peakStation = val; _peakSlots = null; _peakDayAvg = null; _peakFactor = null; _peakValidationMsg = null; }),
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<int>(
                   value: _peakWeekday,
+                  hint: const Text('Select Day'),
                   decoration: InputDecoration(
                       labelText: 'Day', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
                   items: List.generate(7, (i) => i + 1)
                       .map((w) => DropdownMenuItem(value: w, child: Text(kWeekdayLabels[w - 1])))
                       .toList(),
-                  onChanged: (val) => setState(() { _peakWeekday = val!; _peakSlots = null; _peakDayAvg = null; _peakFactor = null; }),
+                  onChanged: (val) => setState(() { _peakWeekday = val; _peakSlots = null; _peakDayAvg = null; _peakFactor = null; _peakValidationMsg = null; }),
                 ),
                 const SizedBox(height: 16),
                 ElevatedButton.icon(
@@ -1817,6 +1862,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   onPressed: _runPeakHours,
                   label: const Text('Show Peak Pattern', style: TextStyle(color: Colors.white, fontSize: 16)),
                 ),
+                if (_peakValidationMsg != null) ...[
+                  const SizedBox(height: 12),
+                  _validationMessage(_peakValidationMsg!),
+                ],
               ],
             ),
           ),
@@ -1832,7 +1881,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Container(
-                    height: 150,
+                    height: 176,
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     decoration: BoxDecoration(
                       color: Colors.grey.withValues(alpha: 0.05),
@@ -1846,19 +1895,12 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                         final hour = entry.key;
                         final result = entry.value;
                         final label = hour == 12 ? '12pm' : hour > 12 ? '${hour - 12}pm' : '${hour}am';
-                        return _buildTrendBar(label, result.occupancy / 100, result.level.color);
+                        return _buildTrendBar(label, result.occupancy / 100, result.level.color,
+                            tooltip: '$label: ${result.occupancy}% (${result.level.label})',
+                            valueLabel: '${result.occupancy}%');
                       }).toList(),
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  Builder(builder: (context) {
-                    final peak = _peakSlots!.reduce((a, b) => a.value.occupancy >= b.value.occupancy ? a : b);
-                    final label = peak.key == 12 ? '12pm' : peak.key > 12 ? '${peak.key - 12}pm' : '${peak.key}am';
-                    return Text(
-                      'Busiest modelled window for $_peakStation: around $label (${peak.value.level.label}, ~${peak.value.occupancy}% capacity).',
-                      style: const TextStyle(fontSize: 12, color: Colors.black54),
-                    );
-                  }),
                 ],
               ),
             ),
@@ -1888,12 +1930,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             ),
             const SizedBox(height: _sectionGap),
 
-            // F. Data Source / Method
-            _sectionCard(
-              title: 'DATA SOURCE / METHOD',
-              icon: Icons.info_outline,
-              child: _buildPeakMethodologyCard(),
-            ),
+            // F. How is this estimated? — collapsed by default.
+            _buildPeakMethodologyCard(),
           ],
         ],
       ),
@@ -1908,8 +1946,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   Widget _buildPeakSummaryCard() {
     final peak = _peakSlots!.reduce((a, b) => a.value.occupancy >= b.value.occupancy ? a : b);
     final category = timeCategoryFor(peak.key * 60);
-    final dayAvg = _peakDayAvg ?? 0;
-    final factor = _peakFactor ?? 0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1920,8 +1956,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             valueColor: peak.value.level.color),
         _breakdownRow('Crowd Level', peak.value.level.label,
             valueColor: peak.value.level.color),
-        _breakdownRow('Historical Day Average', '${dayAvg.round()} trips/day'),
-        _breakdownRow('Relative Station Factor', '${factor.toStringAsFixed(2)}x'),
       ],
     );
   }
@@ -1984,56 +2018,199 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
+  // "How is this estimated?" — collapsed by default, mirroring the same
+  // pattern used on the Crowd Estimate tab. Wraps the existing data
+  // source / methodology explanation so it stays out of the way until
+  // someone wants to read it.
   Widget _buildPeakMethodologyCard() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.blue.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.blue.withValues(alpha: 0.2)),
+        color: Colors.grey.withValues(alpha: 0.03),
+        borderRadius: BorderRadius.circular(_sectionCardRadius),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.15)),
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          initiallyExpanded: false,
+          tilePadding: const EdgeInsets.symmetric(horizontal: _sectionCardPadding, vertical: 2),
+          childrenPadding:
+          const EdgeInsets.fromLTRB(_sectionCardPadding, 0, _sectionCardPadding, _sectionCardPadding),
+          leading: const Icon(Icons.calculate_outlined, size: 18, color: Colors.black54),
+          title: const Text('How is this estimated?',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+          children: [_buildPeakMethodologyContent()],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPeakMethodologyContent() {
+    final dayAvg = _peakDayAvg ?? 0;
+    final factor = _peakFactor ?? 0;
+    final dayLabel = _peakWeekday != null ? kWeekdayLabels[_peakWeekday! - 1] : '';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Formula summary, always visible at a glance.
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+          decoration: BoxDecoration(
+            color: const Color(0xFF4F46E5).withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFF4F46E5).withValues(alpha: 0.2)),
+          ),
+          child: const Text(
+            'Estimated crowd = time-of-day baseline × network comparison',
+            style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF4F46E5)),
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        _breakdownStep(
+          step: 1,
+          title: 'Historical ridership',
+          lines: [
+            '$dayLabel average: ${dayAvg.round()} trips/day',
+          ],
+        ),
+        _breakdownStep(
+          step: 2,
+          title: 'Compared with network average',
+          lines: [
+            '${dayAvg.round()} ÷ ${_networkAverage.round()} = ${factor.toStringAsFixed(2)}x',
+          ],
+        ),
+        _breakdownStep(
+          step: 3,
+          title: 'Time-of-day baseline, per sampled hour',
+          lines: [
+            'Each hour has its own fixed rule-based baseline % — weekday and weekend patterns differ. '
+                'The one for $dayLabel is multiplied by the ${factor.toStringAsFixed(2)}x factor above to '
+                'get the final estimate shown in the chart.',
+          ],
+          isLast: true,
+        ),
+        const SizedBox(height: 10),
+        _buildPeakBaselineTable(),
+        const SizedBox(height: 10),
+        const Text(
+          'These are modelled peak estimates, not observed hourly ridership — the source dataset only '
+              'records daily totals, so the hourly baseline shape is a rule-based assumption informed by '
+              'Rapid KL\'s published operating hours and rush-hour windows, not measured hourly data.',
+          style: TextStyle(fontSize: 11, color: Colors.black54, fontStyle: FontStyle.italic),
+        ),
+      ],
+    );
+  }
+
+  // Table of the actual rule-based baseline % used for each sampled hour
+  // (before the network-comparison factor is applied), next to the final
+  // occupancy % shown in the chart. Values are read straight from
+  // _baselineOccupancy() and the existing _peakSlots — nothing new computed.
+  // _baselineOccupancy only branches on weekday-vs-weekend (not per specific
+  // weekday), so "Monday" stands in for any weekday and "Saturday" for any
+  // weekend day when computing the reference columns below.
+  Widget _buildPeakBaselineTable() {
+    final weekday = _peakWeekday!;
+    final isWeekend = weekday == DateTime.saturday || weekday == DateTime.sunday;
+    final accent = const Color(0xFF4F46E5);
+    TextStyle colStyle(bool selected) => TextStyle(
+        fontSize: 12,
+        color: selected ? accent : Colors.black45,
+        fontWeight: selected ? FontWeight.bold : FontWeight.normal);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Icon(Icons.info_outline, size: 16, color: Colors.blue.shade700),
-          const SizedBox(width: 8),
-          Expanded(
-            child: RichText(
-              text: TextSpan(
-                style: TextStyle(fontSize: 12, color: Colors.blue.shade900, height: 1.5),
+          Row(
+            children: [
+              const Expanded(
+                  flex: 2,
+                  child: Text('Hour',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black54))),
+              Expanded(
+                  flex: 3,
+                  child: Text('Weekday',
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: isWeekend ? Colors.black54 : accent))),
+              Expanded(
+                  flex: 3,
+                  child: Text('Weekend',
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: isWeekend ? accent : Colors.black54))),
+              const Expanded(
+                  flex: 3,
+                  child: Text('Final',
+                      textAlign: TextAlign.right,
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black54))),
+            ],
+          ),
+          const Divider(height: 10),
+          ..._peakSlots!.map((entry) {
+            final hour = entry.key;
+            final weekdayBaseline = _baselineOccupancy(DateTime.monday, hour * 60);
+            final weekendBaseline = _baselineOccupancy(DateTime.saturday, hour * 60);
+            final result = entry.value;
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
                 children: [
-                  const TextSpan(text: 'Data Source: ', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const TextSpan(text: 'Rapid Rail historical ridership dataset.\n'),
-                  const TextSpan(text: 'Method: ', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const TextSpan(
-                      text: 'Historical station ridership is used to scale a rule-based daily '
-                          'commuter demand pattern. '),
-                  const TextSpan(text: 'No machine learning model is used.\n'),
-                  TextSpan(
-                      text: 'These are modelled peak estimates, not observed hourly ridership: '
-                          'the source dataset only records daily totals, so the hourly shape shown '
-                          'here is inferred, not measured.',
-                      style: TextStyle(fontWeight: FontWeight.w600, color: Colors.blue.shade900)),
+                  Expanded(
+                      flex: 2,
+                      child: Text(_hourLabel(hour), style: const TextStyle(fontSize: 12, color: Colors.black87))),
+                  Expanded(
+                      flex: 3,
+                      child: Text('$weekdayBaseline%', textAlign: TextAlign.right, style: colStyle(!isWeekend))),
+                  Expanded(
+                      flex: 3,
+                      child: Text('$weekendBaseline%', textAlign: TextAlign.right, style: colStyle(isWeekend))),
+                  Expanded(
+                      flex: 3,
+                      child: Text('${result.occupancy}%',
+                          textAlign: TextAlign.right,
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: result.level.color))),
                 ],
               ),
-            ),
-          ),
+            );
+          }),
         ],
       ),
     );
   }
 
-  Widget _buildTrendBar(String label, double heightFactor, Color color, {String? tooltip}) {
+  Widget _buildTrendBar(String label, double heightFactor, Color color, {String? tooltip, String? valueLabel}) {
     return Column(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
+        if (valueLabel != null) ...[
+          Text(valueLabel,
+              style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: color)),
+          const SizedBox(height: 4),
+        ],
         Tooltip(
           message: tooltip ?? label,
           waitDuration: const Duration(milliseconds: 200),
           child: Container(
             width: 22,
-            height: 100 * heightFactor.clamp(0.05, 1.0),
+            height: 90 * heightFactor.clamp(0.05, 1.0),
             decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4)),
           ),
         ),
@@ -2047,14 +2224,12 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
   // Sections (mirrors the Connections tab pattern):
   //   A. Station selection
-  //   B. History filters (month + day-of-week)
+  //   B. History filters (month only)
   //   C. Summary statistics (Average / Highest / Lowest)
-  //   D. Ridership Trend (current-period vs previous-period average)
-  //   E. Ridership Insight (plain-language read of the trend)
-  //   F. Daily totals chart
-  //   G. Weekly Ridership Pattern (Monday–Sunday averages, + Weekday vs Weekend)
-  //   H. Monthly Ridership Trend (all months for the station, line chart)
-  //   I. Calendar Heatmap (daily ridership by date, one month at a time)
+  //   D. Ridership Trend & Insight (trend stats + plain-language read, one card)
+  //   E. Calendar Heatmap (daily ridership by date, month from History Filters)
+  //   F. Weekly Ridership Pattern (Monday–Sunday averages, + Weekday vs Weekend)
+  //   G. Monthly Ridership Trend (all months for the station, line chart)
   Widget _buildHistoryTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
@@ -2085,9 +2260,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     _historyStation = val;
                     _historyData = null;
                     _historyMonthFilter = null;
-                    _historyDayOfWeekFilter = null;
-                    _heatmapMonth = null;
                     _heatmapSelectedDay = null;
+                    _heatmapAllMonthsIndex = null;
+                    _historyValidationMsg = null;
                   }),
                 ),
                 const SizedBox(height: 12),
@@ -2101,6 +2276,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   onPressed: _runHistory,
                   label: const Text('Load History', style: TextStyle(color: Colors.white, fontSize: 16)),
                 ),
+                if (_historyValidationMsg != null) ...[
+                  const SizedBox(height: 12),
+                  _validationMessage(_historyValidationMsg!),
+                ],
               ],
             ),
           ),
@@ -2127,115 +2306,115 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   e.date.month == _historyMonthFilter!.month)
                   .toList();
 
-              final filtered = _historyDayOfWeekFilter == null
-                  ? byMonth
-                  : byMonth.where((e) => e.date.weekday == _historyDayOfWeekFilter).toList();
-
               const monthNames = [
                 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
               ];
 
-              const dayOfWeekNames = [
-                'Monday', 'Tuesday', 'Wednesday', 'Thursday',
-                'Friday', 'Saturday', 'Sunday',
-              ];
-
-              // B. History filters — always shown once data is loaded, so the
-              // filter stays visible even if it currently yields no records.
+              // B. History filters — month only. Always shown once data is
+              // loaded, so the filter stays visible even if it currently
+              // yields no records.
               final filtersSection = _sectionCard(
                 title: 'HISTORY FILTERS',
                 icon: Icons.filter_alt_outlined,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    DropdownButtonFormField<DateTime?>(
-                      value: _historyMonthFilter,
-                      decoration: InputDecoration(
-                          labelText: 'Filter by month',
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-                      items: [
-                        const DropdownMenuItem<DateTime?>(
-                            value: null, child: Text('All months')),
-                        ...months.map((m) => DropdownMenuItem<DateTime?>(
-                          value: m,
-                          child: Text('${monthNames[m.month - 1]} ${m.year}'),
-                        )),
-                      ],
-                      onChanged: (val) => setState(() => _historyMonthFilter = val),
-                    ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<int?>(
-                      value: _historyDayOfWeekFilter,
-                      decoration: InputDecoration(
-                          labelText: 'Filter by day of week',
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-                      items: [
-                        const DropdownMenuItem<int?>(
-                            value: null, child: Text('All days')),
-                        ...List.generate(7, (i) => i + 1).map((weekday) => DropdownMenuItem<int?>(
-                          value: weekday,
-                          child: Text(dayOfWeekNames[weekday - 1]),
-                        )),
-                      ],
-                      onChanged: (val) => setState(() => _historyDayOfWeekFilter = val),
-                    ),
+                child: DropdownButtonFormField<DateTime?>(
+                  value: _historyMonthFilter,
+                  decoration: InputDecoration(
+                      labelText: 'Filter by month',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
+                  items: [
+                    const DropdownMenuItem<DateTime?>(
+                        value: null, child: Text('All months')),
+                    ...months.map((m) => DropdownMenuItem<DateTime?>(
+                      value: m,
+                      child: Text('${monthNames[m.month - 1]} ${m.year}'),
+                    )),
                   ],
+                  onChanged: (val) => setState(() {
+                    _historyMonthFilter = val;
+                    _heatmapAllMonthsIndex = null;
+                    _heatmapSelectedDay = null;
+                  }),
                 ),
               );
 
               // Weekly Ridership Pattern data — grouped by day-of-week from
-              // `byMonth` (respects the month filter, but deliberately
-              // ignores the day-of-week filter so Monday–Sunday can all be
-              // compared at once). Real data only, no modelling. Rendered
-              // at the bottom of the tab (see below), not gated by the
-              // day-of-week filter that `filtered` below is subject to.
+              // `byMonth` (respects the month filter). Real data only, no
+              // modelling.
               final weeklyPattern = _computeWeeklyPattern(byMonth);
-              // Same `byMonth` (month-filtered, day-of-week-filter-ignored)
-              // records feed the Weekday vs Weekend comparison below.
+              // Same `byMonth` (month-filtered) records feed the Weekday
+              // vs Weekend comparison below.
               final weekdayWeekendStats = _computeWeekdayWeekendComparison(byMonth);
               final weeklyPatternSection =
               _buildWeeklyPatternSection(weeklyPattern, weekdayWeekendStats);
 
               // Monthly Ridership Trend — fed the full `_historyData` for
-              // this station, NOT `byMonth`/`filtered`, so it always shows
-              // every available month regardless of the month or
-              // day-of-week filters above.
+              // this station, NOT `byMonth`, so it always shows every
+              // available month regardless of the month filter above.
               final monthlyTrend = _computeMonthlyTrend(_historyData!);
               final monthlyTrendSection = _buildMonthlyTrendSection(monthlyTrend);
 
-              // Calendar Heatmap — also fed the full `_historyData` for
-              // this station (own independent month picker, `_heatmapMonth`,
-              // separate from `_historyMonthFilter` above). Defaults to the
-              // most recent available month until the user picks one.
-              final heatmapSection =
-              _buildHeatmapSection(_historyData!, months, monthNames);
+              // Calendar Heatmap — when a specific month is chosen in
+              // History Filters, the calendar shows that month directly
+              // and hides the nav arrows. When History Filters is "All
+              // months", the calendar can still only show one month at a
+              // time, so it shows one month at a time with its own
+              // left/right arrows to step through every available month
+              // (no separate filter dropdown inside the calendar itself).
+              late final DateTime heatmapMonth;
+              late final bool heatmapShowArrows;
+              int heatmapAllMonthsIdx = 0;
+              if (_historyMonthFilter != null) {
+                heatmapMonth = _historyMonthFilter!;
+                heatmapShowArrows = false;
+              } else {
+                heatmapAllMonthsIdx =
+                    (_heatmapAllMonthsIndex ?? (months.length - 1)).clamp(0, months.length - 1);
+                heatmapMonth = months[heatmapAllMonthsIdx];
+                heatmapShowArrows = months.length > 1;
+              }
+              final heatmapMonthLabel = '${monthNames[heatmapMonth.month - 1]} ${heatmapMonth.year}';
+              final heatmapSection = _buildHeatmapSection(
+                _historyData!,
+                heatmapMonth,
+                heatmapMonthLabel,
+                showArrows: heatmapShowArrows,
+                canGoPrev: heatmapAllMonthsIdx > 0,
+                canGoNext: heatmapAllMonthsIdx < months.length - 1,
+                onPrev: () => setState(() {
+                  _heatmapAllMonthsIndex = heatmapAllMonthsIdx - 1;
+                  _heatmapSelectedDay = null;
+                }),
+                onNext: () => setState(() {
+                  _heatmapAllMonthsIndex = heatmapAllMonthsIdx + 1;
+                  _heatmapSelectedDay = null;
+                }),
+              );
 
-              if (filtered.isEmpty) {
+              if (byMonth.isEmpty) {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     const SizedBox(height: _sectionGap),
                     filtersSection,
                     const SizedBox(height: _sectionGap),
-                    _emptyState('No records for the selected month / day of week.'),
+                    _emptyState('No records for the selected month.'),
+                    const SizedBox(height: _sectionGap),
+                    heatmapSection,
                     const SizedBox(height: _sectionGap),
                     weeklyPatternSection,
                     const SizedBox(height: _sectionGap),
                     monthlyTrendSection,
-                    const SizedBox(height: _sectionGap),
-                    heatmapSection,
                   ],
                 );
               }
 
-              final values = filtered.map((e) => e.ridership).toList();
+              final values = byMonth.map((e) => e.ridership).toList();
               final avg = values.reduce((a, b) => a + b) / values.length;
-              final maxRecord = filtered.reduce((a, b) => a.ridership >= b.ridership ? a : b);
-              final minRecord = filtered.reduce((a, b) => a.ridership <= b.ridership ? a : b);
-              final maxVal = maxRecord.ridership.toDouble();
-              final latest = filtered.last;
-              final trend = _computeRidershipTrend(filtered);
+              final maxRecord = byMonth.reduce((a, b) => a.ridership >= b.ridership ? a : b);
+              final minRecord = byMonth.reduce((a, b) => a.ridership <= b.ridership ? a : b);
+              final latest = byMonth.last;
+              final trend = _computeRidershipTrend(byMonth);
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2272,132 +2451,83 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   ),
                   const SizedBox(height: _sectionGap),
 
-                  // D. Ridership Trend — current-period vs previous-period
-                  // average, computed by splitting the currently-filtered
-                  // real records in half chronologically (earlier half vs
-                  // later half). No modelling, no fixed calendar window.
+                  // D. Ridership Trend & Insight — one card: the trend
+                  // stats (current-period vs previous-period average,
+                  // computed by splitting the currently-shown real records
+                  // in half chronologically) plus a short plain-language
+                  // interpretation of that same trend underneath. No
+                  // modelling, no fixed calendar window.
                   _sectionCard(
                     title: 'RIDERSHIP TREND',
                     icon: Icons.trending_up,
                     child: trend == null
                         ? _emptyState('Need at least 2 records in the current filter to compute a trend.')
-                        : Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                                child: _statCard('PREVIOUS PERIOD AVG',
-                                    trend.previousAvg.round().toString())),
-                            const SizedBox(width: 10),
-                            Expanded(
-                                child: _statCard('CURRENT PERIOD AVG',
-                                    trend.currentAvg.round().toString())),
-                            const SizedBox(width: 10),
-                            Expanded(
-                                child: _statCard('% CHANGE',
-                                    '${trend.percentChange >= 0 ? '+' : ''}${trend.percentChange.toStringAsFixed(1)}%')),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Based on the ${filtered.length} record(s) currently shown, split chronologically into two equal halves.',
-                          style: const TextStyle(fontSize: 11, color: Colors.black45),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: _sectionGap),
-
-                  // E. Ridership Insight — plain-language read of the trend
-                  // above. Presentational only.
-                  if (trend != null) ...[
-                    Builder(builder: (context) {
+                        : Builder(builder: (context) {
                       final (message, color, icon) = _ridershipInsight(trend);
-                      return _sectionCard(
-                        title: 'RIDERSHIP INSIGHT',
-                        icon: Icons.lightbulb_outline,
-                        child: Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: color.withValues(alpha: 0.05),
-                            border: Border.all(color: color.withValues(alpha: 0.3)),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Row(
                             children: [
-                              Icon(icon, size: 16, color: color),
-                              const SizedBox(width: 8),
                               Expanded(
-                                child: Text(
-                                  message,
-                                  style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500),
-                                ),
-                              ),
+                                  child: _statCard('PREVIOUS PERIOD AVG',
+                                      trend.previousAvg.round().toString())),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                  child: _statCard('CURRENT PERIOD AVG',
+                                      trend.currentAvg.round().toString())),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                  child: _statCard('% CHANGE',
+                                      '${trend.percentChange >= 0 ? '+' : ''}${trend.percentChange.toStringAsFixed(1)}%')),
                             ],
                           ),
-                        ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Based on the ${byMonth.length} record(s) currently shown, split chronologically into two equal halves.',
+                            style: const TextStyle(fontSize: 11, color: Colors.black45),
+                          ),
+                          const SizedBox(height: 12),
+                          // Ridership Insight — plain-language read of the
+                          // trend above, kept in the same card.
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: color.withValues(alpha: 0.05),
+                              border: Border.all(color: color.withValues(alpha: 0.3)),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(icon, size: 16, color: color),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    message,
+                                    style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       );
                     }),
-                    const SizedBox(height: _sectionGap),
-                  ],
-
-                  // F. Daily totals chart
-                  _sectionCard(
-                    title: 'DAILY TOTALS',
-                    icon: Icons.bar_chart,
-                    subtitle: '${filtered.length} days — scrolled to most recent',
-                    child: Container(
-                      height: 150,
-                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
-                      decoration: BoxDecoration(
-                        color: Colors.grey.withValues(alpha: 0.05),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
-                      ),
-                      child: SingleChildScrollView(
-                        controller: _historyScrollController,
-                        scrollDirection: Axis.horizontal,
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: filtered.map((record) {
-                            final factor = maxVal == 0 ? 0.0 : record.ridership / maxVal;
-                            final isMax = record.ridership == maxRecord.ridership;
-                            final isMin = record.ridership == minRecord.ridership;
-                            final barColor = isMax
-                                ? const Color(0xFF4F46E5) // highest — purple
-                                : isMin
-                                ? const Color(0xFFDC2626) // lowest — red
-                                : Colors.blueGrey;
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 4),
-                              child: _buildTrendBar(
-                                '${record.date.day}/${record.date.month}',
-                                factor,
-                                barColor,
-                                tooltip: '${record.date.day}/${record.date.month}/${record.date.year}\n${record.ridership} trips'
-                                    '${isMax ? ' (highest)' : isMin ? ' (lowest)' : ''}',
-                              ),
-                            );
-                          }).toList(),
-                        ),
-                      ),
-                    ),
                   ),
                   const SizedBox(height: _sectionGap),
 
-                  // G. Weekly Ridership Pattern (Monday–Sunday averages)
+                  // E. Calendar Heatmap (daily ridership by date, month from History Filters)
+                  heatmapSection,
+                  const SizedBox(height: _sectionGap),
+
+                  // F. Weekly Ridership Pattern (Monday–Sunday averages, + Weekday vs Weekend)
                   weeklyPatternSection,
                   const SizedBox(height: _sectionGap),
 
-                  // H. Monthly Ridership Trend (all months for this station)
+                  // G. Monthly Ridership Trend (all months for this station)
                   monthlyTrendSection,
-                  const SizedBox(height: _sectionGap),
-
-                  // I. Calendar Heatmap (daily ridership by date, one month at a time)
-                  heatmapSection,
                 ],
               );
             }),
@@ -2839,6 +2969,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     const slotWidth = 64.0;
     final values = trend.map((t) => t.avg).toList();
     final totalWidth = trend.length * slotWidth;
+    final effectiveWidth = totalWidth < 200 ? 200.0 : totalWidth;
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
       decoration: BoxDecoration(
@@ -2849,19 +2980,40 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: SizedBox(
-          width: totalWidth < 200 ? 200 : totalWidth,
+          width: effectiveWidth,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SizedBox(
                 height: 120,
-                child: CustomPaint(
-                  size: Size(totalWidth < 200 ? 200 : totalWidth, 120),
-                  painter: _MonthlyLineChartPainter(
-                    values: values,
-                    highestIndex: highestIndex,
-                    lowestIndex: lowestIndex,
-                  ),
+                width: effectiveWidth,
+                child: Stack(
+                  children: [
+                    CustomPaint(
+                      size: Size(effectiveWidth, 120),
+                      painter: _MonthlyLineChartPainter(
+                        values: values,
+                        highestIndex: highestIndex,
+                        lowestIndex: lowestIndex,
+                      ),
+                    ),
+                    // Invisible hit-targets, one per month slot (same
+                    // even division as the painter's own slotWidth), so
+                    // hovering (desktop) or long-pressing (touch) a data
+                    // point shows its exact month + real average via a
+                    // Tooltip. Chart drawing/design above is unchanged.
+                    Row(
+                      children: trend.map((t) {
+                        return Expanded(
+                          child: Tooltip(
+                            message: '${DateFormat('MMM yyyy').format(t.month)}\n'
+                                '${_formatNumber(t.avg)} trips/day avg',
+                            child: Container(color: Colors.transparent),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 6),
@@ -2890,8 +3042,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   // (min–max scaled against the other real days in that same month — a
   // purely presentational scale, not a modelled or hardcoded one). Days
   // with no record in the local dataset render as empty/unfilled cells,
-  // never as a ridership of 0. Has its own month picker (`_heatmapMonth`)
-  // independent of the History filters above, per the section's spec.
+  // never as a ridership of 0. Reuses the History Filters month above —
+  // no separate month control of its own, to avoid duplicate filters.
 
   // Builds the day cells for one calendar month: one entry per calendar
   // day in the month, `ridership` null where `_historyData` has no record
@@ -2931,51 +3083,65 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return const Color(0xFF4F46E5).withValues(alpha: alpha);
   }
 
+  // `heatmapMonth` / `heatmapMonthLabel` come from the History Filters
+  // month above (see the Builder in _buildHistoryTab). When History
+  // Filters is a specific month, this section just displays it (no
+  // arrows). When History Filters is "All months", this section shows
+  // one month at a time and exposes its own left/right arrows
+  // (`showArrows`/`canGoPrev`/`canGoNext`/`onPrev`/`onNext`) to step
+  // through the station's available months — never a second dropdown
+  // filter inside the calendar itself.
   Widget _buildHeatmapSection(
-      List<RidershipRecord> records, List<DateTime> months, List<String> monthNames) {
-    if (months.isEmpty) {
-      return _sectionCard(
-        title: 'CALENDAR HEATMAP',
-        icon: Icons.calendar_month,
-        subtitle: 'Daily ridership intensity by date, from real records for this station.',
-        child: _emptyState('No records available to build a calendar heatmap.'),
-      );
-    }
-
-    final heatmapMonth = _heatmapMonth ?? months.last;
+      List<RidershipRecord> records, DateTime heatmapMonth, String heatmapMonthLabel,
+      {required bool showArrows,
+        required bool canGoPrev,
+        required bool canGoNext,
+        required VoidCallback onPrev,
+        required VoidCallback onNext}) {
     final cells = _computeHeatmapMonthCells(records, heatmapMonth);
     final minMax = _heatmapMinMax(cells);
 
     return _sectionCard(
       title: 'CALENDAR HEATMAP',
       icon: Icons.calendar_month,
-      subtitle: 'Daily ridership intensity by date, from real records for this station. '
-          'Tap a day for its exact figure — this month picker is independent of the filter above.',
+      subtitle: showArrows
+          ? 'Daily ridership intensity from real records for this station. Tap a day for its exact '
+          'figure. Use the arrows below to browse other months.'
+          : 'Daily ridership intensity for $heatmapMonthLabel, from real records for this station. '
+          'Tap a day for its exact figure. Uses the month selected in History Filters above.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          DropdownButtonFormField<DateTime>(
-            value: heatmapMonth,
-            isDense: true,
-            decoration: InputDecoration(
-              labelText: 'Heatmap month',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          if (showArrows) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  onPressed: canGoPrev ? onPrev : null,
+                  icon: const Icon(Icons.chevron_left),
+                  color: const Color(0xFF4F46E5),
+                  tooltip: 'Previous month',
+                ),
+                SizedBox(
+                  width: 130,
+                  child: Text(
+                    heatmapMonthLabel,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87),
+                  ),
+                ),
+                IconButton(
+                  onPressed: canGoNext ? onNext : null,
+                  icon: const Icon(Icons.chevron_right),
+                  color: const Color(0xFF4F46E5),
+                  tooltip: 'Next month',
+                ),
+              ],
             ),
-            items: months
-                .map((m) => DropdownMenuItem(
-              value: m,
-              child: Text('${monthNames[m.month - 1]} ${m.year}'),
-            ))
-                .toList(),
-            onChanged: (val) => setState(() {
-              _heatmapMonth = val;
-              _heatmapSelectedDay = null;
-            }),
-          ),
-          const SizedBox(height: 14),
+            const SizedBox(height: 8),
+          ],
           if (cells.every((c) => c.ridership == null)) ...[
-            _emptyState('No records for ${monthNames[heatmapMonth.month - 1]} ${heatmapMonth.year}.'),
+            _emptyState('No records for $heatmapMonthLabel.'),
           ] else ...[
             _heatmapWeekdayHeader(),
             const SizedBox(height: 4),
@@ -3162,6 +3328,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     _connStation = val;
                     _connTopDestinations = null;
                     _connTopOrigins = null;
+                    _connValidationMsg = null;
                   }),
                 ),
                 const SizedBox(height: 12),
@@ -3177,6 +3344,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   onPressed: _loadingConnections ? null : _runConnections,
                   label: const Text('Show Connections', style: TextStyle(color: Colors.white, fontSize: 16)),
                 ),
+                if (_connValidationMsg != null) ...[
+                  const SizedBox(height: 12),
+                  _validationMessage(_connValidationMsg!),
+                ],
               ],
             ),
           ),
@@ -3620,6 +3791,14 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           ),
           const SizedBox(height: _sectionGap),
 
+          if (_rankingPeriod == _RankingPeriod.month && _rankingMonth == null) ...[
+            _validationMessage('Please select a month to see the station ranking.'),
+            const SizedBox(height: _sectionGap),
+          ] else if (_rankingPeriod == _RankingPeriod.day && _rankingDay == null) ...[
+            _validationMessage('Please select a date to see the station ranking.'),
+            const SizedBox(height: _sectionGap),
+          ],
+
           if (_loadingRanking && _rankingData == null) ...[
             Row(
               children: [
@@ -3764,6 +3943,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     final canCompare = _compareStationA != null && _compareStationB != null;
     final sameStation = canCompare && _compareStationA == _compareStationB;
     final haveResults = dataA != null && dataB != null;
+    final periodNeedsSelection = (_comparePeriod == _RankingPeriod.month && _compareMonth == null) ||
+        (_comparePeriod == _RankingPeriod.day && _compareDay == null);
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
@@ -3818,56 +3999,62 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             _emptyState('Select Station A and Station B to compare their ridership.')
           else if (sameStation)
             _emptyState('Select two different stations to compare.')
-          else ...[
-              if (_loadingCompare && !haveResults) ...[
-                Row(
-                  children: [
-                    const SizedBox(
-                        width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5))),
-                    const SizedBox(width: 10),
-                    const Text('Loading comparison…', style: TextStyle(fontSize: 12.5, color: Colors.black54)),
-                  ],
-                ),
-                const SizedBox(height: _sectionGap),
-              ],
-
-              if (_compareError != null) ...[
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(_sectionCardPadding),
-                  decoration: BoxDecoration(
-                    color: Colors.red.withValues(alpha: 0.06),
-                    borderRadius: BorderRadius.circular(_sectionCardRadius),
-                    border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+          else if (periodNeedsSelection)
+              _validationMessage(
+                _comparePeriod == _RankingPeriod.month
+                    ? 'Please select a month to compare these stations.'
+                    : 'Please select a date to compare these stations.',
+              )
+            else ...[
+                if (_loadingCompare && !haveResults) ...[
+                  Row(
+                    children: [
+                      const SizedBox(
+                          width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5))),
+                      const SizedBox(width: 10),
+                      const Text('Loading comparison…', style: TextStyle(fontSize: 12.5, color: Colors.black54)),
+                    ],
                   ),
-                  child: Text(_compareError!, style: const TextStyle(fontSize: 12, color: Colors.black87)),
-                ),
-                const SizedBox(height: _sectionGap),
+                  const SizedBox(height: _sectionGap),
+                ],
+
+                if (_compareError != null) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(_sectionCardPadding),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(_sectionCardRadius),
+                      border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+                    ),
+                    child: Text(_compareError!, style: const TextStyle(fontSize: 12, color: Colors.black87)),
+                  ),
+                  const SizedBox(height: _sectionGap),
+                ],
+
+                if (haveResults) ...[
+                  // B. Average ridership + difference
+                  _sectionCard(
+                    title: 'AVERAGE DAILY RIDERSHIP',
+                    icon: Icons.bar_chart,
+                    child: _compareAverageSection(dataA, dataB),
+                  ),
+                  const SizedBox(height: _sectionGap),
+
+                  // C. Simple comparison bar chart (reuses the same bar row
+                  // style as the History tab's weekly pattern chart).
+                  _sectionCard(
+                    title: 'RIDERSHIP COMPARISON',
+                    icon: Icons.stacked_bar_chart,
+                    child: _compareBarChart(dataA, dataB),
+                  ),
+                  const SizedBox(height: _sectionGap),
+
+                  // D. One-line insight
+                  _compareInsightCard(dataA, dataB),
+                ] else if (!_loadingCompare)
+                  _emptyState('No ridership records found for one or both stations in this period.'),
               ],
-
-              if (haveResults) ...[
-                // B. Average ridership + difference
-                _sectionCard(
-                  title: 'AVERAGE DAILY RIDERSHIP',
-                  icon: Icons.bar_chart,
-                  child: _compareAverageSection(dataA, dataB),
-                ),
-                const SizedBox(height: _sectionGap),
-
-                // C. Simple comparison bar chart (reuses the same bar row
-                // style as the History tab's weekly pattern chart).
-                _sectionCard(
-                  title: 'RIDERSHIP COMPARISON',
-                  icon: Icons.stacked_bar_chart,
-                  child: _compareBarChart(dataA, dataB),
-                ),
-                const SizedBox(height: _sectionGap),
-
-                // D. One-line insight
-                _compareInsightCard(dataA, dataB),
-              ] else if (!_loadingCompare)
-                _emptyState('No ridership records found for one or both stations in this period.'),
-            ],
         ],
       ),
     );

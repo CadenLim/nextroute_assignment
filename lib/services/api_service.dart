@@ -73,6 +73,7 @@ class ApiService {
   final Map<String, List<Map<String, dynamic>>> _allTripStopTimes = {};
   final Map<String, Map<String, dynamic>> _allRouteMetadata = {};
   final Map<String, String> _tripToRouteCache = {};
+  final Map<String, String> _tripToShapeCache = {};
   bool _isGtfsFullyCached = false;
 
   String _cleanStationName(String rawName) {
@@ -165,7 +166,7 @@ class ApiService {
         final String rawFile = await rootBundle.loadString(path);
         final String safeRaw = rawFile.replaceAll('\r\n', '\n');
 
-        List<List<dynamic>> csvTable = const CsvToListConverter(eol: '\n').convert(safeRaw);
+        List<List<dynamic>> csvTable = const CsvToListConverter(eol: '\n', shouldParseNumbers: false).convert(safeRaw.replaceAll('\uFEFF', ''));
         if (csvTable.isEmpty) continue;
 
         final header = csvTable[0].map((e) => e.toString().trim().toLowerCase()).toList();
@@ -232,7 +233,7 @@ class ApiService {
                 existing.ids.add(stopId);
                 if (parentId != null) existing.ids.add(parentId);
                 existing.lines.addAll(actualRoutesServed);
-                if (category == 'Rail' || category == 'MRT Feeder') existing.category = 'Rail';
+                if (category == 'Rail') existing.category = 'Rail';
                 merged = true;
                 break;
               }
@@ -290,6 +291,33 @@ class ApiService {
     return intermediateStops;
   }
 
+  // Fixed/stage-fare approximation, keyed on straight-line distance rather than
+  // elapsed minutes. Rapid Bus & Rail fares are set by distance/zone, not by
+  // how long the vehicle took to get there (which moves with traffic) — a
+  // duration-based formula overcharges a route stuck in a jam and undercharges
+  // a lucky fast one, which is backwards.
+  //
+  // These tier boundaries are a reasonable placeholder, not a confirmed source
+  // of truth for the exact current fare. If assets/gtfs/<folder>/ ships
+  // fare_attributes.txt / fare_rules.txt, prefer looking the fare up there —
+  // that's Prasarana's own published price per fare_id and will always be
+  // more accurate than a hand-tuned table.
+  double _fareForLeg(String folder, double distanceKm) {
+    if (folder == 'rail') {
+      if (distanceKm <= 4) return 1.10;
+      if (distanceKm <= 8) return 1.60;
+      if (distanceKm <= 12) return 2.10;
+      if (distanceKm <= 18) return 2.80;
+      if (distanceKm <= 25) return 3.60;
+      if (distanceKm <= 35) return 4.60;
+      return 6.40;
+    }
+    if (folder == 'mrt_feeder') return 1.00; // Feeder buses: flat RM1.
+    if (distanceKm <= 4) return 1.00;
+    if (distanceKm <= 10) return 2.00;
+    return 3.00;
+  }
+
   Future<List<Map<String, dynamic>>> findRoutes(StationModel origin, StationModel destination) async {
     try {
       final List<Map<String, dynamic>> results = [];
@@ -329,6 +357,7 @@ class ApiService {
               'dur': dur == 0 ? 15 : dur,
               'depart': stops[oIdx]['arrival_time'],
               'stops': intermediates,
+              'trip': tripId,
             };
           }
         }
@@ -351,6 +380,7 @@ class ApiService {
                   'dur': dur == 0 ? 15 : dur,
                   'depart': stops[oIdx]['arrival_time'],
                   'stops': intermediates,
+                  'trip': tripId,
                 };
               }
             }
@@ -370,6 +400,7 @@ class ApiService {
                 reachToDest[stm]![rId] = {
                   'dur': dur == 0 ? 15 : dur,
                   'stops': intermediates,
+                  'trip': tripId,
                 };
               }
             }
@@ -377,16 +408,14 @@ class ApiService {
         }
       }
 
-      StationModel? wangsaMajuLrt;
-      try { wangsaMajuLrt = _cachedStations.firstWhere((s) => s.name.contains('WANGSA MAJU') && s.category == 'Rail'); } catch (_) {}
-      if ((origin.name.contains('PV15') || origin.name.contains('COLUMBIA')) && wangsaMajuLrt != null) {
-        for (final rId in _allRouteMetadata.keys) {
-          if (_allRouteMetadata[rId]!['short_name'] == '250' || _allRouteMetadata[rId]!['short_name'] == 'T250') {
-            reachFromOrigin.putIfAbsent(wangsaMajuLrt, () => {});
-            reachFromOrigin[wangsaMajuLrt]![rId] = {'wait': 5, 'dur': 12, 'depart': DateFormat('HH:mm').format(DateTime.now().add(const Duration(minutes: 5))), 'stops': ['KL East Mall', 'Taman Melati']};
-          }
-        }
-      }
+      // NOTE: a hardcoded special case for origin names containing 'PV15' or
+      // 'COLUMBIA' used to live here, injecting a fake edge to a specific LRT
+      // station for the '250'/'T250' routes. Removed: it only masked whatever
+      // real gap (missing stop/shape match, wrong stop_id, etc.) made that one
+      // route fail to resolve through the general path below. If that route
+      // still doesn't resolve after the candidate-station widening in
+      // journey_planning.dart, the fix belongs in the GTFS data/matching, not
+      // a name check here.
 
       for (final rId in bestDirect.keys) {
         final m = _allRouteMetadata[rId] ?? {'short_name': rId, 'color': Colors.blue, 'folder': 'bus'};
@@ -394,9 +423,10 @@ class ApiService {
         final departStr = (data['depart'] as String).substring(0, 5);
         final List<String> intermediateNames = (data['stops'] as List<String>?) ?? [];
 
+        final directFare = _fareForLeg(m['folder'], _calculateDistance(origin.lat, origin.lon, destination.lat, destination.lon));
         results.add({
           'id': rId, 'name': m['short_name'], 'duration': '${data['dur']} min',
-          'fare': 'RM ${(data['dur'] * 0.15 + 0.80).toStringAsFixed(2)}', 'badge': 'Direct', 'color': m['color'], 'sig': 'DIR_$rId',
+          'fare': 'RM ${directFare.toStringAsFixed(2)}', 'badge': 'Direct', 'color': m['color'], 'sig': 'DIR_$rId',
           'wait': data['wait'], 'scheduledDepart': departStr,
           'legs': [
             {
@@ -406,7 +436,11 @@ class ApiService {
               'icon': m['folder'] == 'rail' ? Icons.train : Icons.directions_bus,
               'color': m['color'],
               'desc': 'Board ${m['short_name']} at ${origin.name} ($departStr)',
-              'intermediate_stops': intermediateNames
+              'intermediate_stops': intermediateNames,
+              'folder': m['folder'],
+              'shapeId': _tripToShapeCache[data['trip']] ?? '',
+              'from': {'lat': origin.lat, 'lon': origin.lon},
+              'to': {'lat': destination.lat, 'lon': destination.lon},
             }
           ]
         });
@@ -430,24 +464,34 @@ class ApiService {
               final List<String> iStops2 = (reachToDest[stm]![r2Id]!['stops'] as List<String>?) ?? [];
 
               final total = d1 + d2 + walkMins;
+              final oneTransferFare = _fareForLeg(m1['folder'], _calculateDistance(origin.lat, origin.lon, stm.lat, stm.lon)) +
+                  _fareForLeg(m2['folder'], _calculateDistance(stm.lat, stm.lon, destination.lat, destination.lon));
 
               results.add({
                 'id': 'MIX', 'name': '${m1['short_name']} -> ${m2['short_name']} (via ${stm.name})',
-                'duration': '$total min', 'fare': 'RM ${(total * 0.15 + 1.20).toStringAsFixed(2)}', 'badge': '1 Transfer', 'color': Colors.orange, 'sig': '1X_${m1['short_name']}_${stm.name}_${m2['short_name']}',
+                'duration': '$total min', 'fare': 'RM ${oneTransferFare.toStringAsFixed(2)}', 'badge': '1 Transfer', 'color': Colors.orange, 'sig': '1X_${m1['short_name']}_${stm.name}_${m2['short_name']}',
                 'wait': wait, 'scheduledDepart': departStr,
                 'legs': [
                   {
                     'mode': m1['folder'] == 'rail' ? 'Rail' : 'Bus', 'name': m1['short_name'], 'duration': '$d1 min',
                     'icon': m1['folder'] == 'rail' ? Icons.train : Icons.directions_bus, 'color': m1['color'], 'desc': 'Board ${m1['short_name']} at ${origin.name} ($departStr)',
-                    'intermediate_stops': iStops1
+                    'intermediate_stops': iStops1, 'folder': m1['folder'],
+                    'shapeId': _tripToShapeCache[reachFromOrigin[stm]![r1Id]!['trip']] ?? '',
+                    'from': {'lat': origin.lat, 'lon': origin.lon},
+                    'to': {'lat': stm.lat, 'lon': stm.lon},
                   },
                   {
                     'mode': 'Walk', 'name': 'Interchange', 'duration': '$walkMins min', 'icon': Icons.directions_walk, 'color': Colors.grey, 'desc': 'Transfer at ${stm.name}',
+                    'from': {'lat': stm.lat, 'lon': stm.lon},
+                    'to': {'lat': stm.lat, 'lon': stm.lon},
                   },
                   {
                     'mode': m2['folder'] == 'rail' ? 'Rail' : 'Bus', 'name': m2['short_name'], 'duration': '$d2 min',
                     'icon': m2['folder'] == 'rail' ? Icons.train : Icons.directions_bus, 'color': m2['color'], 'desc': 'Board ${m2['short_name']} -> Arrive at ${destination.name}',
-                    'intermediate_stops': iStops2
+                    'intermediate_stops': iStops2, 'folder': m2['folder'],
+                    'shapeId': _tripToShapeCache[reachToDest[stm]![r2Id]!['trip']] ?? '',
+                    'from': {'lat': stm.lat, 'lon': stm.lon},
+                    'to': {'lat': destination.lat, 'lon': destination.lon},
                   }
                 ]
               });
@@ -475,7 +519,7 @@ class ApiService {
             railBridges.putIfAbsent(stm1, () => {});
             if (!railBridges[stm1]!.containsKey(stm2) || dur < railBridges[stm1]![stm2]!['dur']) {
               List<String> intermediates = _getIntermediateStops(stops, i, j, stopIdToStation);
-              railBridges[stm1]![stm2] = {'rId': rId, 'dur': dur, 'stops': intermediates};
+              railBridges[stm1]![stm2] = {'rId': rId, 'dur': dur, 'stops': intermediates, 'trip': tripId};
             }
           }
         }
@@ -505,17 +549,29 @@ class ApiService {
               final List<String> iStopsBridge = (bridge['stops'] as List<String>?) ?? [];
               final List<String> iStops3 = (reachToDest[stm2]![r3Id]!['stops'] as List<String>?) ?? [];
 
+              final twoTransferFare = _fareForLeg(m1['folder'], _calculateDistance(origin.lat, origin.lon, stm1.lat, stm1.lon)) +
+                  _fareForLeg(m2['folder'], _calculateDistance(stm1.lat, stm1.lon, stm2.lat, stm2.lon)) +
+                  _fareForLeg(m3['folder'], _calculateDistance(stm2.lat, stm2.lon, destination.lat, destination.lon));
+
               results.add({
                 'id': 'MIX2', 'name': '${m1['short_name']} -> ${m2['short_name']} -> ${m3['short_name']}',
-                'duration': '${d1 + d2 + d3 + walk1 + walk2} min', 'fare': 'RM ${((d1 + d2 + d3) * 0.15 + 1.50).toStringAsFixed(2)}', 'badge': '2 Transfers', 'color': Colors.purple,
+                'duration': '${d1 + d2 + d3 + walk1 + walk2} min', 'fare': 'RM ${twoTransferFare.toStringAsFixed(2)}', 'badge': '2 Transfers', 'color': Colors.purple,
                 'sig': '2X_${m1['short_name']}_${stm1.name}_${m2['short_name']}_${stm2.name}_${m3['short_name']}',
                 'wait': wait, 'scheduledDepart': departStr,
                 'legs': [
-                  { 'mode': m1['folder'] == 'rail' ? 'Rail' : 'Bus', 'name': m1['short_name'], 'duration': '$d1 min', 'icon': m1['folder'] == 'rail' ? Icons.train : Icons.directions_bus, 'color': m1['color'], 'desc': 'Board at ${origin.name} ($departStr)', 'intermediate_stops': iStops1 },
-                  { 'mode': 'Walk', 'name': 'Transfer', 'duration': '$walk1 min', 'icon': Icons.directions_walk, 'color': Colors.grey, 'desc': 'Transfer at ${stm1.name}' },
-                  { 'mode': 'Rail', 'name': m2['short_name'], 'duration': '$d2 min', 'icon': Icons.train, 'color': m2['color'], 'desc': 'Connect via ${stm1.name}', 'intermediate_stops': iStopsBridge },
-                  { 'mode': 'Walk', 'name': 'Transfer', 'duration': '$walk2 min', 'icon': Icons.directions_walk, 'color': Colors.grey, 'desc': 'Transfer at ${stm2.name}' },
-                  { 'mode': m3['folder'] == 'rail' ? 'Rail' : 'Bus', 'name': m3['short_name'], 'duration': '$d3 min', 'icon': m3['folder'] == 'rail' ? Icons.train : Icons.directions_bus, 'color': m3['color'], 'desc': 'Arrive at ${destination.name}', 'intermediate_stops': iStops3 }
+                  { 'mode': m1['folder'] == 'rail' ? 'Rail' : 'Bus', 'name': m1['short_name'], 'duration': '$d1 min', 'icon': m1['folder'] == 'rail' ? Icons.train : Icons.directions_bus, 'color': m1['color'], 'desc': 'Board at ${origin.name} ($departStr)', 'intermediate_stops': iStops1, 'folder': m1['folder'],
+                    'shapeId': _tripToShapeCache[reachFromOrigin[stm1]![r1Id]!['trip']] ?? '',
+                    'from': {'lat': origin.lat, 'lon': origin.lon}, 'to': {'lat': stm1.lat, 'lon': stm1.lon} },
+                  { 'mode': 'Walk', 'name': 'Transfer', 'duration': '$walk1 min', 'icon': Icons.directions_walk, 'color': Colors.grey, 'desc': 'Transfer at ${stm1.name}',
+                    'from': {'lat': stm1.lat, 'lon': stm1.lon}, 'to': {'lat': stm1.lat, 'lon': stm1.lon} },
+                  { 'mode': 'Rail', 'name': m2['short_name'], 'duration': '$d2 min', 'icon': Icons.train, 'color': m2['color'], 'desc': 'Connect via ${stm1.name}', 'intermediate_stops': iStopsBridge, 'folder': 'rail',
+                    'shapeId': _tripToShapeCache[bridge['trip']] ?? '',
+                    'from': {'lat': stm1.lat, 'lon': stm1.lon}, 'to': {'lat': stm2.lat, 'lon': stm2.lon} },
+                  { 'mode': 'Walk', 'name': 'Transfer', 'duration': '$walk2 min', 'icon': Icons.directions_walk, 'color': Colors.grey, 'desc': 'Transfer at ${stm2.name}',
+                    'from': {'lat': stm2.lat, 'lon': stm2.lon}, 'to': {'lat': stm2.lat, 'lon': stm2.lon} },
+                  { 'mode': m3['folder'] == 'rail' ? 'Rail' : 'Bus', 'name': m3['short_name'], 'duration': '$d3 min', 'icon': m3['folder'] == 'rail' ? Icons.train : Icons.directions_bus, 'color': m3['color'], 'desc': 'Arrive at ${destination.name}', 'intermediate_stops': iStops3, 'folder': m3['folder'],
+                    'shapeId': _tripToShapeCache[reachToDest[stm2]![r3Id]!['trip']] ?? '',
+                    'from': {'lat': stm2.lat, 'lon': stm2.lon}, 'to': {'lat': destination.lat, 'lon': destination.lon} }
                 ]
               });
             }
@@ -578,18 +634,18 @@ class ApiService {
   }
 
   Map<String, Map<String, dynamic>> _parseRouteMetadata(String raw, String folder) {
-    final lines = raw.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+    final lines = const CsvToListConverter(eol: '\n', shouldParseNumbers: false).convert(raw.replaceAll('\uFEFF', '').replaceAll('\r\n', '\n')).where((row) => row.any((cell) => cell.toString().trim().isNotEmpty)).toList();
     final Map<String, Map<String, dynamic>> metadata = {};
     if (lines.isEmpty) return metadata;
 
-    final header = lines[0].split(',').map((e) => e.trim().replaceAll('"', '')).toList();
+    final header = lines[0].map((e) => e.toString().trim()).toList();
     final idIdx = header.indexOf('route_id');
     final shortNameIdx = header.indexOf('route_short_name');
     final longNameIdx = header.indexOf('route_long_name');
     final colorIdx = header.indexOf('route_color');
 
     for (final line in lines.skip(1)) {
-      final parts = line.split(',').map((e) => e.trim().replaceAll('"', '')).toList();
+      final parts = line.map((e) => e.toString().trim()).toList();
       if (idIdx == -1 || idIdx >= parts.length) continue;
 
       final routeId = '${folder}_${parts[idIdx]}';
@@ -657,29 +713,34 @@ class ApiService {
   }
 
   Map<String, String> _parseTrips(String raw, String folder) {
-    final lines = raw.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+    final lines = const CsvToListConverter(eol: '\n', shouldParseNumbers: false).convert(raw.replaceAll('\uFEFF', '').replaceAll('\r\n', '\n')).where((row) => row.any((cell) => cell.toString().trim().isNotEmpty)).toList();
     final Map<String, String> tripToRoute = {};
     if (lines.isEmpty) return tripToRoute;
-    final header = lines[0].split(',').map((e) => e.trim().replaceAll('"', '')).toList();
+    final header = lines[0].map((e) => e.toString().trim()).toList();
     final routeIdIdx = header.indexOf('route_id');
     final tripIdIdx = header.indexOf('trip_id');
+    final shapeIdIdx = header.indexOf('shape_id');
     if (routeIdIdx == -1 || tripIdIdx == -1) return tripToRoute;
 
     for (final line in lines.skip(1)) {
-      final parts = line.split(',').map((e) => e.trim().replaceAll('"', '')).toList();
+      final parts = line.map((e) => e.toString().trim()).toList();
       if (parts.length > tripIdIdx && parts.length > routeIdIdx) {
-        tripToRoute['${folder}_${parts[tripIdIdx]}'] = '${folder}_${parts[routeIdIdx]}';
+        final tripId = '${folder}_${parts[tripIdIdx]}';
+        tripToRoute[tripId] = '${folder}_${parts[routeIdIdx]}';
+        if (shapeIdIdx != -1 && parts.length > shapeIdIdx && parts[shapeIdIdx].trim().isNotEmpty) {
+          _tripToShapeCache[tripId] = parts[shapeIdIdx].trim();
+        }
       }
     }
     return tripToRoute;
   }
 
   Map<String, List<Map<String, dynamic>>> _parseStopTimes(String raw, Map<String, String> tripToRoute, String folder) {
-    final lines = raw.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+    final lines = const CsvToListConverter(eol: '\n', shouldParseNumbers: false).convert(raw.replaceAll('\uFEFF', '').replaceAll('\r\n', '\n')).where((row) => row.any((cell) => cell.toString().trim().isNotEmpty)).toList();
     final Map<String, List<Map<String, dynamic>>> tripStopTimes = {};
     if (lines.isEmpty) return tripStopTimes;
 
-    final header = lines[0].split(',').map((e) => e.trim().replaceAll('"', '')).toList();
+    final header = lines[0].map((e) => e.toString().trim()).toList();
     final tripIdIdx = header.indexOf('trip_id');
     final stopIdIdx = header.indexOf('stop_id');
     final arrivalTimeIdx = header.indexOf('arrival_time');
@@ -688,7 +749,7 @@ class ApiService {
     if (tripIdIdx == -1 || stopIdIdx == -1 || arrivalTimeIdx == -1) return tripStopTimes;
 
     for (final line in lines.skip(1)) {
-      final parts = line.split(',').map((e) => e.trim().replaceAll('"', '')).toList();
+      final parts = line.map((e) => e.toString().trim()).toList();
       if (parts.length > stopIdIdx && parts.length > arrivalTimeIdx && parts.length > tripIdIdx) {
         final tripId = '${folder}_${parts[tripIdIdx]}';
         final seq = seqIdx != -1 && parts.length > seqIdx ? int.tryParse(parts[seqIdx]) ?? 0 : 0;
@@ -770,101 +831,84 @@ class ApiService {
   }
 
   Future<List<LiveVehicle>> getLiveVehicles(String folder) async {
+    folder = folder.trim().toLowerCase();
+    if (folder == 'mrtfeeder' || folder == 'rapid-bus-mrtfeeder') {
+      folder = 'mrt_feeder';
+    }
+    if (folder == 'rapid-bus-kl') folder = 'bus';
+    // KTMB is explicitly excluded, including direct calls from other screens.
+    if (folder == 'ktmb' || folder == 'ktm') return [];
+    if (folder == 'rail' || folder == 'rapid-rail-kl') {
+      debugPrint('LRT live positions unavailable: the MyRapid bus kiosk '
+          'provides bus GPS and static endpoint areas, not train positions.');
+      return [];
+    }
+    if (folder != 'bus' && folder != 'mrt_feeder') {
+      throw ArgumentError.value(folder, 'folder', 'Unsupported live feed');
+    }
+    final category = folder == 'mrt_feeder'
+        ? 'rapid-bus-mrtfeeder' : 'rapid-bus-kl';
     try {
-      String category = 'rapid-bus-kl';
-      if (folder == 'mrt_feeder') category = 'rapid-bus-mrtfeeder';
-      if (folder == 'rail') return [];
-
       await _ensureGtfsFullyCached();
-
       final response = await http.get(Uri.parse(
-          'https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana?category=$category'));
+        'https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana?category=$category',
+      )).timeout(const Duration(seconds: 20));
+      if (response.statusCode != 200) {
+        debugPrint('GTFS-RT $folder: HTTP ${response.statusCode}');
+        return [];
+      }
+      final feed = gtfs.FeedMessage.fromBuffer(response.bodyBytes);
+      final vehicles = <LiveVehicle>[];
+      for (final entity in feed.entity) {
+        if (!entity.hasVehicle()) continue;
+        final v = entity.vehicle;
+        if (!v.hasPosition()) continue;
+        final lat = v.position.latitude;
+        final lon = v.position.longitude;
+        if (!lat.isFinite || !lon.isFinite || lat.abs() > 90 ||
+            lon.abs() > 180 || (lat == 0 && lon == 0)) continue;
+        final rawRoute = v.trip.routeId.trim();
+        final rawTrip = v.trip.tripId.trim();
+        String? resolved;
 
-      if (response.statusCode == 200) {
-        final feedMessage = gtfs.FeedMessage.fromBuffer(response.bodyBytes);
-        List<LiveVehicle> vehicles = [];
-
-        for (var entity in feedMessage.entity) {
-          if (entity.hasVehicle()) {
-            final v = entity.vehicle;
-
-            String rawRouteId = v.trip.hasRouteId() ? v.trip.routeId : '';
-            String rawTripId = v.trip.hasTripId() ? v.trip.tripId : '';
-            String vehicleLabel = v.vehicle.hasLabel() ? v.vehicle.label : '';
-
-            String resolvedRouteId = '';
-
-            if (rawRouteId.isNotEmpty) {
-              resolvedRouteId = '${folder}_$rawRouteId';
-            }
-
-            if (resolvedRouteId.isEmpty || !_allRouteMetadata.containsKey(resolvedRouteId)) {
-              resolvedRouteId = '';
-              String fullTripId = '${folder}_$rawTripId';
-
-              if (_tripToRouteCache.containsKey(fullTripId)) {
-                resolvedRouteId = _tripToRouteCache[fullTripId]!;
-              } else if (rawTripId.isNotEmpty) {
-                String cleanRawTrip = rawTripId.replaceAll(RegExp(r'[^A-Za-z0-9]'), '');
-                if (cleanRawTrip.length > 5) {
-                  for (String cachedTripId in _tripToRouteCache.keys) {
-                    String cleanCached = cachedTripId.replaceAll(RegExp(r'[^A-Za-z0-9]'), '');
-                    if (cleanCached.endsWith(cleanRawTrip) || cleanRawTrip.endsWith(cleanCached)) {
-                      resolvedRouteId = _tripToRouteCache[cachedTripId]!;
-                      break;
-                    }
-                  }
-                }
-              }
-            }
-
-            String routeName = _allRouteMetadata[resolvedRouteId]?['short_name'] ?? '';
-
-            if (routeName.isEmpty && rawRouteId.isNotEmpty) {
-              for (final meta in _allRouteMetadata.values) {
-                if (meta['short_name'] == rawRouteId || meta['short_name'] == rawRouteId.toUpperCase()) {
-                  routeName = meta['short_name'];
-                  break;
-                }
-              }
-            }
-
-            if (routeName.isEmpty && rawRouteId.isNotEmpty) {
-              for (final entry in _allRouteMetadata.entries) {
-                if (entry.key.endsWith(rawRouteId) || entry.key.replaceAll(RegExp(r'[^0-9]'), '').endsWith(rawRouteId)) {
-                  routeName = entry.value['short_name'];
-                  break;
-                }
-              }
-            }
-
-            if (routeName.isEmpty && vehicleLabel.isNotEmpty) {
-              for (final meta in _allRouteMetadata.values) {
-                final sn = meta['short_name'];
-                if (sn != null && sn.toString().length > 1 && vehicleLabel.toUpperCase().contains(sn.toString().toUpperCase())) {
-                  routeName = sn;
-                  break;
-                }
-              }
-            }
-
-            if (routeName.isEmpty) {
-              routeName = rawRouteId.isNotEmpty ? rawRouteId : (v.vehicle.hasLicensePlate() ? v.vehicle.licensePlate : 'BUS');
-            }
-
-            vehicles.add(LiveVehicle(
-              id: entity.id,
-              lat: v.position.latitude,
-              lon: v.position.longitude,
-              bearing: v.position.hasBearing() ? v.position.bearing : 0.0,
-              routeId: routeName,
-              licensePlate: v.vehicle.hasLicensePlate() ? v.vehicle.licensePlate : 'Unknown',
-            ));
+        // IDs belong to their source feed. Never guess using digits or plates.
+        final routeKey = '${folder}_$rawRoute';
+        if (rawRoute.isNotEmpty && _allRouteMetadata.containsKey(routeKey)) {
+          resolved = routeKey;
+        }
+        if (resolved == null && rawRoute.isNotEmpty) {
+          final matches = _allRouteMetadata.entries.where((entry) =>
+          entry.key.startsWith('${folder}_') &&
+              entry.value['short_name'].toString().trim().toUpperCase() ==
+                  rawRoute.toUpperCase()).map((entry) => entry.key).toSet();
+          if (matches.length == 1) resolved = matches.single;
+        }
+        if (resolved == null && rawTrip.isNotEmpty) {
+          resolved = _tripToRouteCache['${folder}_$rawTrip'];
+          if (resolved == null) {
+            // Some feeds omit the static service prefix. Accept only an
+            // underscore-delimited suffix that resolves to one route.
+            final matches = _tripToRouteCache.entries.where((entry) =>
+            entry.key.startsWith('${folder}_') &&
+                entry.key.substring(folder.length + 1).endsWith('_$rawTrip'))
+                .map((entry) => entry.value).toSet();
+            if (matches.length == 1) resolved = matches.single;
           }
         }
-        return vehicles;
+        final routeName = resolved == null
+            ? (rawRoute.isEmpty ? 'Unknown route' : rawRoute)
+            : _allRouteMetadata[resolved]?['short_name']?.toString() ?? rawRoute;
+        vehicles.add(LiveVehicle(
+          id: '${folder}_${entity.id}', lat: lat, lon: lon,
+          bearing: v.position.hasBearing() && v.position.bearing.isFinite
+              ? v.position.bearing : 0.0,
+          routeId: routeName,
+          licensePlate: v.vehicle.hasLicensePlate()
+              ? v.vehicle.licensePlate : 'Unknown',
+        ));
       }
-      return [];
+      debugPrint('GTFS-RT $folder: ${vehicles.length} vehicles');
+      return vehicles;
     } catch (e) {
       debugPrint('GTFS-RT Error for $folder: $e');
       return [];

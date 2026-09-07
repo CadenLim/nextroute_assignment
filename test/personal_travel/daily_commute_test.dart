@@ -63,6 +63,28 @@ class MemorySavedRoutes implements SavedRoutesRepository {
   Future<void> save(SavedRoute route) async {}
 }
 
+class MutableSavedRoutes implements SavedRoutesRepository {
+  MutableSavedRoutes(this.routes);
+
+  final List<SavedRoute> routes;
+
+  @override
+  Future<int> count() async => routes.length;
+
+  @override
+  Future<void> delete(String id) async =>
+      routes.removeWhere((route) => route.id == id);
+
+  @override
+  Future<List<SavedRoute>> load() async => routes.toList();
+
+  @override
+  Future<void> rename(String id, String name) async {}
+
+  @override
+  Future<void> save(SavedRoute route) async => routes.add(route);
+}
+
 class CommuteApi extends ApiService {
   CommuteApi(this.route, {this.duration = '35 min'});
 
@@ -282,6 +304,47 @@ void main() {
     expect(repository.values.map((item) => item.id).toSet(), hasLength(2));
   });
 
+  test('identical Daily Commute settings are rejected', () async {
+    final route = commuteRoute();
+    final repository = MemoryCommuteRepository();
+    repository.value = DailyCommute(
+      id: 'existing',
+      userId: 'user-1',
+      savedRouteId: route.id,
+      origin: route.origin.name,
+      destination: route.destination.name,
+      arriveByMinutes: 9 * 60,
+      activeDays: const {1, 3, 5},
+      reminderEnabled: true,
+      reminderMinutesBefore: 10,
+      estimatedDurationMinutes: 35,
+    );
+    final service = DailyCommuteService(
+      repository: repository,
+      apiService: CommuteApi(route),
+      notificationService: CommuteNotifications(),
+      userIdProvider: () => 'user-1',
+    );
+
+    await expectLater(
+      service.save(
+        route: route,
+        arriveByMinutes: 9 * 60,
+        activeDays: {5, 1, 3},
+        reminderEnabled: true,
+        reminderMinutesBefore: 10,
+      ),
+      throwsA(
+        isA<StateError>().having(
+          (error) => error.message,
+          'message',
+          'An identical Daily Commute already exists.',
+        ),
+      ),
+    );
+    expect(repository.saves, 0);
+  });
+
   test(
     'save reuses route API duration and replaces scheduled notifications',
     () async {
@@ -407,6 +470,62 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('route picker can add and select a new favourite journey', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final first = commuteRoute();
+    final second = SavedRoute(
+      id: 'route-2',
+      name: 'Work commute',
+      origin: first.origin,
+      destination: StationModel(
+        ids: const ['office'],
+        name: 'Office',
+        lines: {'KJ'},
+        category: 'Rail',
+        lat: 3.2,
+        lon: 101.2,
+      ),
+      signature: 'DIR_OFFICE',
+      lineName: 'Kelana Jaya',
+    );
+    final routes = MutableSavedRoutes([first]);
+    var openedJourneyPlanning = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DailyCommuteSettingsScreen(
+          service: DailyCommuteService(
+            repository: MemoryCommuteRepository(),
+            apiService: CommuteApi(first),
+            notificationService: CommuteNotifications(),
+            userIdProvider: () => 'user-1',
+          ),
+          savedRoutesRepository: routes,
+          addFavouriteJourney: (_) async {
+            openedJourneyPlanning = true;
+            routes.routes.add(second);
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    expect(find.text('Add New Favourite Journey'), findsOneWidget);
+    await tester.tap(find.text('Add New Favourite Journey'));
+    await tester.pumpAndSettle();
+
+    expect(openedJourneyPlanning, isTrue);
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    expect(find.text('Home → Office'), findsWidgets);
+  });
+
   testWidgets('routine suggestion prefills route and detected weekdays', (
     tester,
   ) async {
@@ -499,4 +618,63 @@ void main() {
     expect(find.byType(Switch), findsNWidgets(2));
     expect(find.text('Add'), findsOneWidget);
   });
+
+  testWidgets(
+    'adding a favourite from Smart Reminders returns to the main Journey tab',
+    (tester) async {
+      final route = commuteRoute();
+      final service = DailyCommuteService(
+        repository: MemoryCommuteRepository(),
+        apiService: CommuteApi(route),
+        notificationService: CommuteNotifications(),
+        userIdProvider: () => 'user-1',
+      );
+      var openedJourneyTab = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => FilledButton(
+                onPressed: () => showModalBottomSheet<void>(
+                  context: context,
+                  builder: (_) => DailyCommuteOverviewSheet(
+                    service: service,
+                    savedRoutesRepository: MemorySavedRoutes(route),
+                    onOpenJourneyPlanning: () => openedJourneyTab = true,
+                  ),
+                ),
+                child: const Text('Open reminders'),
+              ),
+            ),
+            bottomNavigationBar: NavigationBar(
+              destinations: const [
+                NavigationDestination(
+                  icon: Icon(Icons.route),
+                  label: 'Journey',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.person),
+                  label: 'Profile',
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open reminders'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Add'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(DropdownButtonFormField<String>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Add New Favourite Journey'));
+      await tester.pumpAndSettle();
+
+      expect(openedJourneyTab, isTrue);
+      expect(find.text('Smart Reminders'), findsNothing);
+      expect(find.text('Daily Commute'), findsNothing);
+      expect(find.byType(NavigationBar), findsOneWidget);
+    },
+  );
 }

@@ -52,16 +52,57 @@ Map<String, dynamic> sessionJson() {
   };
 }
 
+class TestLoginAttemptGuard implements LoginAttemptGuard {
+  TestLoginAttemptGuard({this.accountExists = true, this.valid = true});
+
+  bool accountExists;
+  bool valid;
+  int failedAttempts = 0;
+  bool locked = false;
+  final attemptedEmails = <String>[];
+
+  @override
+  Future<void> verifyLogin({
+    required String email,
+    required String password,
+  }) async {
+    attemptedEmails.add(email);
+    if (!accountExists) {
+      throw const AuthException('No user found with this email.');
+    }
+    if (locked) {
+      throw const AuthException(
+        'Too many failed login attempts. Please try again in 15 minutes.',
+      );
+    }
+    if (!valid) {
+      failedAttempts++;
+      if (failedAttempts >= 5) {
+        locked = true;
+        throw const AuthException(
+          'Too many failed login attempts. Please try again in 15 minutes.',
+        );
+      }
+      final remaining = 5 - failedAttempts;
+      throw AuthException(
+        'Incorrect password. $remaining attempt${remaining == 1 ? '' : 's'} remaining.',
+      );
+    }
+    failedAttempts = 0;
+    locked = false;
+  }
+}
+
 PasswordCodeLogin mockPasswordLogin(
   GoTrueClient auth, {
   bool valid = true,
-  List<http.Request>? requests,
+  TestLoginAttemptGuard? loginAttemptGuard,
 }) => PasswordCodeLogin(
   auth: auth,
   projectUrl: 'https://example.supabase.co',
   publishableKey: 'test-key',
+  loginAttemptGuard: loginAttemptGuard ?? TestLoginAttemptGuard(valid: valid),
   passwordClientFactory: () => MockClient((request) async {
-    requests?.add(request);
     expect(auth.currentSession, isNull);
     if (request.url.path.endsWith('/logout')) {
       expect(request.url.queryParameters['scope'], 'local');
@@ -111,7 +152,39 @@ Future<void> openLogin(
 }
 
 void main() {
-  testWidgets('wrong password never requests an email code or signs in', (
+  testWidgets('registration requires an eight character password', (
+    tester,
+  ) async {
+    final requests = <http.Request>[];
+    final client = GoTrueClient(
+      url: 'https://example.supabase.co/auth/v1',
+      autoRefreshToken: false,
+      asyncStorage: TestAuthStorage(),
+      flowType: AuthFlowType.pkce,
+      httpClient: MockClient((request) async {
+        requests.add(request);
+        return http.Response('{}', 200);
+      }),
+    );
+    addTearDown(client.dispose);
+    await openLogin(tester, client);
+    await tester.tap(find.text('New user? Create an account'));
+    await tester.pumpAndSettle();
+    final fields = find.byType(TextField);
+    await tester.enterText(fields.at(0), 'Tester');
+    await tester.enterText(fields.at(1), 'test@example.com');
+    await tester.enterText(fields.at(2), '123456');
+    await tester.tap(find.text('Register'));
+    await tester.pump();
+
+    expect(
+      find.text('Password must contain at least 8 characters.'),
+      findsOneWidget,
+    );
+    expect(requests, isEmpty);
+  });
+
+  testWidgets('wrong password shows a specific error and never sends OTP', (
     tester,
   ) async {
     final otpRequests = <http.Request>[];
@@ -126,25 +199,89 @@ void main() {
       }),
     );
     addTearDown(client.dispose);
-    final passwordRequests = <http.Request>[];
+    final loginGuard = TestLoginAttemptGuard(valid: false);
     await openLogin(
       tester,
       client,
-      passwordLogin: mockPasswordLogin(
-        client,
-        valid: false,
-        requests: passwordRequests,
-      ),
+      passwordLogin: mockPasswordLogin(client, loginAttemptGuard: loginGuard),
     );
     await tester.enterText(find.byType(TextField).at(0), 'test@example.com');
     await tester.enterText(find.byType(TextField).at(1), 'test-password');
     await tester.tap(find.text('Send sign-in code'));
     await tester.pumpAndSettle();
-    expect(passwordRequests, hasLength(1));
+    expect(loginGuard.attemptedEmails, ['test@example.com']);
     expect(otpRequests, isEmpty);
     expect(client.currentSession, isNull);
-    expect(find.text('Invalid login credentials'), findsOneWidget);
+    expect(
+      find.text('Incorrect password. 4 attempts remaining.'),
+      findsOneWidget,
+    );
     expect(find.text('Verify your email'), findsNothing);
+  });
+
+  testWidgets('unknown login email shows no-user-found error', (tester) async {
+    final client = GoTrueClient(
+      url: 'https://example.supabase.co/auth/v1',
+      autoRefreshToken: false,
+      asyncStorage: TestAuthStorage(),
+      flowType: AuthFlowType.pkce,
+      httpClient: MockClient((_) async => http.Response('{}', 200)),
+    );
+    addTearDown(client.dispose);
+    final loginGuard = TestLoginAttemptGuard(accountExists: false);
+    await openLogin(
+      tester,
+      client,
+      passwordLogin: mockPasswordLogin(client, loginAttemptGuard: loginGuard),
+    );
+    await tester.enterText(find.byType(TextField).at(0), 'missing@example.com');
+    await tester.enterText(find.byType(TextField).at(1), 'test-password');
+    await tester.tap(find.text('Send sign-in code'));
+    await tester.pumpAndSettle();
+    expect(find.text('No user found with this email.'), findsOneWidget);
+    expect(client.currentSession, isNull);
+    expect(loginGuard.failedAttempts, 0);
+  });
+
+  testWidgets('fifth incorrect password locks login and success resets count', (
+    tester,
+  ) async {
+    final client = GoTrueClient(
+      url: 'https://example.supabase.co/auth/v1',
+      autoRefreshToken: false,
+      asyncStorage: TestAuthStorage(),
+      flowType: AuthFlowType.pkce,
+      httpClient: MockClient((_) async => http.Response('{}', 200)),
+    );
+    addTearDown(client.dispose);
+    final loginGuard = TestLoginAttemptGuard(valid: false);
+    await openLogin(
+      tester,
+      client,
+      passwordLogin: mockPasswordLogin(client, loginAttemptGuard: loginGuard),
+    );
+    await tester.enterText(find.byType(TextField).at(0), 'test@example.com');
+    await tester.enterText(find.byType(TextField).at(1), 'test-password');
+
+    for (var attempt = 1; attempt <= 5; attempt++) {
+      await tester.tap(find.text('Send sign-in code'));
+      await tester.pumpAndSettle();
+    }
+    expect(loginGuard.failedAttempts, 5);
+    expect(loginGuard.locked, isTrue);
+    expect(
+      find.text(
+        'Too many failed login attempts. Please try again in 15 minutes.',
+      ),
+      findsOneWidget,
+    );
+
+    loginGuard.locked = false;
+    loginGuard.valid = true;
+    await tester.tap(find.text('Send sign-in code'));
+    await tester.pumpAndSettle();
+    expect(loginGuard.failedAttempts, 0);
+    expect(find.text('Verify your email'), findsOneWidget);
   });
 
   testWidgets(
@@ -278,11 +415,11 @@ void main() {
         }),
       );
       addTearDown(client.dispose);
-      final passwordRequests = <http.Request>[];
+      final loginGuard = TestLoginAttemptGuard();
       await openLogin(
         tester,
         client,
-        passwordLogin: mockPasswordLogin(client, requests: passwordRequests),
+        passwordLogin: mockPasswordLogin(client, loginAttemptGuard: loginGuard),
       );
       expect(find.text('Password'), findsOneWidget);
       await tester.enterText(find.byType(TextField).at(0), 'test@example.com');
@@ -290,13 +427,14 @@ void main() {
       await tester.tap(find.text('Send sign-in code'));
       await tester.pumpAndSettle();
       expect(client.currentSession, isNull);
-      expect(passwordRequests.map((r) => r.url.path), [
-        '/auth/v1/token',
-        '/auth/v1/logout',
-      ]);
+      expect(loginGuard.attemptedEmails, ['test@example.com']);
       expect(requests.single.url.path, '/auth/v1/otp');
       expect(jsonDecode(requests.single.body)['create_user'], false);
       expect(find.text('Verify your email'), findsOneWidget);
+      final verificationField = tester.widget<TextField>(
+        find.byKey(const Key('auth-verification-code')),
+      );
+      expect(verificationField.focusNode?.hasFocus, isTrue);
       await tester.enterText(find.byType(TextField), '123450');
       await tester.ensureVisible(find.text('Verify Code'));
       await tester.tap(find.text('Verify Code'));
@@ -355,6 +493,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(client.currentSession, isNull);
       expect(requests.first.url.path, '/auth/v1/signup');
+      final verificationField = tester.widget<TextField>(
+        find.byKey(const Key('auth-verification-code')),
+      );
+      expect(verificationField.focusNode?.hasFocus, isTrue);
       await tester.enterText(find.byType(TextField), '123456');
       await tester.ensureVisible(find.text('Verify Code'));
       await tester.tap(find.text('Verify Code'));
@@ -412,6 +554,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(requests.last.url.path, '/auth/v1/recover');
     expect(jsonDecode(requests.last.body)['email'], 'test@example.com');
+    final resetCodeField = tester.widget<TextField>(
+      find.byKey(const Key('reset-code')),
+    );
+    expect(resetCodeField.focusNode?.hasFocus, isTrue);
 
     await tester.enterText(find.byKey(const Key('reset-code')), '123456');
     await tester.tap(find.byKey(const Key('verify-reset-code')));

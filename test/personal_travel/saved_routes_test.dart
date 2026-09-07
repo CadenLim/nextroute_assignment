@@ -132,7 +132,10 @@ class ProfileServiceStub implements PersonalTravelService {
       history;
 
   @override
-  Future<void> updateProfile({String? displayName, String? phoneNumber}) async {}
+  Future<void> updateProfile({
+    String? displayName,
+    String? phoneNumber,
+  }) async {}
 
   @override
   Future<String> uploadAvatar(
@@ -665,6 +668,25 @@ void main() {
 
     expect(openedJourneyTab, isTrue);
     expect(find.text('Journey Planning'), findsNothing);
+  });
+
+  testWidgets('dashboard Home switches to the first Journey tab', (
+    tester,
+  ) async {
+    var openedJourneyTab = false;
+    await launch(
+      tester,
+      PersonalTravelScreen(
+        service: ProfileServiceStub(),
+        savedRoutesRepository: MemoryRoutes(),
+        onOpenJourneyPlanning: () => openedJourneyTab = true,
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('dashboard-home')));
+    await tester.pumpAndSettle();
+
+    expect(openedJourneyTab, isTrue);
   });
 
   testWidgets('profile shows a default avatar and photo picker button', (

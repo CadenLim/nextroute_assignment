@@ -21,6 +21,7 @@ class _AuthScreenState extends State<AuthScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _otpController = TextEditingController();
+  final _otpFocusNode = FocusNode();
 
   bool _isRegister = false;
   bool _isLoading = false;
@@ -33,6 +34,14 @@ class _AuthScreenState extends State<AuthScreen> {
   OtpType _verificationType = OtpType.email;
 
   GoTrueClient get _auth => widget.auth ?? Supabase.instance.client.auth;
+
+  void _requestOtpFocus() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _pendingVerificationEmail != null) {
+        _otpFocusNode.requestFocus();
+      }
+    });
+  }
 
   Future<void> _submit() async {
     if (_isLoading) return;
@@ -47,13 +56,18 @@ class _AuthScreenState extends State<AuthScreen> {
       return;
     }
 
-    if (email.isEmpty || !email.contains('@')) {
+    if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(email)) {
       _showMessage('Please enter a valid email address.');
       return;
     }
 
-    if (password.length < 6) {
-      _showMessage('Password must contain at least 6 characters.');
+    final minimumPasswordLength = _isRegister ? 8 : 6;
+    if (password.length < minimumPasswordLength) {
+      _showMessage(
+        _isRegister
+            ? 'Password must contain at least 8 characters.'
+            : 'Password must contain at least 6 characters.',
+      );
       return;
     }
 
@@ -76,6 +90,7 @@ class _AuthScreenState extends State<AuthScreen> {
             _verificationMessage = null;
           });
           _startResendCountdown();
+          _requestOtpFocus();
         } else {
           await _auth.signOut(scope: SignOutScope.local);
           if (!mounted) return;
@@ -97,6 +112,7 @@ class _AuthScreenState extends State<AuthScreen> {
           _verificationMessage = null;
         });
         _startResendCountdown();
+        _requestOtpFocus();
       }
     } on AuthException catch (error) {
       if (mounted) {
@@ -148,6 +164,7 @@ class _AuthScreenState extends State<AuthScreen> {
         _verificationMessageIsError = true;
         _verificationMessage = 'Enter the 6-digit code from your email.';
       });
+      _requestOtpFocus();
       return;
     }
 
@@ -180,6 +197,7 @@ class _AuthScreenState extends State<AuthScreen> {
         _verificationMessageIsError = true;
         _verificationMessage = error.message;
       });
+      _requestOtpFocus();
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -213,6 +231,7 @@ class _AuthScreenState extends State<AuthScreen> {
         _verificationMessage = 'Verification code resent.';
       });
       _startResendCountdown();
+      _requestOtpFocus();
     } on AuthException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -265,6 +284,7 @@ class _AuthScreenState extends State<AuthScreen> {
     _emailController.dispose();
     _passwordController.dispose();
     _otpController.dispose();
+    _otpFocusNode.dispose();
     _resendTimer?.cancel();
     super.dispose();
   }
@@ -317,7 +337,9 @@ class _AuthScreenState extends State<AuthScreen> {
                       ),
                       const SizedBox(height: 24),
                       TextField(
+                        key: const Key('auth-verification-code'),
                         controller: _otpController,
+                        focusNode: _otpFocusNode,
                         autofocus: true,
                         keyboardType: TextInputType.number,
                         textInputAction: TextInputAction.done,
@@ -589,6 +611,7 @@ class _ForgotPasswordScreenState extends State<_ForgotPasswordScreen> {
   final _codeController = TextEditingController();
   final _newPasswordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
+  final _codeFocusNode = FocusNode();
   int _step = 0;
   bool _loading = false;
   bool _hideNewPassword = true;
@@ -612,6 +635,7 @@ class _ForgotPasswordScreenState extends State<_ForgotPasswordScreen> {
     _codeController.dispose();
     _newPasswordController.dispose();
     _confirmPasswordController.dispose();
+    _codeFocusNode.dispose();
     super.dispose();
   }
 
@@ -619,6 +643,12 @@ class _ForgotPasswordScreenState extends State<_ForgotPasswordScreen> {
     setState(() {
       _messageIsError = true;
       _message = message;
+    });
+  }
+
+  void _requestCodeFocus() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _step == 1) _codeFocusNode.requestFocus();
     });
   }
 
@@ -642,6 +672,7 @@ class _ForgotPasswordScreenState extends State<_ForgotPasswordScreen> {
         _messageIsError = false;
         _message = resend ? 'Verification code resent.' : null;
       });
+      _requestCodeFocus();
     } on AuthException catch (error) {
       if (mounted) _setError(error.message);
     } catch (_) {
@@ -792,6 +823,7 @@ class _ForgotPasswordScreenState extends State<_ForgotPasswordScreen> {
       TextField(
         key: const Key('reset-code'),
         controller: _codeController,
+        focusNode: _codeFocusNode,
         autofocus: true,
         keyboardType: TextInputType.number,
         inputFormatters: [FilteringTextInputFormatter.digitsOnly],
@@ -1282,6 +1314,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late final TextEditingController _emailController;
   late final TextEditingController _phoneController;
   final _otpController = TextEditingController();
+  final _otpFocusNode = FocusNode();
 
   bool _isSaving = false;
   bool _messageIsError = false;
@@ -1322,6 +1355,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _emailController.dispose();
     _phoneController.dispose();
     _otpController.dispose();
+    _otpFocusNode.dispose();
     _resendTimer?.cancel();
     super.dispose();
   }
@@ -1339,6 +1373,14 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         setState(() => _resendSeconds = 0);
       } else {
         setState(() => _resendSeconds--);
+      }
+    });
+  }
+
+  void _requestOtpFocus() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _pendingEmailChange != null) {
+        _otpFocusNode.requestFocus();
       }
     });
   }
@@ -1407,6 +1449,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           _pendingEmailChange = email;
         });
         _startResendCountdown();
+        _requestOtpFocus();
       } else if (mounted) {
         Navigator.pop(context);
       }
@@ -1434,6 +1477,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         _messageIsError = true;
         _message = 'Please enter the 6-digit verification code.';
       });
+      _requestOtpFocus();
       return;
     }
 
@@ -1474,6 +1518,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         _messageIsError = true;
         _message = error.message;
       });
+      _requestOtpFocus();
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -1506,6 +1551,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         _message = 'Verification code resent.';
       });
       _startResendCountdown();
+      _requestOtpFocus();
     } on AuthException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -1555,7 +1601,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ),
                 const SizedBox(height: 24),
                 TextField(
+                  key: const Key('email-change-verification-code'),
                   controller: _otpController,
+                  focusNode: _otpFocusNode,
                   autofocus: true,
                   keyboardType: TextInputType.number,
                   textInputAction: TextInputAction.done,

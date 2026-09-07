@@ -131,6 +131,88 @@ class _MonthlyLineChartPainter extends CustomPainter {
   }
 }
 
+// ── Full-Day Crowd Pattern line chart painter ──────────────────────────────
+// Draws a simple polyline + point markers across evenly-spaced hourly slots
+// (6am-12am). Pure presentation: takes the estimated occupancy % already
+// computed via predictCrowd()/_baselineOccupancy() and just plots it — no
+// new modelling here. Unlike the Monthly Ridership Trend chart, the y-axis
+// is fixed to the real 0-100% occupancy scale (not normalized to the
+// min/max of the visible hours) so the shape of the day is comparable
+// across stations and days. Each point is colored by its own crowd level
+// (matching the color-coding used elsewhere in this tab), and the single
+// highest point is highlighted as the peak.
+class _FullDayCrowdLineChartPainter extends CustomPainter {
+  final List<int> occupancies;
+  final List<Color> pointColors;
+  final int peakIndex;
+
+  _FullDayCrowdLineChartPainter({
+    required this.occupancies,
+    required this.pointColors,
+    required this.peakIndex,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (occupancies.isEmpty) return;
+    final n = occupancies.length;
+    const topPad = 10.0;
+    const bottomPad = 10.0;
+    final chartHeight = size.height - topPad - bottomPad;
+    final slotWidth = size.width / n;
+
+    Offset pointAt(int i) {
+      final x = slotWidth * i + slotWidth / 2;
+      final normalized = (occupancies[i] / 100.0).clamp(0.0, 1.0);
+      final y = topPad + chartHeight - (normalized * chartHeight);
+      return Offset(x, y);
+    }
+
+    final path = Path();
+    for (int i = 0; i < n; i++) {
+      final p = pointAt(i);
+      if (i == 0) {
+        path.moveTo(p.dx, p.dy);
+      } else {
+        path.lineTo(p.dx, p.dy);
+      }
+    }
+
+    if (n > 1) {
+      final linePaint = Paint()
+        ..color = const Color(0xFF4F46E5).withValues(alpha: 0.55)
+        ..strokeWidth = 2
+        ..style = PaintingStyle.stroke
+        ..strokeJoin = StrokeJoin.round
+        ..strokeCap = StrokeCap.round;
+      canvas.drawPath(path, linePaint);
+
+      final fillPath = Path.from(path)
+        ..lineTo(pointAt(n - 1).dx, size.height)
+        ..lineTo(pointAt(0).dx, size.height)
+        ..close();
+      canvas.drawPath(fillPath, Paint()..color = const Color(0xFF4F46E5).withValues(alpha: 0.06));
+    }
+
+    for (int i = 0; i < n; i++) {
+      final p = pointAt(i);
+      final isPeak = i == peakIndex;
+      final color = pointColors[i];
+      if (isPeak) {
+        canvas.drawCircle(p, 7, Paint()..color = color.withValues(alpha: 0.18));
+      }
+      canvas.drawCircle(p, isPeak ? 4.5 : 3, Paint()..color = color);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _FullDayCrowdLineChartPainter oldDelegate) {
+    return oldDelegate.occupancies != occupancies ||
+        oldDelegate.pointColors != pointColors ||
+        oldDelegate.peakIndex != peakIndex;
+  }
+}
+
 // ── Type-to-search station picker ────────────────────────────────────────
 // Drop-in replacement for DropdownButtonFormField<String> when the list of
 // choices is long (station names). Lets the user either tap and scroll a
@@ -341,6 +423,37 @@ const List<String> kWeekdayLabels = [
   'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
 ];
 
+// Human-readable version of the weekday/weekend threshold ladders in
+// _baselineOccupancy() below, for display in the "How is this estimated?"
+// section. Keep these in sync with that function if its thresholds change.
+const List<MapEntry<String, int>> kWeekdayBaselineRanges = [
+  MapEntry('Before 7am', 15),
+  MapEntry('7:00–7:30am', 35),
+  MapEntry('7:30–8:00am', 55),
+  MapEntry('8:00–8:30am', 70),
+  MapEntry('8:30–9:00am', 65),
+  MapEntry('9:00am–12pm', 45),
+  MapEntry('12–3pm', 42),
+  MapEntry('3–5pm', 45),
+  MapEntry('5:00–5:30pm', 55),
+  MapEntry('5:30–6:00pm', 65),
+  MapEntry('6:00–7:00pm', 75),
+  MapEntry('7:00–9:00pm', 45),
+  MapEntry('9:00–10:00pm', 30),
+  MapEntry('After 10pm', 15),
+];
+
+const List<MapEntry<String, int>> kWeekendBaselineRanges = [
+  MapEntry('Before 9am', 15),
+  MapEntry('9am–12pm', 25),
+  MapEntry('12–3pm', 32),
+  MapEntry('3–6pm', 38),
+  MapEntry('6–8pm', 35),
+  MapEntry('8–10pm', 25),
+  MapEntry('After 10pm', 15),
+];
+
+
 // Rule-based intraday demand profile.
 // Time-of-day boundaries are informed by Rapid KL's published
 // operating hours (6am-12am) and weekday rush hours
@@ -461,6 +574,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   double? _peakDayAvg;
   double? _peakFactor;
   String? _peakValidationMsg; // shown when Show Peak Pattern is pressed with fields missing
+  int? _fullDayHoverIndex; // index into the Full-Day Crowd Pattern chart's hour list, while hovered/pressed
 
   // ── Tab 3: Ridership History state ──
   String? _historyStation;
@@ -1807,7 +1921,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
   // Sections (mirrors the Connections tab pattern):
   //   A. Station & day selection
-  //   B. Peak Pattern
+  //   B. Full-Day Crowd Pattern (hourly line chart, 6am-12am)
   //   C. Peak Analysis Summary
   //   D. Top 3 Predicted Time Periods
   //   E. Peak vs Off-Peak Comparison
@@ -1873,34 +1987,14 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           if (_peakSlots != null) ...[
             const SizedBox(height: _sectionGap),
 
-            // B. Peak Pattern
+            // B. Full-Day Crowd Pattern
             _sectionCard(
-              title: 'MODELLED PEAK PATTERN',
+              title: 'FULL-DAY CROWD PATTERN',
               icon: Icons.show_chart,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Container(
-                    height: 176,
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.withValues(alpha: 0.05),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: _peakSlots!.map((entry) {
-                        final hour = entry.key;
-                        final result = entry.value;
-                        final label = hour == 12 ? '12pm' : hour > 12 ? '${hour - 12}pm' : '${hour}am';
-                        return _buildTrendBar(label, result.occupancy / 100, result.level.color,
-                            tooltip: '$label: ${result.occupancy}% (${result.level.label})',
-                            valueLabel: '${result.occupancy}%');
-                      }).toList(),
-                    ),
-                  ),
+                  _buildFullDayCrowdChart(),
                 ],
               ),
             ),
@@ -1938,8 +2032,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  String _hourLabel(int hour) =>
-      hour == 12 ? '12pm' : hour > 12 ? '${hour - 12}pm' : hour == 0 ? '12am' : '${hour}am';
+  String _hourLabel(int hour) {
+    final h = hour % 24; // 24 (midnight, end of day) wraps to 0 → "12am"
+    return h == 12 ? '12pm' : h > 12 ? '${h - 12}pm' : h == 0 ? '12am' : '${h}am';
+  }
 
   // Peak Analysis Summary — all values reused directly from _peakSlots,
   // _peakDayAvg and _peakFactor. No new calculation performed here.
@@ -2064,7 +2160,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             border: Border.all(color: const Color(0xFF4F46E5).withValues(alpha: 0.2)),
           ),
           child: const Text(
-            'Estimated crowd = time-of-day baseline × network comparison',
+            'Estimated crowd = time-of-day baseline × station factor',
             style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF4F46E5)),
           ),
         ),
@@ -2086,42 +2182,53 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         ),
         _breakdownStep(
           step: 3,
-          title: 'Time-of-day baseline, per sampled hour',
+          title: 'Time-of-day baseline',
           lines: [
-            'Each hour has its own fixed rule-based baseline % — weekday and weekend patterns differ. '
-                'The one for $dayLabel is multiplied by the ${factor.toStringAsFixed(2)}x factor above to '
-                'get the final estimate shown in the chart.',
+            'Each time of day has a modelled baseline %, with different patterns for weekdays and '
+                'weekends. The one for $dayLabel is multiplied by the ${factor.toStringAsFixed(2)}x factor '
+                'above to get the estimate shown in the chart.',
           ],
           isLast: true,
         ),
         const SizedBox(height: 10),
-        _buildPeakBaselineTable(),
+        _buildFullBaselineRanges(),
         const SizedBox(height: 10),
         const Text(
-          'These are modelled peak estimates, not observed hourly ridership — the source dataset only '
-              'records daily totals, so the hourly baseline shape is a rule-based assumption informed by '
-              'Rapid KL\'s published operating hours and rush-hour windows, not measured hourly data.',
+          'These are modelled estimates, not observed hourly ridership. The source dataset contains daily '
+              'totals only.',
           style: TextStyle(fontSize: 11, color: Colors.black54, fontStyle: FontStyle.italic),
         ),
       ],
     );
   }
 
-  // Table of the actual rule-based baseline % used for each sampled hour
-  // (before the network-comparison factor is applied), next to the final
-  // occupancy % shown in the chart. Values are read straight from
-  // _baselineOccupancy() and the existing _peakSlots — nothing new computed.
-  // _baselineOccupancy only branches on weekday-vs-weekend (not per specific
-  // weekday), so "Monday" stands in for any weekday and "Saturday" for any
-  // weekend day when computing the reference columns below.
-  Widget _buildPeakBaselineTable() {
+  // Full breakdown of every range in _baselineOccupancy() — not just the
+  // hours sampled by _peakSlots — so the collapsed methodology section
+  // documents the complete rule table. Values are copied straight from
+  // that function's thresholds (see kWeekdayBaselineRanges /
+  // kWeekendBaselineRanges below); nothing new computed here. Rendered as
+  // two tables (weekday ranges and weekend ranges have different row
+  // counts, so they can't share columns of one table); whichever one
+  // matches the selected day is highlighted, mirroring the old
+  // sampled-hours table's styling.
+  Widget _buildFullBaselineRanges() {
     final weekday = _peakWeekday!;
     final isWeekend = weekday == DateTime.saturday || weekday == DateTime.sunday;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _baselineRangeTable('Weekday', kWeekdayBaselineRanges, selected: !isWeekend),
+        const SizedBox(height: 8),
+        _baselineRangeTable('Weekend', kWeekendBaselineRanges, selected: isWeekend),
+      ],
+    );
+  }
+
+  Widget _baselineRangeTable(String label, List<MapEntry<String, int>> ranges, {required bool selected}) {
     final accent = const Color(0xFF4F46E5);
-    TextStyle colStyle(bool selected) => TextStyle(
-        fontSize: 12,
-        color: selected ? accent : Colors.black45,
-        fontWeight: selected ? FontWeight.bold : FontWeight.normal);
+    final headerColor = selected ? accent : Colors.black54;
+    final rowColor = selected ? Colors.black87 : Colors.black45;
+    final valueColor = selected ? accent : Colors.black45;
 
     return Container(
       width: double.infinity,
@@ -2136,87 +2243,168 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         children: [
           Row(
             children: [
-              const Expanded(
-                  flex: 2,
-                  child: Text('Hour',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black54))),
+              Expanded(
+                  flex: 5,
+                  child: Text(label,
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: headerColor))),
               Expanded(
                   flex: 3,
-                  child: Text('Weekday',
+                  child: Text('Baseline %',
                       textAlign: TextAlign.right,
-                      style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: isWeekend ? Colors.black54 : accent))),
-              Expanded(
-                  flex: 3,
-                  child: Text('Weekend',
-                      textAlign: TextAlign.right,
-                      style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: isWeekend ? accent : Colors.black54))),
-              const Expanded(
-                  flex: 3,
-                  child: Text('Final',
-                      textAlign: TextAlign.right,
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black54))),
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: headerColor))),
             ],
           ),
           const Divider(height: 10),
-          ..._peakSlots!.map((entry) {
-            final hour = entry.key;
-            final weekdayBaseline = _baselineOccupancy(DateTime.monday, hour * 60);
-            final weekendBaseline = _baselineOccupancy(DateTime.saturday, hour * 60);
-            final result = entry.value;
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 2),
-              child: Row(
-                children: [
-                  Expanded(
-                      flex: 2,
-                      child: Text(_hourLabel(hour), style: const TextStyle(fontSize: 12, color: Colors.black87))),
-                  Expanded(
-                      flex: 3,
-                      child: Text('$weekdayBaseline%', textAlign: TextAlign.right, style: colStyle(!isWeekend))),
-                  Expanded(
-                      flex: 3,
-                      child: Text('$weekendBaseline%', textAlign: TextAlign.right, style: colStyle(isWeekend))),
-                  Expanded(
-                      flex: 3,
-                      child: Text('${result.occupancy}%',
-                          textAlign: TextAlign.right,
-                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: result.level.color))),
-                ],
-              ),
-            );
-          }),
+          ...ranges.map((r) => Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Row(
+              children: [
+                Expanded(
+                    flex: 5, child: Text(r.key, style: TextStyle(fontSize: 12, color: rowColor))),
+                Expanded(
+                    flex: 3,
+                    child: Text('${r.value}%',
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                            color: valueColor))),
+              ],
+            ),
+          )),
         ],
       ),
     );
   }
 
-  Widget _buildTrendBar(String label, double heightFactor, Color color, {String? tooltip, String? valueLabel}) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.end,
-      children: [
-        if (valueLabel != null) ...[
-          Text(valueLabel,
-              style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: color)),
-          const SizedBox(height: 4),
-        ],
-        Tooltip(
-          message: tooltip ?? label,
-          waitDuration: const Duration(milliseconds: 200),
-          child: Container(
-            width: 22,
-            height: 90 * heightFactor.clamp(0.05, 1.0),
-            decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4)),
+  // Full-Day Crowd Pattern (Tab 2 / Peak Hours): hourly estimated crowd
+  // levels from 6am-12am (midnight), computed directly via predictCrowd() —
+  // i.e. the same _baselineOccupancy() rule table and the same
+  // network-comparison factor (_peakFactor) already computed by
+  // _runPeakHours(). This is purely a denser, full-day view for the chart;
+  // it does not touch _peakSlots, so the Peak Analysis Summary, Top 3
+  // Predicted Time Periods, and Peak vs Off-Peak Comparison below all keep
+  // using the original 9 sampled hours, unchanged.
+  Widget _buildFullDayCrowdChart() {
+    final weekday = _peakWeekday!;
+    final factor = _peakFactor ?? 0;
+    // 6am..12am (midnight) inclusive — the full Rapid KL operating window,
+    // rather than stopping at 10pm.
+    final hours = List.generate(19, (i) => 6 + i);
+    final results = hours.map((h) => predictCrowd(weekday, h * 60, factor)).toList();
+    final occupancies = results.map((r) => r.occupancy).toList();
+    final pointColors = results.map((r) => r.level.color).toList();
+    var peakIndex = 0;
+    for (int i = 1; i < occupancies.length; i++) {
+      if (occupancies[i] > occupancies[peakIndex]) peakIndex = i;
+    }
+
+    const slotWidth = 40.0;
+    final totalWidth = hours.length * slotWidth;
+    final effectiveWidth = totalWidth < 280 ? 280.0 : totalWidth;
+
+    final hoverIdx = _fullDayHoverIndex;
+    final hoverValid = hoverIdx != null && hoverIdx >= 0 && hoverIdx < hours.length;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Readout for the hovered/tapped point — always reserves its row
+          // so the chart doesn't jump, but only shows text once a point is
+          // hovered (desktop) or tapped (touch).
+          SizedBox(
+            height: 18,
+            child: hoverValid
+                ? Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '${_hourLabel(hours[hoverIdx])}: ${results[hoverIdx].occupancy}% (${results[hoverIdx].level.label})',
+                style: TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.bold, color: results[hoverIdx].level.color),
+              ),
+            )
+                : const SizedBox.shrink(),
           ),
-        ),
-        const SizedBox(height: 8),
-        Text(label, style: const TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
-      ],
+          const SizedBox(height: 4),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: effectiveWidth,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SizedBox(
+                    height: 120,
+                    width: effectiveWidth,
+                    child: Stack(
+                      children: [
+                        CustomPaint(
+                          size: Size(effectiveWidth, 120),
+                          painter: _FullDayCrowdLineChartPainter(
+                            occupancies: occupancies,
+                            pointColors: pointColors,
+                            peakIndex: peakIndex,
+                          ),
+                        ),
+                        // Hit-targets, one per hour slot (same even
+                        // division as the painter's own slotWidth). A
+                        // MouseRegion updates the readout above on hover
+                        // (desktop/web), and a tap does the same on touch —
+                        // in addition to the native Tooltip on long-press.
+                        // Chart drawing/design above is unchanged.
+                        Row(
+                          children: List.generate(hours.length, (i) {
+                            final result = results[i];
+                            return Expanded(
+                              child: MouseRegion(
+                                onEnter: (_) => setState(() => _fullDayHoverIndex = i),
+                                onExit: (_) => setState(() {
+                                  if (_fullDayHoverIndex == i) _fullDayHoverIndex = null;
+                                }),
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () => setState(
+                                          () => _fullDayHoverIndex = _fullDayHoverIndex == i ? null : i),
+                                  child: Tooltip(
+                                    message:
+                                    '${_hourLabel(hours[i])}: ${result.occupancy}% (${result.level.label})',
+                                    waitDuration: const Duration(milliseconds: 200),
+                                    child: Container(color: Colors.transparent),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: hours.map((h) {
+                      return SizedBox(
+                        width: totalWidth < 280 ? 280 / hours.length : slotWidth,
+                        child: Text(
+                          _hourLabel(h),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 9.5, color: Colors.black54),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart';
 import 'package:nextroute_assignment/screens/service_analytics.dart';
 import 'package:nextroute_assignment/models/analytics_notification_models.dart';
 import 'package:nextroute_assignment/services/analytics_service.dart';
+import 'package:nextroute_assignment/services/module5_user_route_context.dart';
 
 void main() {
   test('weekly CSV includes seven days, missing values and safe text', () {
@@ -450,6 +451,22 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('active journey scope only shows its bus alerts', (tester) async {
+    await tester.pumpWidget(
+      _history(
+        routeScope: module5ActiveJourneyScope,
+        activeRoutes: const {'T250'},
+        alerts: [
+          _alert('active', route: 'T250'),
+          _alert('other', route: '250'),
+        ],
+      ),
+    );
+
+    expect(find.textContaining('1 published travel alert(s)'), findsOneWidget);
+    expect(find.textContaining('2 published travel alert(s)'), findsNothing);
+  });
+
   testWidgets('previous week can be selected without showing current alerts', (
     tester,
   ) async {
@@ -547,6 +564,8 @@ Widget _history({
   List<AnalyticsAlert> alerts = const [],
   Object? alertError,
   String routeScope = '__all_network__',
+  Set<String> activeRoutes = const {},
+  Set<String> routineRoutes = const {},
 }) => MaterialApp(
   home: Scaffold(
     body: AnalyticsHistoryView(
@@ -559,6 +578,8 @@ Widget _history({
       onRetry: () async {},
       now: DateTime.utc(2026, 9, 5, 10),
       routeScope: routeScope,
+      activeRoutes: activeRoutes,
+      routineRoutes: routineRoutes,
     ),
   ),
 );

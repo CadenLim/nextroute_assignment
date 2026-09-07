@@ -9,10 +9,13 @@ import 'package:flutter/services.dart';
 import 'package:nextroute_assignment/models/analytics_notification_models.dart';
 import 'package:nextroute_assignment/services/analytics_service.dart';
 import 'package:nextroute_assignment/services/module5_route_preferences.dart';
+import 'package:nextroute_assignment/services/module5_user_route_context.dart';
 
 const _autoRefreshInterval = Duration(seconds: 30);
-const _myRoutesScope = '__my_routes__';
-const _allNetworkScope = '__all_network__';
+const _activeJourneyScope = module5ActiveJourneyScope;
+const _routineRoutesScope = module5RoutineRoutesScope;
+const _myRoutesScope = module5MyRoutesScope;
+const _allNetworkScope = module5AllNetworkScope;
 
 class _RouteAvailabilityPresentation {
   const _RouteAvailabilityPresentation(this.label, this.icon, this.color);
@@ -83,35 +86,72 @@ bool _routeIncluded(
   String? routeId,
   String scope,
   Set<String> followedRoutes,
-  Map<String, BusRouteInfo> busRoutes,
-) {
+  Map<String, BusRouteInfo> busRoutes, {
+  Set<String> activeRoutes = const {},
+  Set<String> routineRoutes = const {},
+}) {
   if (scope == _allNetworkScope) return true;
   // A route-less official notice is network-wide and relevant to every user.
-  if (routeId == null) return scope == _myRoutesScope;
-  if (scope != _myRoutesScope) {
+  if (routeId == null) return true;
+  final scopedRoutes = switch (scope) {
+    _activeJourneyScope => activeRoutes,
+    _routineRoutesScope => routineRoutes,
+    _myRoutesScope => followedRoutes,
+    _ => const <String>{},
+  };
+  if (scopedRoutes.isEmpty &&
+      scope != _activeJourneyScope &&
+      scope != _routineRoutesScope &&
+      scope != _myRoutesScope) {
     return BusRouteCatalog.matches(routeId, scope, busRoutes);
   }
-  return followedRoutes.any(
+  return scopedRoutes.any(
     (route) => BusRouteCatalog.matches(routeId, route, busRoutes),
   );
 }
 
-String _scopeLabel(String scope, Set<String> followedRoutes) =>
-    scope == _allNetworkScope
-    ? 'All network'
-    : scope == _myRoutesScope
-    ? 'My Routes (${followedRoutes.length})'
-    : 'Route $scope';
+String _scopeLabel(
+  String scope,
+  Set<String> followedRoutes, {
+  Set<String> activeRoutes = const {},
+  Set<String> routineRoutes = const {},
+}) => switch (scope) {
+  _allNetworkScope => 'All network',
+  _activeJourneyScope => 'Active Journey (${activeRoutes.length})',
+  _routineRoutesScope => 'Daily Commute / Favourites (${routineRoutes.length})',
+  _myRoutesScope => 'My Routes (${followedRoutes.length})',
+  _ => 'Route $scope',
+};
+
+Set<String> _catalogRouteCodes(
+  Iterable<String> rawRoutes,
+  Map<String, BusRouteInfo> busRoutes,
+) {
+  final normalized = {
+    for (final route in rawRoutes)
+      if (route.trim().isNotEmpty) route.trim().toUpperCase(),
+  };
+  if (busRoutes.isEmpty) return normalized;
+  return {
+    for (final route in BusRouteCatalog.selectable(busRoutes))
+      if (normalized.any(
+        (raw) => BusRouteCatalog.matches(raw, route.routeCode, busRoutes),
+      ))
+        route.routeCode.toUpperCase(),
+  };
+}
 
 class ServiceAnalyticsScreen extends StatefulWidget {
   const ServiceAnalyticsScreen({
     this.embedded = false,
     this.routePreferences,
+    this.routeContext,
     super.key,
   });
 
   final bool embedded;
   final Module5RoutePreferences? routePreferences;
+  final Module5UserRouteContext? routeContext;
 
   @override
   State<ServiceAnalyticsScreen> createState() => _ServiceAnalyticsScreenState();
@@ -126,7 +166,9 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
 
   late final SupabaseAnalyticsRepository _history;
   late final Module5RoutePreferences _routePreferences;
+  late final Module5UserRouteContext _routeContext;
   late final bool _ownsRoutePreferences;
+  late final bool _ownsRouteContext;
   late Future<ServiceAnalytics> _analyticsFuture;
   ServiceAnalytics? _lastAnalytics;
   List<DailyAnalyticsSummary> _dailySummaries = const [];
@@ -140,15 +182,20 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
   int _selectedTab = 0;
   bool _isLoading = true;
   bool _isHistoryLoading = true;
-  String _routeScope = _myRoutesScope;
+  String _routeScope = _allNetworkScope;
+  bool _routeScopeChosenByUser = false;
 
   @override
   void initState() {
     super.initState();
     _ownsRoutePreferences = widget.routePreferences == null;
     _routePreferences = widget.routePreferences ?? Module5RoutePreferences();
+    _ownsRouteContext = widget.routeContext == null;
+    _routeContext = widget.routeContext ?? Module5UserRouteContext();
     _routePreferences.addListener(_routePreferencesChanged);
+    _routeContext.addListener(_routeContextChanged);
     if (!_routePreferences.loaded) _routePreferences.load();
+    _routeContext.load();
     _history = SupabaseAnalyticsRepository();
     _analyticsFuture = _loadAnalytics();
     _loadCloudHistory();
@@ -161,18 +208,52 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
     _refreshTimer?.cancel();
     _service.close();
     _routePreferences.removeListener(_routePreferencesChanged);
+    _routeContext.removeListener(_routeContextChanged);
     if (_ownsRoutePreferences) _routePreferences.dispose();
+    if (_ownsRouteContext) _routeContext.dispose();
     super.dispose();
   }
 
   void _routePreferencesChanged() {
     if (!mounted) return;
-    if (_routeScope != _myRoutesScope &&
-        _routeScope != _allNetworkScope &&
-        !_routePreferences.followedRoutes.contains(_routeScope)) {
-      _routeScope = _myRoutesScope;
-    }
+    _synchroniseRouteScope();
     setState(() {});
+  }
+
+  void _routeContextChanged() {
+    if (!mounted) return;
+    _synchroniseRouteScope(prioritiseNewActiveJourney: true);
+    setState(() {});
+  }
+
+  Set<String> get _activeRoutes =>
+      _catalogRouteCodes(_routeContext.activeRoutes, _busRoutes);
+
+  Set<String> get _routineRoutes =>
+      _catalogRouteCodes(_routeContext.routineRoutes, _busRoutes);
+
+  void _synchroniseRouteScope({bool prioritiseNewActiveJourney = false}) {
+    final active = _activeRoutes;
+    final routine = _routineRoutes;
+    final followed = _routePreferences.followedRoutes;
+    final availableIndividualRoutes = {...active, ...routine, ...followed};
+    final valid = switch (_routeScope) {
+      _activeJourneyScope => active.isNotEmpty,
+      _routineRoutesScope => routine.isNotEmpty,
+      _myRoutesScope => followed.isNotEmpty,
+      _allNetworkScope => true,
+      _ => availableIndividualRoutes.contains(_routeScope),
+    };
+    if (prioritiseNewActiveJourney && active.isNotEmpty) {
+      _routeScope = _activeJourneyScope;
+      _routeScopeChosenByUser = false;
+    } else if (!valid || !_routeScopeChosenByUser) {
+      _routeScope = module5PreferredScope(
+        activeRoutes: active,
+        routineRoutes: routine,
+        myRoutes: followed,
+      );
+    }
   }
 
   Future<void> _refresh() async {
@@ -184,6 +265,7 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
       _analyticsFuture = _loadAnalytics();
     });
     _loadCloudHistory();
+    unawaited(_routeContext.refreshPersonalRoutes(force: true));
     try {
       await _analyticsFuture;
     } on Object {
@@ -268,7 +350,12 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
   Future<void> _loadBusRoutes() async {
     try {
       final routes = await BusRouteCatalog.load();
-      if (mounted) setState(() => _busRoutes = routes);
+      if (mounted) {
+        setState(() {
+          _busRoutes = routes;
+          _synchroniseRouteScope();
+        });
+      }
     } on Object {
       // Raw route IDs remain available if the local catalogue cannot load.
     }
@@ -370,6 +457,9 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    _synchroniseRouteScope();
+    final activeRoutes = _activeRoutes;
+    final routineRoutes = _routineRoutes;
     final content = Column(
       children: [
         _AnalyticsTabs(
@@ -378,11 +468,21 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
         ),
         _RouteScopeBar(
           routes: _routePreferences.followedRoutes,
+          activeRoutes: activeRoutes,
+          routineRoutes: routineRoutes,
           selected: _routeScope,
-          onSelected: (value) => setState(() => _routeScope = value),
+          onSelected: (value) => setState(() {
+            _routeScope = value;
+            _routeScopeChosenByUser = true;
+          }),
           onManage: _manageRoutes,
         ),
-        Expanded(child: _buildSelectedTab()),
+        Expanded(
+          child: _buildSelectedTab(
+            activeRoutes: activeRoutes,
+            routineRoutes: routineRoutes,
+          ),
+        ),
       ],
     );
 
@@ -404,7 +504,10 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
     );
   }
 
-  Widget _buildSelectedTab() {
+  Widget _buildSelectedTab({
+    required Set<String> activeRoutes,
+    required Set<String> routineRoutes,
+  }) {
     return switch (_selectedTab) {
       0 => FutureBuilder<ServiceAnalytics>(
         future: _analyticsFuture,
@@ -422,6 +525,8 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
                   analytics: analytics,
                   busRoutes: _busRoutes,
                   followedRoutes: _routePreferences.followedRoutes,
+                  activeRoutes: activeRoutes,
+                  routineRoutes: routineRoutes,
                   routeScope: _routeScope,
                   alerts: _alerts,
                   isLoading: _isLoading,
@@ -441,6 +546,8 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
         onRetry: _loadCloudHistory,
         routeScope: _routeScope,
         followedRoutes: _routePreferences.followedRoutes,
+        activeRoutes: activeRoutes,
+        routineRoutes: routineRoutes,
         busRoutes: _busRoutes,
       ),
     };
@@ -478,30 +585,37 @@ class _AnalyticsTabs extends StatelessWidget {
 class _RouteScopeBar extends StatelessWidget {
   const _RouteScopeBar({
     required this.routes,
+    required this.activeRoutes,
+    required this.routineRoutes,
     required this.selected,
     required this.onSelected,
     required this.onManage,
   });
 
   final Set<String> routes;
+  final Set<String> activeRoutes;
+  final Set<String> routineRoutes;
   final String selected;
   final ValueChanged<String> onSelected;
   final VoidCallback onManage;
 
   @override
   Widget build(BuildContext context) {
-    final values = routes.toList()..sort();
+    final values = {...activeRoutes, ...routineRoutes, ...routes}.toList()
+      ..sort();
     final validSelected =
+        (selected == _activeJourneyScope && activeRoutes.isNotEmpty) ||
+        (selected == _routineRoutesScope && routineRoutes.isNotEmpty) ||
         selected == _myRoutesScope ||
         selected == _allNetworkScope ||
-        routes.contains(selected);
+        values.contains(selected);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
       child: Row(
         children: [
           Expanded(
             child: DropdownButtonFormField<String>(
-              initialValue: validSelected ? selected : _myRoutesScope,
+              initialValue: validSelected ? selected : _allNetworkScope,
               isExpanded: true,
               decoration: const InputDecoration(
                 labelText: 'Analytics for',
@@ -509,6 +623,20 @@ class _RouteScopeBar extends StatelessWidget {
                 isDense: true,
               ),
               items: [
+                if (activeRoutes.isNotEmpty)
+                  DropdownMenuItem(
+                    value: _activeJourneyScope,
+                    child: Text(
+                      'Active Journey · ${(activeRoutes.toList()..sort()).join(', ')}',
+                    ),
+                  ),
+                if (routineRoutes.isNotEmpty)
+                  DropdownMenuItem(
+                    value: _routineRoutesScope,
+                    child: Text(
+                      'Daily Commute / Favourites (${routineRoutes.length})',
+                    ),
+                  ),
                 DropdownMenuItem(
                   value: _myRoutesScope,
                   child: Text('My Routes (${routes.length})'),
@@ -542,6 +670,8 @@ class _LiveServiceView extends StatelessWidget {
     required this.analytics,
     required this.busRoutes,
     required this.followedRoutes,
+    required this.activeRoutes,
+    required this.routineRoutes,
     required this.routeScope,
     required this.alerts,
     required this.isLoading,
@@ -551,6 +681,8 @@ class _LiveServiceView extends StatelessWidget {
   final ServiceAnalytics analytics;
   final Map<String, BusRouteInfo> busRoutes;
   final Set<String> followedRoutes;
+  final Set<String> activeRoutes;
+  final Set<String> routineRoutes;
   final String routeScope;
   final List<AnalyticsAlert> alerts;
   final bool isLoading;
@@ -561,7 +693,14 @@ class _LiveServiceView extends StatelessWidget {
     final emptyFeed = analytics.vehicleCount == 0;
     final visibleRoutes = <String, int>{
       for (final entry in analytics.vehiclesByRoute.entries)
-        if (_routeIncluded(entry.key, routeScope, followedRoutes, busRoutes))
+        if (_routeIncluded(
+          entry.key,
+          routeScope,
+          followedRoutes,
+          busRoutes,
+          activeRoutes: activeRoutes,
+          routineRoutes: routineRoutes,
+        ))
           entry.key: entry.value,
     };
     final now = DateTime.now().toUtc();
@@ -569,7 +708,14 @@ class _LiveServiceView extends StatelessWidget {
       (alert) =>
           alert.isCurrentAt(now) &&
           !alert.isDataHealth &&
-          _routeIncluded(alert.routeId, routeScope, followedRoutes, busRoutes),
+          _routeIncluded(
+            alert.routeId,
+            routeScope,
+            followedRoutes,
+            busRoutes,
+            activeRoutes: activeRoutes,
+            routineRoutes: routineRoutes,
+          ),
     );
     final delayAlerts = currentAlerts
         .where((alert) => alert.type == TransitNotificationType.delay)
@@ -582,7 +728,10 @@ class _LiveServiceView extends StatelessWidget {
       (a, b) => a + b,
     );
     final specificRoute =
-        routeScope == _myRoutesScope || routeScope == _allNetworkScope
+        routeScope == _myRoutesScope ||
+            routeScope == _activeJourneyScope ||
+            routeScope == _routineRoutesScope ||
+            routeScope == _allNetworkScope
         ? null
         : busRoutes[routeScope];
     final availability = specificRoute == null
@@ -984,6 +1133,8 @@ class AnalyticsHistoryView extends StatefulWidget {
     this.saveReport,
     this.routeScope = _allNetworkScope,
     this.followedRoutes = const {},
+    this.activeRoutes = const {},
+    this.routineRoutes = const {},
     this.busRoutes = const {},
     super.key,
   });
@@ -999,6 +1150,8 @@ class AnalyticsHistoryView extends StatefulWidget {
   final Future<String?> Function(String name, Uint8List bytes)? saveReport;
   final String routeScope;
   final Set<String> followedRoutes;
+  final Set<String> activeRoutes;
+  final Set<String> routineRoutes;
   final Map<String, BusRouteInfo> busRoutes;
   @override
   State<AnalyticsHistoryView> createState() => _AnalyticsHistoryViewState();
@@ -1111,6 +1264,8 @@ class _AnalyticsHistoryViewState extends State<AnalyticsHistoryView> {
             widget.routeScope,
             widget.followedRoutes,
             widget.busRoutes,
+            activeRoutes: widget.activeRoutes,
+            routineRoutes: widget.routineRoutes,
           ),
         )
         .toList();
@@ -1129,13 +1284,24 @@ class _AnalyticsHistoryViewState extends State<AnalyticsHistoryView> {
       ).length,
     );
     final partial = widget.report && _weekOffset == 0;
-    final emptyMyRoutes =
-        widget.routeScope == _myRoutesScope && widget.followedRoutes.isEmpty;
-    final scopeLabel = _scopeLabel(widget.routeScope, widget.followedRoutes);
+    final emptySelectedScope = switch (widget.routeScope) {
+      _activeJourneyScope => widget.activeRoutes.isEmpty,
+      _routineRoutesScope => widget.routineRoutes.isEmpty,
+      _myRoutesScope => widget.followedRoutes.isEmpty,
+      _ => false,
+    };
+    final scopeLabel = _scopeLabel(
+      widget.routeScope,
+      widget.followedRoutes,
+      activeRoutes: widget.activeRoutes,
+      routineRoutes: widget.routineRoutes,
+    );
     final summary = !available
         ? 'Alert history could not be refreshed. No event totals or conclusions are shown.'
-        : emptyMyRoutes
-        ? 'Choose at least one route using Manage, or select All network to see network-wide analytics.'
+        : emptySelectedScope
+        ? widget.routeScope == _myRoutesScope
+              ? 'Choose at least one route using Manage, or select All network to see network-wide analytics.'
+              : 'No routes are available for this personal scope. Choose My Routes or select All network.'
         : alerts.isEmpty
         ? 'No published travel alerts were found for $scopeLabel. '
               'This does not prove that no disruptions occurred.'
@@ -1175,7 +1341,7 @@ class _AnalyticsHistoryViewState extends State<AnalyticsHistoryView> {
                     : 'See when and where travel alerts were published over the last seven days.',
               ),
               const SizedBox(height: 12),
-              if (widget.report && !emptyMyRoutes)
+              if (widget.report && !emptySelectedScope)
                 DropdownButtonFormField<int>(
                   initialValue: _weekOffset,
                   isExpanded: true,
@@ -1201,7 +1367,7 @@ class _AnalyticsHistoryViewState extends State<AnalyticsHistoryView> {
                     _selectedDay = null;
                   }),
                 ),
-              if (!widget.report && !emptyMyRoutes)
+              if (!widget.report && !emptySelectedScope)
                 DropdownButtonFormField<TransitNotificationType?>(
                   initialValue: _trendType,
                   isExpanded: true,
@@ -1247,12 +1413,12 @@ class _AnalyticsHistoryViewState extends State<AnalyticsHistoryView> {
                       '${widget.updatedAt == null ? '' : 'Last complete refresh: ${_formatDataAge(widget.updatedAt!)}.'}',
                 ),
               _InformationCard(
-                icon: emptyMyRoutes
+                icon: emptySelectedScope
                     ? Icons.route_outlined
                     : widget.report
                     ? Icons.summarize_outlined
                     : Icons.insights,
-                title: emptyMyRoutes
+                title: emptySelectedScope
                     ? 'No routes selected'
                     : widget.report
                     ? (partial
@@ -1262,7 +1428,7 @@ class _AnalyticsHistoryViewState extends State<AnalyticsHistoryView> {
                 message: summary,
               ),
               const SizedBox(height: 12),
-              if (available && !emptyMyRoutes) ...[
+              if (available && !emptySelectedScope) ...[
                 if (widget.report) ...[
                   _CompactCardGrid(
                     children: [
@@ -1310,7 +1476,7 @@ class _AnalyticsHistoryViewState extends State<AnalyticsHistoryView> {
                     message: partial
                         ? 'This week is still in progress. A full-week increase/decrease would be misleading.'
                         : '${alerts.length} published alerts this week; '
-                              '${AnalyticsPeriod.alertsIn(all, start.subtract(const Duration(days: 7)), start).where((alert) => _routeIncluded(alert.routeId, widget.routeScope, widget.followedRoutes, widget.busRoutes)).length} '
+                              '${AnalyticsPeriod.alertsIn(all, start.subtract(const Duration(days: 7)), start).where((alert) => _routeIncluded(alert.routeId, widget.routeScope, widget.followedRoutes, widget.busRoutes, activeRoutes: widget.activeRoutes, routineRoutes: widget.routineRoutes)).length} '
                               'in the previous week. These are archive counts, not actual service reliability.',
                   ),
                   const SizedBox(height: 12),
@@ -1360,7 +1526,7 @@ class _AnalyticsHistoryViewState extends State<AnalyticsHistoryView> {
                   ),
                 ),
               ],
-              if (!emptyMyRoutes) ...[
+              if (!emptySelectedScope) ...[
                 const SizedBox(height: 12),
                 ExpansionTile(
                   tilePadding: const EdgeInsets.symmetric(horizontal: 12),

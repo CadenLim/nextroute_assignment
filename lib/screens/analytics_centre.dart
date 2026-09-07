@@ -3,9 +3,12 @@ import 'package:nextroute_assignment/screens/notification_centre.dart';
 import 'package:nextroute_assignment/screens/service_analytics.dart';
 import 'package:nextroute_assignment/services/notification_service.dart';
 import 'package:nextroute_assignment/services/module5_route_preferences.dart';
+import 'package:nextroute_assignment/services/module5_user_route_context.dart';
 
 class AnalyticsCentreScreen extends StatefulWidget {
-  const AnalyticsCentreScreen({super.key});
+  const AnalyticsCentreScreen({this.showBackButton = false, super.key});
+
+  final bool showBackButton;
 
   @override
   State<AnalyticsCentreScreen> createState() => _AnalyticsCentreScreenState();
@@ -14,6 +17,7 @@ class AnalyticsCentreScreen extends StatefulWidget {
 class _AnalyticsCentreScreenState extends State<AnalyticsCentreScreen> {
   late final NotificationRepository _repository;
   late final Module5RoutePreferences _routePreferences;
+  late final Module5UserRouteContext _routeContext;
   int _selectedSection = 0;
   int _unreadCount = 0;
 
@@ -25,7 +29,11 @@ class _AnalyticsCentreScreenState extends State<AnalyticsCentreScreen> {
       pushService: LocalPushNotificationService(),
     );
     _routePreferences = Module5RoutePreferences();
+    _routeContext = Module5UserRouteContext.shared;
     _routePreferences.load();
+    // Re-read Favourite Routes and Daily Commutes whenever Module 5 opens so
+    // a route saved moments ago is immediately available for prioritisation.
+    _routeContext.load(forcePersonalRoutes: true);
     _refreshUnreadCount();
   }
 
@@ -58,6 +66,10 @@ class _AnalyticsCentreScreenState extends State<AnalyticsCentreScreen> {
             _CentreHeader(
               selectedSection: _selectedSection,
               unreadCount: _unreadCount,
+              showBackButton: widget.showBackButton,
+              onBack: widget.showBackButton
+                  ? () => Navigator.of(context).pop()
+                  : null,
               onSectionChanged: (index) {
                 setState(() => _selectedSection = index);
                 if (index == 1) {
@@ -72,12 +84,14 @@ class _AnalyticsCentreScreenState extends State<AnalyticsCentreScreen> {
                   ServiceAnalyticsScreen(
                     embedded: true,
                     routePreferences: _routePreferences,
+                    routeContext: _routeContext,
                   ),
                   NotificationCentreScreen(
                     embedded: true,
                     repository: _repository,
                     onNotificationsChanged: _refreshUnreadCount,
                     routePreferences: _routePreferences,
+                    routeContext: _routeContext,
                   ),
                 ],
               ),
@@ -93,11 +107,15 @@ class _CentreHeader extends StatelessWidget {
   const _CentreHeader({
     required this.selectedSection,
     required this.unreadCount,
+    required this.showBackButton,
+    this.onBack,
     required this.onSectionChanged,
   });
 
   final int selectedSection;
   final int unreadCount;
+  final bool showBackButton;
+  final VoidCallback? onBack;
   final ValueChanged<int> onSectionChanged;
 
   @override
@@ -111,6 +129,15 @@ class _CentreHeader extends StatelessWidget {
         children: [
           Row(
             children: [
+              if (showBackButton) ...[
+                IconButton(
+                  onPressed: onBack,
+                  tooltip: 'Back to active journey',
+                  color: Colors.white,
+                  icon: const Icon(Icons.arrow_back),
+                ),
+                const SizedBox(width: 4),
+              ],
               const Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,

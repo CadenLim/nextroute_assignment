@@ -6,6 +6,7 @@ import 'package:nextroute_assignment/screens/notification_preferences.dart';
 import 'package:nextroute_assignment/services/analytics_service.dart';
 import 'package:nextroute_assignment/services/notification_service.dart';
 import 'package:nextroute_assignment/services/module5_route_preferences.dart';
+import 'package:nextroute_assignment/services/module5_user_route_context.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class NotificationCentreScreen extends StatefulWidget {
@@ -15,6 +16,7 @@ class NotificationCentreScreen extends StatefulWidget {
     this.onNotificationsChanged,
     this.enableRealtime = true,
     this.routePreferences,
+    this.routeContext,
     super.key,
   });
 
@@ -23,6 +25,7 @@ class NotificationCentreScreen extends StatefulWidget {
   final VoidCallback? onNotificationsChanged;
   final bool enableRealtime;
   final Module5RoutePreferences? routePreferences;
+  final Module5UserRouteContext? routeContext;
 
   @override
   State<NotificationCentreScreen> createState() =>
@@ -32,7 +35,9 @@ class NotificationCentreScreen extends StatefulWidget {
 class _NotificationCentreScreenState extends State<NotificationCentreScreen> {
   late final NotificationRepository _repository;
   late final Module5RoutePreferences _routePreferences;
+  late final Module5UserRouteContext _routeContext;
   late final bool _ownsRoutePreferences;
+  late final bool _ownsRouteContext;
   List<TransitNotification> _notifications = const [];
   NotificationFilter _filter = NotificationFilter.all;
   Object? _error;
@@ -43,15 +48,20 @@ class _NotificationCentreScreenState extends State<NotificationCentreScreen> {
   Timer? _expiryTimer;
   final _searchController = TextEditingController();
   String _search = '';
-  bool _allNetwork = false;
+  String _routeScope = module5AllNetworkScope;
+  bool _routeScopeChosenByUser = false;
 
   @override
   void initState() {
     super.initState();
     _ownsRoutePreferences = widget.routePreferences == null;
     _routePreferences = widget.routePreferences ?? Module5RoutePreferences();
+    _ownsRouteContext = widget.routeContext == null;
+    _routeContext = widget.routeContext ?? Module5UserRouteContext();
     _routePreferences.addListener(_routePreferencesChanged);
+    _routeContext.addListener(_routeContextChanged);
     if (!_routePreferences.loaded) _routePreferences.load();
+    _routeContext.load();
     _repository =
         widget.repository ??
         NotificationRepository(
@@ -81,18 +91,74 @@ class _NotificationCentreScreenState extends State<NotificationCentreScreen> {
       _repository.removeSubscription(channel);
     }
     _routePreferences.removeListener(_routePreferencesChanged);
+    _routeContext.removeListener(_routeContextChanged);
     if (_ownsRoutePreferences) _routePreferences.dispose();
+    if (_ownsRouteContext) _routeContext.dispose();
     super.dispose();
   }
 
   void _routePreferencesChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    _synchroniseRouteScope();
+    setState(() {});
+  }
+
+  void _routeContextChanged() {
+    if (!mounted) return;
+    _synchroniseRouteScope(prioritiseNewActiveJourney: true);
+    setState(() {});
+  }
+
+  Set<String> _catalogCodes(Iterable<String> rawRoutes) {
+    final normalized = {
+      for (final route in rawRoutes)
+        if (route.trim().isNotEmpty) route.trim().toUpperCase(),
+    };
+    if (_busRoutes.isEmpty) return normalized;
+    return {
+      for (final route in BusRouteCatalog.selectable(_busRoutes))
+        if (normalized.any(
+          (raw) => BusRouteCatalog.matches(raw, route.routeCode, _busRoutes),
+        ))
+          route.routeCode.toUpperCase(),
+    };
+  }
+
+  Set<String> get _activeRoutes => _catalogCodes(_routeContext.activeRoutes);
+  Set<String> get _routineRoutes => _catalogCodes(_routeContext.routineRoutes);
+
+  void _synchroniseRouteScope({bool prioritiseNewActiveJourney = false}) {
+    final active = _activeRoutes;
+    final routine = _routineRoutes;
+    final followed = _routePreferences.followedRoutes;
+    final valid = switch (_routeScope) {
+      module5ActiveJourneyScope => active.isNotEmpty,
+      module5RoutineRoutesScope => routine.isNotEmpty,
+      module5MyRoutesScope => followed.isNotEmpty,
+      module5AllNetworkScope => true,
+      _ => false,
+    };
+    if (prioritiseNewActiveJourney && active.isNotEmpty) {
+      _routeScope = module5ActiveJourneyScope;
+      _routeScopeChosenByUser = false;
+    } else if (!valid || !_routeScopeChosenByUser) {
+      _routeScope = module5PreferredScope(
+        activeRoutes: active,
+        routineRoutes: routine,
+        myRoutes: followed,
+      );
+    }
   }
 
   Future<void> _loadBusRoutes() async {
     try {
       final routes = await BusRouteCatalog.load();
-      if (mounted) setState(() => _busRoutes = routes);
+      if (mounted) {
+        setState(() {
+          _busRoutes = routes;
+          _synchroniseRouteScope();
+        });
+      }
     } on Object {
       // Notifications can still display their raw route ID.
     }
@@ -100,6 +166,7 @@ class _NotificationCentreScreenState extends State<NotificationCentreScreen> {
 
   Future<void> _loadNotifications() async {
     if (!mounted) return;
+    unawaited(_routeContext.refreshPersonalRoutes(force: true));
     setState(() {
       _isLoading = true;
       _error = null;
@@ -265,7 +332,10 @@ class _NotificationCentreScreenState extends State<NotificationCentreScreen> {
       );
     }
 
+    _synchroniseRouteScope();
     final unreadCount = _repository.unreadCount(_notifications);
+    final activeRoutes = _activeRoutes;
+    final routineRoutes = _routineRoutes;
     final visible = _repository
         .filterNotifications(_notifications, _filter)
         .where((notice) {
@@ -335,24 +405,47 @@ class _NotificationCentreScreenState extends State<NotificationCentreScreen> {
                       child: Row(
                         children: [
                           Expanded(
-                            child: SegmentedButton<bool>(
-                              segments: [
-                                ButtonSegment(
-                                  value: false,
-                                  icon: const Icon(Icons.star_outline),
-                                  label: Text(
+                            child: DropdownButtonFormField<String>(
+                              initialValue: _routeScope,
+                              isExpanded: true,
+                              decoration: const InputDecoration(
+                                labelText: 'Notifications for',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                              items: [
+                                if (activeRoutes.isNotEmpty)
+                                  DropdownMenuItem(
+                                    value: module5ActiveJourneyScope,
+                                    child: Text(
+                                      'Active Journey · ${(activeRoutes.toList()..sort()).join(', ')}',
+                                    ),
+                                  ),
+                                if (routineRoutes.isNotEmpty)
+                                  DropdownMenuItem(
+                                    value: module5RoutineRoutesScope,
+                                    child: Text(
+                                      'Daily Commute / Favourites (${routineRoutes.length})',
+                                    ),
+                                  ),
+                                DropdownMenuItem(
+                                  value: module5MyRoutesScope,
+                                  child: Text(
                                     'My Routes (${_routePreferences.followedRoutes.length})',
                                   ),
                                 ),
-                                const ButtonSegment(
-                                  value: true,
-                                  icon: Icon(Icons.public),
-                                  label: Text('All network'),
+                                const DropdownMenuItem(
+                                  value: module5AllNetworkScope,
+                                  child: Text('All network'),
                                 ),
                               ],
-                              selected: {_allNetwork},
-                              onSelectionChanged: (selection) =>
-                                  setState(() => _allNetwork = selection.first),
+                              onChanged: (value) {
+                                if (value == null) return;
+                                setState(() {
+                                  _routeScope = value;
+                                  _routeScopeChosenByUser = true;
+                                });
+                              },
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -456,7 +549,7 @@ class _NotificationCentreScreenState extends State<NotificationCentreScreen> {
                         text:
                             'Possible slow movement is estimated only after repeated fresh GPS movement intervals. It is not operator-confirmed congestion, and insufficient data is never treated as zero congestion.',
                       ),
-                    if (!_allNetwork &&
+                    if (_routeScope == module5MyRoutesScope &&
                         _routePreferences.followedRoutes.isEmpty)
                       const _ScopeNote(
                         icon: Icons.star_outline,
@@ -494,7 +587,7 @@ class _NotificationCentreScreenState extends State<NotificationCentreScreen> {
                       : _EmptyNotificationState(
                           filter: _filter,
                           noFollowedRoutes:
-                              !_allNetwork &&
+                              _routeScope == module5MyRoutesScope &&
                               _routePreferences.followedRoutes.isEmpty,
                         ),
                 )
@@ -543,9 +636,15 @@ class _NotificationCentreScreenState extends State<NotificationCentreScreen> {
   }
 
   bool _matchesRouteScope(TransitNotification notification) {
-    if (_allNetwork) return true;
+    if (_routeScope == module5AllNetworkScope) return true;
     if (notification.isDataHealth || notification.routeId == null) return true;
-    return _routePreferences.followedRoutes.any(
+    final routes = switch (_routeScope) {
+      module5ActiveJourneyScope => _activeRoutes,
+      module5RoutineRoutesScope => _routineRoutes,
+      module5MyRoutesScope => _routePreferences.followedRoutes,
+      _ => const <String>{},
+    };
+    return routes.any(
       (route) =>
           BusRouteCatalog.matches(notification.routeId, route, _busRoutes),
     );

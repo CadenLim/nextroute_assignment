@@ -204,7 +204,7 @@ class _FavouriteRoutesScreenState extends State<FavouriteRoutesScreen> {
                     Padding(
                       padding: const EdgeInsets.only(bottom: 16),
                       child: const Text(
-                        'Plan again to refresh departure times and available routes.',
+                        'Select a favourite to view current departures, waiting times, and live vehicles.',
                       ),
                     ),
                     for (final route in _routes) _buildRouteCard(route),
@@ -591,9 +591,9 @@ class _FavouriteRoutesScreenState extends State<FavouriteRoutesScreen> {
                 ),
               ),
               onPressed: _saving ? null : () => Navigator.pop(context, route),
-              icon: const Icon(Icons.route, size: 20),
+              icon: const Icon(Icons.directions_bus_filled, size: 20),
               label: Text(
-                'Plan again',
+                'View live route',
                 style: const TextStyle(fontWeight: FontWeight.w600),
               ),
             ),

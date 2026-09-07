@@ -16,6 +16,8 @@ class SavedRoute {
     required this.destination,
     required this.signature,
     required this.lineName,
+    this.serviceSequence = const [],
+    this.transportModes = const [],
   });
 
   final String? id;
@@ -24,9 +26,182 @@ class SavedRoute {
   final StationModel destination;
   final String signature;
   final String lineName;
+  final List<String> serviceSequence;
+  final List<String> transportModes;
 
-  String get routeKey =>
-      jsonEncode([_stationKey(origin), _stationKey(destination), signature]);
+  static const _stableSignaturePrefix = 'stable-route-v1:';
+
+  bool get hasStableSignature => signature.startsWith(_stableSignaturePrefix);
+
+  List<String> get stableServiceSequence => serviceSequence.isNotEmpty
+      ? serviceSequence
+            .map(_normaliseService)
+            .where((service) => service.isNotEmpty)
+            .toList(growable: false)
+      : servicesFromLineName(lineName);
+
+  List<String> get stableTransportModes => transportModes
+      .map((mode) => mode.trim().toUpperCase())
+      .where(_isVehicleMode)
+      .toList(growable: false);
+
+  String get stableSignature =>
+      stableSignatureFor(stableServiceSequence, stableTransportModes);
+
+  String get routeKey => jsonEncode([
+    _stationKey(origin),
+    _stationKey(destination),
+    stableSignatureFor(stableServiceSequence, const []),
+  ]);
+
+  static List<String> servicesFromLineName(String lineName) {
+    final withoutTransferStation = lineName.replaceFirst(
+      RegExp(r'\s*\(\s*via\b.*\)\s*$', caseSensitive: false),
+      '',
+    );
+    return withoutTransferStation
+        .split(RegExp(r'\s*(?:->|→)\s*'))
+        .map(_normaliseService)
+        .where((service) => service.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  static List<String> servicesFromJourney(Map<String, dynamic> route) {
+    final legs = route['legs'];
+    if (legs is List) {
+      final services = legs
+          .whereType<Map>()
+          .where((leg) {
+            final mode = leg['mode']?.toString().toUpperCase();
+            return mode != 'WALK' && mode != 'WAIT';
+          })
+          .map((leg) => _normaliseService(leg['name']?.toString() ?? ''))
+          .where((service) => service.isNotEmpty)
+          .toList(growable: false);
+      if (services.isNotEmpty) return services;
+    }
+    return servicesFromLineName(route['name']?.toString() ?? '');
+  }
+
+  static List<String> transportModesFromJourney(Map<String, dynamic> route) {
+    final legs = route['legs'];
+    if (legs is! List) return const [];
+    return legs
+        .whereType<Map>()
+        .map((leg) => leg['mode']?.toString().trim().toUpperCase() ?? '')
+        .where(_isVehicleMode)
+        .toList(growable: false);
+  }
+
+  static String stableSignatureFor(
+    Iterable<String> services,
+    Iterable<String> modes,
+  ) =>
+      '$_stableSignaturePrefix${jsonEncode({'services': services.map(_normaliseService).where((service) => service.isNotEmpty).toList(growable: false), 'modes': modes.map((mode) => mode.trim().toUpperCase()).where(_isVehicleMode).toList(growable: false)})}';
+
+  static String stableSignatureFromJourney(Map<String, dynamic> route) =>
+      stableSignatureFor(
+        servicesFromJourney(route),
+        transportModesFromJourney(route),
+      );
+
+  bool matchesJourney(Map<String, dynamic> route) {
+    final expectedServices = stableServiceSequence;
+    final displayServices = servicesFromLineName(
+      route['name']?.toString() ?? '',
+    );
+    if (_sameSequence(expectedServices, displayServices)) return true;
+    final legServices = servicesFromJourney(route);
+    if (_sameSequence(expectedServices, legServices)) return true;
+
+    // Compatibility for favourites created before stable-route-v1. We inspect
+    // only the service order encoded in the old value; the current journey's
+    // dynamic signature is intentionally never compared.
+    return !hasStableSignature &&
+        (_legacySignatureContainsSequence(signature, displayServices) ||
+            _legacySignatureContainsSequence(signature, legServices));
+  }
+
+  static bool _sameSequence(List<String> first, List<String> second) {
+    if (first.length != second.length || first.isEmpty) return false;
+    for (var index = 0; index < first.length; index++) {
+      if (first[index] != second[index]) return false;
+    }
+    return true;
+  }
+
+  static bool _legacySignatureContainsSequence(
+    String legacySignature,
+    List<String> services,
+  ) {
+    if (services.isEmpty) return false;
+    final signatureTokens = _normaliseService(legacySignature).split(' ');
+    var searchFrom = 0;
+    for (final service in services) {
+      final serviceTokens = service.split(' ');
+      var foundAt = -1;
+      for (
+        var index = searchFrom;
+        index + serviceTokens.length <= signatureTokens.length;
+        index++
+      ) {
+        var matches = true;
+        for (var offset = 0; offset < serviceTokens.length; offset++) {
+          if (signatureTokens[index + offset] != serviceTokens[offset]) {
+            matches = false;
+            break;
+          }
+        }
+        if (matches) {
+          foundAt = index;
+          break;
+        }
+      }
+      if (foundAt < 0) return false;
+      searchFrom = foundAt + serviceTokens.length;
+    }
+    return true;
+  }
+
+  static String _normaliseService(String value) {
+    var normalised = value
+        .trim()
+        .toUpperCase()
+        .replaceAll(RegExp(r'\s*\(\s*VIA\b.*\)\s*$'), '')
+        .replaceAll(RegExp(r'\s+VIA\s+.*$'), '')
+        .replaceAll(RegExp(r'[^A-Z0-9]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (normalised.contains('KELANA JAYA') ||
+        normalised == 'KJ' ||
+        normalised == 'KJL' ||
+        normalised == 'LINE 5') {
+      normalised = 'KELANA JAYA';
+    }
+    // Journey legs can contain bookkeeping entries such as Transfer or
+    // Interchange.  They are not services and must never become part of a
+    // favourite route's stable service sequence.
+    if (const {
+      'TRANSFER',
+      'INTERCHANGE',
+      'BOARDING',
+      'ALIGHTING',
+    }.contains(normalised)) {
+      return '';
+    }
+    return normalised;
+  }
+
+  static bool _isVehicleMode(String mode) =>
+      mode.isNotEmpty &&
+      !const {
+        'WALK',
+        'WAIT',
+        'TRANSFER',
+        'INTERCHANGE',
+        'BOARDING',
+        'ALIGHTING',
+      }.contains(mode);
 
   static String _stationKey(StationModel station) {
     final ids = station.ids.toList()..sort();
@@ -40,20 +215,44 @@ class SavedRoute {
     'route_key': routeKey,
     'origin': _stationJson(origin),
     'destination': _stationJson(destination),
-    'route_signature': signature,
+    'route_signature': stableSignature,
     'line_name': lineName,
   };
 
-  factory SavedRoute.fromJson(Map<String, dynamic> json) => SavedRoute(
-    id: json['id'] as String,
-    name: json['name'] as String,
-    origin: _stationFromJson(Map<String, dynamic>.from(json['origin'] as Map)),
-    destination: _stationFromJson(
-      Map<String, dynamic>.from(json['destination'] as Map),
-    ),
-    signature: json['route_signature'] as String,
-    lineName: json['line_name'] as String,
-  );
+  factory SavedRoute.fromJson(Map<String, dynamic> json) {
+    final signature = json['route_signature'] as String;
+    var services = const <String>[];
+    var modes = const <String>[];
+    if (signature.startsWith(_stableSignaturePrefix)) {
+      try {
+        final decoded = jsonDecode(
+          signature.substring(_stableSignaturePrefix.length),
+        );
+        if (decoded is Map) {
+          services = List<String>.from(
+            decoded['services'] as List? ?? const [],
+          );
+          modes = List<String>.from(decoded['modes'] as List? ?? const []);
+        }
+      } catch (_) {
+        // Keep loading legacy or malformed rows using their display line name.
+      }
+    }
+    return SavedRoute(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      origin: _stationFromJson(
+        Map<String, dynamic>.from(json['origin'] as Map),
+      ),
+      destination: _stationFromJson(
+        Map<String, dynamic>.from(json['destination'] as Map),
+      ),
+      signature: signature,
+      lineName: json['line_name'] as String,
+      serviceSequence: services,
+      transportModes: modes,
+    );
+  }
 
   static Map<String, dynamic> _stationJson(StationModel station) => {
     'ids': station.ids.toList()..sort(),
@@ -84,19 +283,75 @@ class SavedRoute {
     StationModel saved,
     List<StationModel> stations,
   ) {
-    for (final station in stations) {
-      if (station.ids.any(saved.ids.contains)) {
-        return StationModel(
-          ids: station.ids,
-          name: saved.name,
-          lines: station.lines,
-          category: station.category,
-          lat: station.lat,
-          lon: station.lon,
-        );
-      }
-    }
-    return null;
+    final candidates = stations
+        .where((station) => station.ids.any(saved.ids.contains))
+        .toList(growable: false);
+    if (candidates.isEmpty) return null;
+
+    final savedName = _normaliseStationName(saved.name);
+    final sameName = candidates
+        .where((station) => _normaliseStationName(station.name) == savedName)
+        .toList(growable: false);
+    final savedIds = saved.ids.toSet();
+    final sameIds = candidates
+        .where((station) {
+          final currentIds = station.ids.toSet();
+          return currentIds.length == savedIds.length &&
+              currentIds.containsAll(savedIds);
+        })
+        .toList(growable: false);
+
+    // A station name saved with the favourite is the strongest discriminator
+    // when nearby stops share an aggregated GTFS ID. Exact ID sets are the
+    // fallback for renamed stations. Coordinates break any remaining tie.
+    final pool = sameName.isNotEmpty
+        ? sameName
+        : sameIds.isNotEmpty
+        ? sameIds
+        : candidates;
+    final ranked = pool.toList()
+      ..sort((first, second) {
+        final firstOverlap = first.ids.where(savedIds.contains).length;
+        final secondOverlap = second.ids.where(savedIds.contains).length;
+        final overlapOrder = secondOverlap.compareTo(firstOverlap);
+        if (overlapOrder != 0) return overlapOrder;
+        return _stationDistanceSquared(
+          saved,
+          first,
+        ).compareTo(_stationDistanceSquared(saved, second));
+      });
+    final station = ranked.first;
+    final restoredIds = <String>{...saved.ids, ...station.ids}.toList()..sort();
+    final restoredLines = <String>{...saved.lines, ...station.lines};
+    return StationModel(
+      // Keep every ID that was used by Journey Planning when the favourite
+      // was saved. A saved location can intentionally contain multiple nearby
+      // platform/stop IDs; reducing it to one current station makes the same
+      // route disappear on reopen. Add newly resolved IDs for timetable
+      // updates without discarding the original search identity.
+      ids: restoredIds,
+      name: saved.name,
+      lines: restoredLines,
+      category: saved.category,
+      lat: saved.lat,
+      lon: saved.lon,
+    );
+  }
+
+  static String _normaliseStationName(String value) => value
+      .trim()
+      .toUpperCase()
+      .replaceAll(RegExp(r'[^A-Z0-9]+'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
+  static double _stationDistanceSquared(
+    StationModel first,
+    StationModel second,
+  ) {
+    final latitude = first.lat - second.lat;
+    final longitude = first.lon - second.lon;
+    return latitude * latitude + longitude * longitude;
   }
 }
 
@@ -256,6 +511,10 @@ class SupabaseSavedRoutesRepository implements SavedRoutesRepository {
   @override
   Future<void> save(SavedRoute route) async {
     _validateName(route.name);
+    final existingRoutes = await load();
+    if (existingRoutes.any((existing) => existing.routeKey == route.routeKey)) {
+      return;
+    }
     final routeData = route.toInsert(_userId)..remove('user_id');
     await _functions.invoke(
       'personal-data',
@@ -641,12 +900,14 @@ class SmartRoutineService {
 
     final sourceTrip = suggestion.sourceTrip;
     if (sourceTrip?.hasReusableRoute == true) {
+      final services = SavedRoute.servicesFromLineName(sourceTrip!.lineName);
       final draft = SavedRoute(
         name: _favouriteName(suggestion.origin, suggestion.destination),
-        origin: sourceTrip!.originStation!,
+        origin: sourceTrip.originStation!,
         destination: sourceTrip.destinationStation!,
-        signature: sourceTrip.routeSignature,
+        signature: SavedRoute.stableSignatureFor(services, const []),
         lineName: sourceTrip.lineName,
+        serviceSequence: services,
       );
       return _saveAndReload(draft);
     }
@@ -667,12 +928,16 @@ class SmartRoutineService {
       );
     }
     final option = routeOptions.first;
+    final services = SavedRoute.servicesFromJourney(option);
+    final modes = SavedRoute.transportModesFromJourney(option);
     final draft = SavedRoute(
       name: _favouriteName(origin.name, destination.name),
       origin: origin,
       destination: destination,
-      signature: option['sig']?.toString() ?? '',
+      signature: SavedRoute.stableSignatureFor(services, modes),
       lineName: option['name']?.toString() ?? 'Transit',
+      serviceSequence: services,
+      transportModes: modes,
     );
     return _saveAndReload(draft);
   }

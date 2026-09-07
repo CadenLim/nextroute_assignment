@@ -81,6 +81,31 @@ Deno.serve(async (request) => {
       };
 
       const id = commute.id;
+      const normalizeDays = (value: unknown): number[] =>
+        Array.isArray(value)
+          ? value.map(Number).filter(Number.isInteger).sort((a, b) => a - b)
+          : [];
+      const requestedDays = normalizeDays(values.active_days);
+      const { data: existing, error: existingError } = await admin
+        .from("daily_commutes")
+        .select("id,saved_route_id,origin,destination,arrive_by,active_days,reminder_enabled,reminder_minutes_before")
+        .eq("user_id", user.id);
+      if (existingError) throw existingError;
+      const duplicate = (existing ?? []).some((item) => {
+        if (typeof id === "string" && item.id === id) return false;
+        const itemDays = normalizeDays(item.active_days);
+        return item.saved_route_id === values.saved_route_id &&
+          item.origin.trim().toLowerCase() === values.origin.toLowerCase() &&
+          item.destination.trim().toLowerCase() === values.destination.toLowerCase() &&
+          item.arrive_by.slice(0, 5) === values.arrive_by.slice(0, 5) &&
+          JSON.stringify(itemDays) === JSON.stringify(requestedDays) &&
+          item.reminder_enabled === values.reminder_enabled &&
+          item.reminder_minutes_before === values.reminder_minutes_before;
+      });
+      if (duplicate) {
+        throw new HttpError(409, "An identical Daily Commute already exists.");
+      }
+
       if (typeof id === "string" && id.length > 0) {
         const { data, error } = await admin
           .from("daily_commutes")

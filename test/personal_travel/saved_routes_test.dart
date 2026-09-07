@@ -132,7 +132,10 @@ class ProfileServiceStub implements PersonalTravelService {
       history;
 
   @override
-  Future<void> updateProfile({String? displayName, String? phoneNumber}) async {}
+  Future<void> updateProfile({
+    String? displayName,
+    String? phoneNumber,
+  }) async {}
 
   @override
   Future<String> uploadAvatar(
@@ -209,6 +212,100 @@ Future<void> launch(WidgetTester tester, Widget screen) async {
 }
 
 void main() {
+  test('travel history restores the saved journey details', () {
+    final entry = TravelHistoryEntry.fromJson({
+      'origin': 'TAMAN BUNGA RAYA',
+      'destination': 'UTAR PINTU 2',
+      'fare': 5.25,
+      'currency': 'MYR',
+      'duration_minutes': 32,
+      'departure_time': '09:37',
+      'estimated_arrival_time': '10:09',
+      'created_at': '2026-09-07T09:37:00+08:00',
+      'origin_station': {
+        'ids': ['bus_1utama'],
+        'name': '1 UTAMA',
+        'lines': ['250'],
+        'category': 'Bus',
+        'lat': 3.15,
+        'lon': 101.61,
+      },
+      'destination_station': {
+        'ids': ['rail_klcc'],
+        'name': 'KLCC',
+        'lines': ['Kelana Jaya'],
+        'category': 'Rail',
+        'lat': 3.16,
+        'lon': 101.71,
+      },
+      'route_signature': 'DIR_250_KJ',
+      'line_name': '250 via Wangsa Maju',
+      'transit_steps': [
+        {
+          'mode': 'Bus',
+          'name': '250 via Wangsa Maju',
+          'duration': '27 min',
+          'desc': 'Board at Taman Bunga Raya',
+        },
+      ],
+    });
+
+    expect(entry.durationMinutes, 32);
+    expect(entry.estimatedArrivalTime, '10:09');
+    expect(entry.transitSteps, hasLength(1));
+    expect(entry.hasReusableRoute, isTrue);
+    expect(entry.originStation!.ids, ['bus_1utama']);
+    expect(entry.destinationStation!.ids, ['rail_klcc']);
+    expect(entry.routeSignature, 'DIR_250_KJ');
+    expect(entry.transitSteps.single.name, '250 via Wangsa Maju');
+    expect(entry.transitSteps.single.description, 'Board at Taman Bunga Raya');
+  });
+
+  testWidgets('tapping a travel history row opens journey details', (
+    tester,
+  ) async {
+    final createdAt = DateTime(2026, 9, 7, 9, 37);
+    final historyEntry = TravelHistoryEntry(
+      origin: 'TAMAN BUNGA RAYA',
+      destination: 'UTAR PINTU 2',
+      fare: 5.25,
+      currency: 'MYR',
+      departureTime: '09:37',
+      estimatedArrivalTime: '10:09',
+      durationMinutes: 32,
+      createdAt: createdAt,
+      lineName: '250 via Wangsa Maju',
+      transitSteps: const [
+        TravelHistoryStep(
+          mode: 'Bus',
+          name: '250 via Wangsa Maju',
+          duration: '27 min',
+          description: 'Board at Taman Bunga Raya',
+        ),
+      ],
+    );
+    await launch(
+      tester,
+      PersonalTravelScreen(
+        service: ProfileServiceStub(history: [historyEntry]),
+        savedRoutesRepository: MemoryRoutes(),
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('open-travel-history')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(Key('history-trip-${createdAt.toIso8601String()}')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Trip Details'), findsOneWidget);
+    expect(find.text('COMPLETED'), findsOneWidget);
+    expect(find.text('32 min'), findsOneWidget);
+    expect(find.text('RM 5.25'), findsWidgets);
+    expect(find.text('250 via Wangsa Maju'), findsWidgets);
+  });
+
   test('saved place keeps station data and resolves current GTFS IDs', () {
     final original = SavedPlace(
       type: SavedPlaceType.home,
@@ -342,6 +439,43 @@ void main() {
     expect(await service.findOrCreateFavourite(suggestion), same(route));
     expect(repository.routes, hasLength(1));
   });
+
+  test(
+    'smart routine saves the successful history route without searching again',
+    () async {
+      final repository = MemoryRoutes();
+      final api = PlanningApi()..results = [];
+      final sourceTrip = TravelHistoryEntry(
+        origin: '1 UTAMA',
+        destination: 'KLCC',
+        fare: 5.25,
+        currency: 'MYR',
+        departureTime: '09:37',
+        createdAt: DateTime(2026, 9, 7),
+        lineName: '250 via Wangsa Maju',
+        originStation: station('1 UTAMA', ['bus_1utama']),
+        destinationStation: station('KLCC', ['rail_klcc']),
+        routeSignature: 'DIR_250_KJ',
+      );
+      final suggestion = RoutineSuggestion(
+        origin: sourceTrip.origin,
+        destination: sourceTrip.destination,
+        tripCount: 3,
+        commonWeekdays: const {1, 3, 5},
+        mostRecentTrip: sourceTrip.createdAt,
+        sourceTrip: sourceTrip,
+      );
+      final service = SmartRoutineService(repository, apiService: api);
+
+      final saved = await service.findOrCreateFavourite(suggestion);
+
+      expect(api.searches, 0);
+      expect(saved.signature, 'DIR_250_KJ');
+      expect(saved.origin.ids, ['bus_1utama']);
+      expect(saved.destination.ids, ['rail_klcc']);
+      expect(repository.routes, hasLength(1));
+    },
+  );
 
   test(
     'smart routine creates a favourite through existing route services',
@@ -645,6 +779,36 @@ void main() {
     expect(icon.color, const Color(0xFFE11D48));
   });
 
+  testWidgets('the Saved summary button removes the favourite route', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repository = MemoryRoutes()..routes = [sampleRoute()];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: JourneyPlanningScreen(
+          savedRoute: sampleRoute(),
+          apiService: PlanningApi(),
+          savedRoutesRepository: repository,
+          authenticate: (_) async => true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final toggle = find.byKey(const Key('toggle-saved-route'));
+    await tester.ensureVisible(toggle);
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+
+    expect(repository.routes, isEmpty);
+    expect(find.text('Save route'), findsOneWidget);
+    expect(find.text('Route removed from Favourite Routes.'), findsOneWidget);
+  });
+
   testWidgets('Add Route switches to the main Journey tab when available', (
     tester,
   ) async {
@@ -665,6 +829,25 @@ void main() {
 
     expect(openedJourneyTab, isTrue);
     expect(find.text('Journey Planning'), findsNothing);
+  });
+
+  testWidgets('dashboard Home switches to the first Journey tab', (
+    tester,
+  ) async {
+    var openedJourneyTab = false;
+    await launch(
+      tester,
+      PersonalTravelScreen(
+        service: ProfileServiceStub(),
+        savedRoutesRepository: MemoryRoutes(),
+        onOpenJourneyPlanning: () => openedJourneyTab = true,
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('dashboard-home')));
+    await tester.pumpAndSettle();
+
+    expect(openedJourneyTab, isTrue);
   });
 
   testWidgets('profile shows a default avatar and photo picker button', (

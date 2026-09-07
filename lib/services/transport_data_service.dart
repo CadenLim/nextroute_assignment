@@ -1075,6 +1075,7 @@ class AddressService {
 
 class RecentStationService {
   static const int maximumItems = 5;
+  static const String _table = 'recent_station_searches';
 
   static String get _storageKey {
     final userId = Supabase.instance.client.auth.currentUser?.id;
@@ -1085,8 +1086,38 @@ class RecentStationService {
 
   static Future<List<Station>> load() async {
     final preferences = await SharedPreferences.getInstance();
-    final names = preferences.getStringList(_storageKey) ?? const [];
-    if (names.isEmpty) return [];
+    final localKeys = preferences.getStringList(_storageKey) ?? const <String>[];
+    var keys = localKeys;
+
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user != null) {
+      try {
+        final rows = await Supabase.instance.client
+            .from(_table)
+            .select('station_key')
+            .eq('user_id', user.id)
+            .order('searched_at', ascending: false)
+            .limit(maximumItems);
+        final cloudKeys = rows
+            .map((row) => row['station_key']?.toString())
+            .whereType<String>()
+            .where((key) => key.isNotEmpty)
+            .toList();
+
+        if (cloudKeys.isEmpty && localKeys.isNotEmpty) {
+          await _uploadExistingHistory(user.id, localKeys);
+          keys = localKeys.take(maximumItems).toList();
+        } else {
+          keys = cloudKeys;
+          await preferences.setStringList(_storageKey, keys);
+        }
+      } catch (_) {
+        // Keep using the local cache when Supabase is unavailable.
+        keys = localKeys;
+      }
+    }
+
+    if (keys.isEmpty) return [];
 
     final stations = await StationRepository.instance.loadAll();
     final byKey = {
@@ -1099,7 +1130,7 @@ class RecentStationService {
             () => station,
       );
     }
-    return names
+    return keys
         .map((key) => byKey[key] ?? byLegacyName[key])
         .whereType<Station>()
         .take(maximumItems)
@@ -1115,11 +1146,80 @@ class RecentStationService {
       ...current.where((item) => item != key),
     ].take(maximumItems).toList();
     await preferences.setStringList(_storageKey, updated);
+
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+    try {
+      final client = Supabase.instance.client;
+      await client.from(_table).upsert({
+        'user_id': user.id,
+        'station_key': key,
+        'station_name': station.name,
+        'searched_at': DateTime.now().toUtc().toIso8601String(),
+      }, onConflict: 'user_id,station_key');
+
+      final oldRows = await client
+          .from(_table)
+          .select('station_key')
+          .eq('user_id', user.id)
+          .order('searched_at', ascending: false)
+          .range(maximumItems, maximumItems + 49);
+      for (final row in oldRows) {
+        final oldKey = row['station_key']?.toString();
+        if (oldKey == null || oldKey.isEmpty) continue;
+        await client
+            .from(_table)
+            .delete()
+            .eq('user_id', user.id)
+            .eq('station_key', oldKey);
+      }
+    } catch (_) {
+      // The local history remains available when cloud synchronisation fails.
+    }
   }
 
   static Future<void> clear() async {
     final preferences = await SharedPreferences.getInstance();
     await preferences.remove(_storageKey);
+
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+    try {
+      await Supabase.instance.client
+          .from(_table)
+          .delete()
+          .eq('user_id', user.id);
+    } catch (_) {
+      // Clearing local history should still work while offline.
+    }
+  }
+
+  static Future<void> _uploadExistingHistory(
+    String userId,
+    List<String> keys,
+  ) async {
+    final stations = await StationRepository.instance.loadAll();
+    final byKey = {
+      for (final station in stations) _stationKey(station): station,
+    };
+    final now = DateTime.now().toUtc();
+    final rows = <Map<String, Object>>[];
+    for (var index = 0; index < keys.length && index < maximumItems; index++) {
+      final key = keys[index];
+      rows.add({
+        'user_id': userId,
+        'station_key': key,
+        'station_name': byKey[key]?.name ?? key.split('|').first,
+        'searched_at': now
+            .subtract(Duration(milliseconds: index))
+            .toIso8601String(),
+      });
+    }
+    if (rows.isNotEmpty) {
+      await Supabase.instance.client
+          .from(_table)
+          .upsert(rows, onConflict: 'user_id,station_key');
+    }
   }
 
   static String _stationKey(Station station) {

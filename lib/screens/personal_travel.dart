@@ -198,6 +198,7 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
         child: DailyCommuteOverviewSheet(
           service: _dailyCommuteService,
           savedRoutesRepository: widget.savedRoutesRepository,
+          onOpenJourneyPlanning: widget.onOpenJourneyPlanning,
         ),
       ),
     );
@@ -238,6 +239,12 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
             savedRoutesRepository: _savedRoutesRepository,
             initialRoute: route,
             initialActiveDays: suggestion.commonWeekdays,
+            addFavouriteJourney: widget.onOpenJourneyPlanning == null
+                ? null
+                : (settingsContext) async {
+                    Navigator.pop(settingsContext);
+                    widget.onOpenJourneyPlanning!();
+                  },
           ),
         ),
       );
@@ -248,6 +255,10 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
         _loadHistory(),
       ]);
     } catch (error) {
+      if (error is RoutineRouteUnavailableException && mounted) {
+        await _offerRoutineRouteRefresh(suggestion);
+        return;
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -259,6 +270,49 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
     } finally {
       if (mounted) setState(() => _isPreparingRoutine = false);
     }
+  }
+
+  Future<void> _offerRoutineRouteRefresh(RoutineSuggestion suggestion) async {
+    final continueToSettings = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.route_outlined, color: _blue),
+        title: const Text('Route needs refreshing'),
+        content: Text(
+          '${suggestion.origin} → ${suggestion.destination} does not have '
+          'reusable route details. Add or select a Favourite Journey to '
+          'continue setting up this Daily Commute.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('continue-routine-with-favourite'),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    if (continueToSettings != true || !mounted) return;
+    await Navigator.push<DailyCommute>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DailyCommuteSettingsScreen(
+          service: _dailyCommuteService,
+          savedRoutesRepository: _savedRoutesRepository,
+          initialActiveDays: suggestion.commonWeekdays,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    await Future.wait([
+      _loadDailyCommute(),
+      _loadSavedRoutes(),
+      _loadHistory(),
+    ]);
   }
 
   Future<void> _loadProfile({String? confirmedEmail}) async {
@@ -548,17 +602,35 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
                 children: [
                   Row(
                     children: [
-                      const Icon(
-                        Icons.chevron_left,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                      const Text(
-                        'Home',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
+                      InkWell(
+                        key: const Key('dashboard-home'),
+                        onTap:
+                            widget.onOpenJourneyPlanning ??
+                            () => Navigator.maybePop(context),
+                        borderRadius: BorderRadius.circular(8),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 2,
+                            vertical: 6,
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.chevron_left,
+                                color: Colors.white,
+                                size: 20,
+                              ),
+                              Text(
+                                'Home',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                       const Spacer(),
@@ -1545,23 +1617,315 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
 
   Widget _historyRow(TravelHistoryEntry entry) {
     final line = _lineDetails(entry.lineName);
-    return Container(
-      margin: const EdgeInsets.only(bottom: 7),
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 10),
-      decoration: BoxDecoration(
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 7),
+      child: Material(
         color: const Color(0xFFF7F9FC),
         borderRadius: BorderRadius.circular(13),
+        child: InkWell(
+          key: Key('history-trip-${entry.createdAt.toIso8601String()}'),
+          onTap: () => _showTripDetails(entry),
+          borderRadius: BorderRadius.circular(13),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 10),
+            child: Row(
+              children: [
+                _lineBadge(line.$1, line.$2, large: true),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${entry.origin} → ${entry.destination}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        _timeLabel(entry),
+                        style: const TextStyle(
+                          color: Color(0xFF8290A5),
+                          fontSize: 9,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '${_currencyLabel(entry.currency)} ${entry.fare.toStringAsFixed(2)}',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(width: 3),
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  size: 18,
+                  color: Color(0xFF9BA6B7),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showTripDetails(TravelHistoryEntry entry) async {
+    final line = _lineDetails(entry.lineName);
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.sizeOf(sheetContext).height * 0.78,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 12, 12),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Trip Details',
+                        style: TextStyle(
+                          fontSize: 19,
+                          fontWeight: FontWeight.w800,
+                          color: _navy,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      key: const Key('close-trip-details'),
+                      tooltip: 'Close',
+                      onPressed: () => Navigator.pop(sheetContext),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF4F7FC),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: _border),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              _lineBadge(line.$1, line.$2, large: true),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  entry.lineName,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 9,
+                                  vertical: 5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFE6F7ED),
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: const Text(
+                                  'COMPLETED',
+                                  style: TextStyle(
+                                    color: Color(0xFF25824E),
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            entry.origin,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 6),
+                            child: Icon(
+                              Icons.south_rounded,
+                              size: 18,
+                              color: _blue,
+                            ),
+                          ),
+                          Text(
+                            entry.destination,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Container(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: _border),
+                      ),
+                      child: Row(
+                        children: [
+                          _tripMetric('DEPART', _timeLabel(entry)),
+                          _metricDivider(),
+                          _tripMetric(
+                            'ARRIVE',
+                            _storedTimeLabel(entry.estimatedArrivalTime),
+                          ),
+                          _metricDivider(),
+                          _tripMetric(
+                            'DURATION',
+                            entry.durationMinutes > 0
+                                ? '${entry.durationMinutes} min'
+                                : '—',
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _detailTile(
+                            Icons.payments_outlined,
+                            'TOTAL FARE',
+                            '${_currencyLabel(entry.currency)} ${entry.fare.toStringAsFixed(2)}',
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _detailTile(
+                            Icons.calendar_today_outlined,
+                            'TRIP DATE',
+                            _historySection(entry.createdAt),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                    _sectionLabel('JOURNEY DETAILS'),
+                    const SizedBox(height: 9),
+                    if (entry.transitSteps.isEmpty)
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF7F9FC),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: const Text(
+                          'Detailed transit steps were not recorded for this trip.',
+                          style: TextStyle(
+                            color: Color(0xFF6F7C90),
+                            fontSize: 12,
+                            height: 1.4,
+                          ),
+                        ),
+                      )
+                    else
+                      ...entry.transitSteps.indexed.map(
+                        (indexedStep) => _tripStep(
+                          indexedStep.$2,
+                          isLast:
+                              indexedStep.$1 == entry.transitSteps.length - 1,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _tripMetric(String label, String value) {
+    return Expanded(
+      child: Column(
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              color: Color(0xFF8290A5),
+              fontSize: 9,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _metricDivider() => Container(width: 1, height: 34, color: _border);
+
+  Widget _detailTile(IconData icon, String label, String value) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F9FC),
+        borderRadius: BorderRadius.circular(14),
       ),
       child: Row(
         children: [
-          _lineBadge(line.$1, line.$2, large: true),
-          const SizedBox(width: 10),
+          Icon(icon, size: 19, color: _blue),
+          const SizedBox(width: 9),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '${entry.origin} → ${entry.destination}',
+                  label,
+                  style: const TextStyle(
+                    color: Color(0xFF8290A5),
+                    fontSize: 8,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  value,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
@@ -1569,23 +1933,91 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
                     fontWeight: FontWeight.w800,
                   ),
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  _timeLabel(entry),
-                  style: const TextStyle(color: Color(0xFF8290A5), fontSize: 9),
-                ),
               ],
             ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            'RM ${entry.fare.toStringAsFixed(2)}',
-            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800),
           ),
         ],
       ),
     );
   }
+
+  Widget _tripStep(TravelHistoryStep step, {required bool isLast}) {
+    final mode = step.mode.toLowerCase();
+    final icon = mode.contains('walk')
+        ? Icons.directions_walk_rounded
+        : mode.contains('bus')
+        ? Icons.directions_bus_rounded
+        : mode.contains('rail') || mode.contains('train')
+        ? Icons.train_rounded
+        : Icons.route_rounded;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Column(
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: const BoxDecoration(
+                color: Color(0xFFEAF2FF),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, size: 18, color: _blue),
+            ),
+            if (!isLast)
+              Container(width: 2, height: 38, color: const Color(0xFFC9DAFF)),
+          ],
+        ),
+        const SizedBox(width: 11),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.only(top: 1, bottom: 15),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        step.name,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    if (step.duration.isNotEmpty)
+                      Text(
+                        step.duration,
+                        style: const TextStyle(
+                          color: Color(0xFF6F7C90),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                  ],
+                ),
+                if (step.description.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    step.description,
+                    style: const TextStyle(
+                      color: Color(0xFF8290A5),
+                      fontSize: 11,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _currencyLabel(String currency) =>
+      currency.toUpperCase() == 'MYR' ? 'RM' : currency.toUpperCase();
 
   Widget _lineBadge(String code, Color color, {bool large = false}) {
     return Container(
@@ -1724,6 +2156,12 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
   String _timeLabel(TravelHistoryEntry entry) {
     final raw = entry.departureTime.trim();
     if (raw.isEmpty) return _clockTime(entry.createdAt);
+    return _storedTimeLabel(raw);
+  }
+
+  String _storedTimeLabel(String value) {
+    final raw = value.trim();
+    if (raw.isEmpty) return '—';
     final parsed = DateTime.tryParse(raw);
     if (parsed != null) return _clockTime(parsed.toLocal());
     final parts = raw.split(':');
@@ -2184,6 +2622,7 @@ class DailyCommuteSettingsScreen extends StatefulWidget {
     this.initialRoute,
     this.initialActiveDays,
     this.initialCommute,
+    this.addFavouriteJourney,
   });
 
   final DailyCommuteService? service;
@@ -2191,6 +2630,7 @@ class DailyCommuteSettingsScreen extends StatefulWidget {
   final SavedRoute? initialRoute;
   final Set<int>? initialActiveDays;
   final DailyCommute? initialCommute;
+  final Future<void> Function(BuildContext context)? addFavouriteJourney;
 
   @override
   State<DailyCommuteSettingsScreen> createState() =>
@@ -2223,6 +2663,7 @@ class _DailyCommuteSettingsScreenState
   bool _reminderEnabled = true;
   int _reminderMinutes = 10;
   String? _error;
+  int _routePickerRevision = 0;
 
   @override
   void initState() {
@@ -2423,6 +2864,54 @@ class _DailyCommuteSettingsScreenState
     if (mounted) await _load();
   }
 
+  Future<void> _addNewFavouriteJourney() async {
+    final previousIds = _routes
+        .map((route) => route.id)
+        .whereType<String>()
+        .toSet();
+    final callback = widget.addFavouriteJourney;
+    if (callback != null) {
+      await callback(context);
+    } else {
+      await Navigator.push<void>(
+        context,
+        MaterialPageRoute(builder: (_) => const JourneyPlanningScreen()),
+      );
+    }
+    if (!mounted) return;
+
+    try {
+      final routes = (await _routesRepository.load())
+          .where((route) => route.id != null)
+          .toList();
+      final added = routes
+          .where((route) => !previousIds.contains(route.id))
+          .firstOrNull;
+      final currentId = _selectedRoute?.id;
+      setState(() {
+        _routes = routes;
+        _selectedRoute =
+            added ?? routes.where((route) => route.id == currentId).firstOrNull;
+        _routePickerRevision++;
+        _error = null;
+      });
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = 'Unable to refresh Favourite Routes.');
+      }
+    }
+  }
+
+  Future<void> _selectRoute(String? id) async {
+    if (id == '__add_favourite_journey__') {
+      await _addNewFavouriteJourney();
+      return;
+    }
+    setState(() {
+      _selectedRoute = _routes.where((route) => route.id == id).firstOrNull;
+    });
+  }
+
   Future<void> _save() async {
     if (_saving) return;
     final route = _selectedRoute;
@@ -2496,16 +2985,18 @@ class _DailyCommuteSettingsScreenState
                     title: 'Route',
                     child: _routes.isEmpty
                         ? _emptyRoutes()
-                        : DropdownButtonFormField<String>(
+                        : KeyedSubtree(
                             key: const Key('commute-route'),
-                            initialValue: _selectedRoute?.id,
-                            isExpanded: true,
-                            decoration: _inputDecoration(
-                              Icons.route_outlined,
-                              'Favourite Route',
-                            ),
-                            items: _routes
-                                .map(
+                            child: DropdownButtonFormField<String>(
+                              key: ValueKey(_routePickerRevision),
+                              initialValue: _selectedRoute?.id,
+                              isExpanded: true,
+                              decoration: _inputDecoration(
+                                Icons.route_outlined,
+                                'Favourite Route',
+                              ),
+                              items: [
+                                ..._routes.map(
                                   (route) => DropdownMenuItem(
                                     value: route.id,
                                     child: Text(
@@ -2514,15 +3005,32 @@ class _DailyCommuteSettingsScreenState
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                   ),
-                                )
-                                .toList(),
-                            onChanged: (id) {
-                              setState(() {
-                                _selectedRoute = _routes
-                                    .where((route) => route.id == id)
-                                    .firstOrNull;
-                              });
-                            },
+                                ),
+                                const DropdownMenuItem(
+                                  value: '__add_favourite_journey__',
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        Icons.add_road_rounded,
+                                        color: _blue,
+                                      ),
+                                      SizedBox(width: 9),
+                                      Expanded(
+                                        child: Text(
+                                          'Add New Favourite Journey',
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: _blue,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                              onChanged: _saving ? null : _selectRoute,
+                            ),
                           ),
                   ),
                   if (_commute != null && _selectedRoute == null) ...[
@@ -2723,6 +3231,13 @@ class _DailyCommuteSettingsScreenState
           icon: const Icon(Icons.favorite_border),
           label: const Text('Open Favourite Routes'),
         ),
+        const SizedBox(height: 8),
+        FilledButton.icon(
+          key: const Key('add-favourite-journey'),
+          onPressed: _addNewFavouriteJourney,
+          icon: const Icon(Icons.add_road_rounded),
+          label: const Text('Add New Favourite Journey'),
+        ),
       ],
     );
   }
@@ -2850,10 +3365,12 @@ class DailyCommuteOverviewSheet extends StatefulWidget {
     super.key,
     this.service,
     this.savedRoutesRepository,
+    this.onOpenJourneyPlanning,
   });
 
   final DailyCommuteService? service;
   final SavedRoutesRepository? savedRoutesRepository;
+  final VoidCallback? onOpenJourneyPlanning;
 
   @override
   State<DailyCommuteOverviewSheet> createState() =>
@@ -2898,6 +3415,14 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
           service: _service,
           savedRoutesRepository: widget.savedRoutesRepository,
           initialCommute: commute,
+          addFavouriteJourney: widget.onOpenJourneyPlanning == null
+              ? null
+              : (settingsContext) async {
+                  Navigator.pop(settingsContext);
+                  if (!mounted) return;
+                  Navigator.pop(context);
+                  widget.onOpenJourneyPlanning!();
+                },
         ),
       ),
     );

@@ -142,6 +142,7 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
   String? _dismissedRoutineKey;
   bool _isPreparingRoutine = false;
   bool _isDeletingAccount = false;
+  bool _didSyncDailyCommuteNotifications = false;
 
   @override
   void initState() {
@@ -171,6 +172,15 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
     }
     try {
       final commutes = await service.loadAll();
+      if (!_didSyncDailyCommuteNotifications) {
+        _didSyncDailyCommuteNotifications = true;
+        try {
+          await service.syncNotifications(commutes);
+        } catch (_) {
+          // Loading the dashboard should still succeed if the OS rejects a
+          // notification refresh. A later save/toggle will schedule again.
+        }
+      }
       if (mounted) {
         setState(() {
           _dailyCommutes = commutes;
@@ -1172,7 +1182,7 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
                   const SizedBox(height: 7),
                   Text(
                     commute == null
-                        ? 'Choose a favourite route and arrival time'
+                        ? 'Choose a route and departure time'
                         : '${commute.estimatedDurationMinutes} min  •  ${_activeDaysLabel(commute.activeDays)}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -1191,7 +1201,7 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  commute == null ? 'SET UP' : 'LEAVE BY',
+                  commute == null ? 'SET UP' : 'DEPARTURE',
                   style: const TextStyle(
                     color: Color(0xFF8290A5),
                     fontSize: 9.5,
@@ -1203,7 +1213,7 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
                 Text(
                   commute == null
                       ? 'Commute'
-                      : _formatMinutes(commute.recommendedDepartureMinutes),
+                      : _formatMinutes(commute.departureTimeMinutes),
                   style: const TextStyle(
                     color: _navy,
                     fontSize: 16,
@@ -2623,6 +2633,7 @@ class DailyCommuteSettingsScreen extends StatefulWidget {
     this.initialActiveDays,
     this.initialCommute,
     this.addFavouriteJourney,
+    this.chooseJourneyRoute,
   });
 
   final DailyCommuteService? service;
@@ -2631,6 +2642,7 @@ class DailyCommuteSettingsScreen extends StatefulWidget {
   final Set<int>? initialActiveDays;
   final DailyCommute? initialCommute;
   final Future<void> Function(BuildContext context)? addFavouriteJourney;
+  final Future<SavedRoute?> Function(BuildContext context)? chooseJourneyRoute;
 
   @override
   State<DailyCommuteSettingsScreen> createState() =>
@@ -2652,7 +2664,7 @@ class _DailyCommuteSettingsScreenState
   List<SavedRoute> _routes = const [];
   SavedRoute? _selectedRoute;
   DailyCommute? _commute;
-  TimeOfDay _arriveBy = const TimeOfDay(hour: 9, minute: 0);
+  TimeOfDay _departureTime = const TimeOfDay(hour: 9, minute: 0);
   Set<int> _activeDays = {
     DateTime.monday,
     DateTime.tuesday,
@@ -2664,6 +2676,7 @@ class _DailyCommuteSettingsScreenState
   int _reminderMinutes = 10;
   String? _error;
   int _routePickerRevision = 0;
+  SavedRoute? _plannedRoute;
 
   @override
   void initState() {
@@ -2703,9 +2716,9 @@ class _DailyCommuteSettingsScreenState
         _commute = commute;
         _selectedRoute = selected;
         if (commute != null) {
-          _arriveBy = TimeOfDay(
-            hour: commute.arriveByMinutes ~/ 60,
-            minute: commute.arriveByMinutes % 60,
+          _departureTime = TimeOfDay(
+            hour: commute.departureTimeMinutes ~/ 60,
+            minute: commute.departureTimeMinutes % 60,
           );
           _activeDays = Set<int>.from(commute.activeDays);
           _reminderEnabled = commute.reminderEnabled;
@@ -2728,9 +2741,11 @@ class _DailyCommuteSettingsScreenState
   }
 
   Future<void> _chooseTime() async {
-    var hour12 = _arriveBy.hourOfPeriod == 0 ? 12 : _arriveBy.hourOfPeriod;
-    var minute = _arriveBy.minute;
-    var isPm = _arriveBy.period == DayPeriod.pm;
+    var hour12 = _departureTime.hourOfPeriod == 0
+        ? 12
+        : _departureTime.hourOfPeriod;
+    var minute = _departureTime.minute;
+    var isPm = _departureTime.period == DayPeriod.pm;
     final hourController = FixedExtentScrollController(initialItem: hour12 - 1);
     final minuteController = FixedExtentScrollController(initialItem: minute);
     final periodController = FixedExtentScrollController(
@@ -2751,7 +2766,7 @@ class _DailyCommuteSettingsScreenState
                     children: [
                       const Expanded(
                         child: Text(
-                          'Arrive By',
+                          'Departure Time',
                           style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.w800,
@@ -2792,7 +2807,7 @@ class _DailyCommuteSettingsScreenState
                     children: [
                       Expanded(
                         child: CupertinoPicker(
-                          key: const Key('arrive-hour-wheel'),
+                          key: const Key('departure-hour-wheel'),
                           scrollController: hourController,
                           itemExtent: 44,
                           onSelectedItemChanged: (index) =>
@@ -2812,7 +2827,7 @@ class _DailyCommuteSettingsScreenState
                       ),
                       Expanded(
                         child: CupertinoPicker(
-                          key: const Key('arrive-minute-wheel'),
+                          key: const Key('departure-minute-wheel'),
                           scrollController: minuteController,
                           itemExtent: 44,
                           onSelectedItemChanged: (index) =>
@@ -2827,7 +2842,7 @@ class _DailyCommuteSettingsScreenState
                       ),
                       Expanded(
                         child: CupertinoPicker(
-                          key: const Key('arrive-period-wheel'),
+                          key: const Key('departure-period-wheel'),
                           scrollController: periodController,
                           itemExtent: 44,
                           onSelectedItemChanged: (index) =>
@@ -2850,18 +2865,64 @@ class _DailyCommuteSettingsScreenState
     hourController.dispose();
     minuteController.dispose();
     periodController.dispose();
-    if (selected != null && mounted) setState(() => _arriveBy = selected);
+    if (selected != null && mounted) {
+      setState(() => _departureTime = selected);
+    }
   }
 
   Future<void> _openFavouriteRoutes() async {
-    await Navigator.push<SavedRoute>(
+    final selected = await Navigator.push<SavedRoute>(
       context,
       MaterialPageRoute(
         builder: (_) =>
             FavouriteRoutesScreen(repository: widget.savedRoutesRepository),
       ),
     );
-    if (mounted) await _load();
+    if (!mounted) return;
+    await _load();
+    if (selected?.id != null && mounted) {
+      setState(() {
+        _selectedRoute = _routes
+            .where((route) => route.id == selected!.id)
+            .firstOrNull;
+        _plannedRoute = null;
+      });
+    }
+  }
+
+  Future<void> _chooseJourneyRoute() async {
+    final callback = widget.chooseJourneyRoute;
+    final selected = callback != null
+        ? await callback(context)
+        : await Navigator.push<SavedRoute>(
+            context,
+            MaterialPageRoute(
+              builder: (_) =>
+                  const JourneyPlanningScreen(selectForDailyCommute: true),
+            ),
+          );
+    if (selected == null || !mounted) return;
+    try {
+      final routes = (await _routesRepository.load())
+          .where((route) => route.id != null)
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _routes = routes;
+        _plannedRoute = selected;
+        _selectedRoute = null;
+        _routePickerRevision++;
+        _error = null;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _plannedRoute = selected;
+        _selectedRoute = null;
+        _routePickerRevision++;
+        _error = 'Route selected, but Favourite Routes could not be refreshed.';
+      });
+    }
   }
 
   Future<void> _addNewFavouriteJourney() async {
@@ -2892,6 +2953,7 @@ class _DailyCommuteSettingsScreenState
         _routes = routes;
         _selectedRoute =
             added ?? routes.where((route) => route.id == currentId).firstOrNull;
+        if (_selectedRoute != null) _plannedRoute = null;
         _routePickerRevision++;
         _error = null;
       });
@@ -2909,14 +2971,19 @@ class _DailyCommuteSettingsScreenState
     }
     setState(() {
       _selectedRoute = _routes.where((route) => route.id == id).firstOrNull;
+      if (_selectedRoute != null) _plannedRoute = null;
     });
   }
 
   Future<void> _save() async {
     if (_saving) return;
-    final route = _selectedRoute;
-    if (route == null) {
-      setState(() => _error = 'Select one of your favourite routes.');
+    final route = _selectedRoute ?? _plannedRoute;
+    final existing = _commute;
+    if (route == null && existing == null) {
+      setState(
+        () => _error =
+            'Choose a route in Journey Planning or select a Favourite Route.',
+      );
       return;
     }
     if (_activeDays.isEmpty) {
@@ -2931,7 +2998,12 @@ class _DailyCommuteSettingsScreenState
       final commute = await _service.save(
         reminderId: _commute?.id,
         route: route,
-        arriveByMinutes: _arriveBy.hour * 60 + _arriveBy.minute,
+        origin: route?.origin.name ?? existing?.origin,
+        destination: route?.destination.name ?? existing?.destination,
+        estimatedDurationMinutes: route == null
+            ? existing?.estimatedDurationMinutes
+            : null,
+        departureTimeMinutes: _departureTime.hour * 60 + _departureTime.minute,
         activeDays: _activeDays,
         reminderEnabled: _reminderEnabled,
         reminderMinutesBefore: _reminderMinutes,
@@ -2981,80 +3053,22 @@ class _DailyCommuteSettingsScreenState
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  _section(
-                    title: 'Route',
-                    child: _routes.isEmpty
-                        ? _emptyRoutes()
-                        : KeyedSubtree(
-                            key: const Key('commute-route'),
-                            child: DropdownButtonFormField<String>(
-                              key: ValueKey(_routePickerRevision),
-                              initialValue: _selectedRoute?.id,
-                              isExpanded: true,
-                              decoration: _inputDecoration(
-                                Icons.route_outlined,
-                                'Favourite Route',
-                              ),
-                              items: [
-                                ..._routes.map(
-                                  (route) => DropdownMenuItem(
-                                    value: route.id,
-                                    child: Text(
-                                      '${route.origin.name} → ${route.destination.name}',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ),
-                                const DropdownMenuItem(
-                                  value: '__add_favourite_journey__',
-                                  child: Row(
-                                    children: [
-                                      Icon(
-                                        Icons.add_road_rounded,
-                                        color: _blue,
-                                      ),
-                                      SizedBox(width: 9),
-                                      Expanded(
-                                        child: Text(
-                                          'Add New Favourite Journey',
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                            color: _blue,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                              onChanged: _saving ? null : _selectRoute,
-                            ),
-                          ),
-                  ),
-                  if (_commute != null && _selectedRoute == null) ...[
-                    const SizedBox(height: 10),
-                    _notice(
-                      'The favourite route used by this commute was deleted. '
-                      'Select another route before updating it.',
-                    ),
-                  ],
+                  _section(title: 'Route', child: _routeChooser()),
                   const SizedBox(height: 14),
                   _section(
-                    title: 'Arrive By',
+                    title: 'Departure Time',
                     child: InkWell(
-                      key: const Key('commute-arrive-by'),
+                      key: const Key('commute-departure-time'),
                       onTap: _chooseTime,
                       borderRadius: BorderRadius.circular(12),
                       child: InputDecorator(
                         decoration: _inputDecoration(
                           Icons.schedule_outlined,
-                          'Arrive By',
+                          'Departure Time',
                         ),
                         child: Text(
                           _formatMinutes(
-                            _arriveBy.hour * 60 + _arriveBy.minute,
+                            _departureTime.hour * 60 + _departureTime.minute,
                           ),
                           style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
@@ -3217,79 +3231,209 @@ class _DailyCommuteSettingsScreenState
     );
   }
 
-  Widget _emptyRoutes() {
+  Widget _routeChooser() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
-          'Save a favourite route before setting up your daily commute.',
-          style: TextStyle(color: Color(0xFF64748B), fontSize: 13),
-        ),
-        const SizedBox(height: 10),
-        OutlinedButton.icon(
-          onPressed: _openFavouriteRoutes,
-          icon: const Icon(Icons.favorite_border),
-          label: const Text('Open Favourite Routes'),
-        ),
-        const SizedBox(height: 8),
+        if (_plannedRoute != null) ...[
+          _selectedRouteSummary(
+            _plannedRoute!.origin.name,
+            _plannedRoute!.destination.name,
+            label: 'Selected in Journey Planning',
+          ),
+          const SizedBox(height: 10),
+        ] else if (_selectedRoute == null && _commute != null) ...[
+          _selectedRouteSummary(
+            _commute!.origin,
+            _commute!.destination,
+            label: 'Current Daily Commute route',
+          ),
+          const SizedBox(height: 10),
+        ],
         FilledButton.icon(
-          key: const Key('add-favourite-journey'),
-          onPressed: _addNewFavouriteJourney,
-          icon: const Icon(Icons.add_road_rounded),
-          label: const Text('Add New Favourite Journey'),
+          key: const Key('choose-commute-route'),
+          onPressed: _saving ? null : _chooseJourneyRoute,
+          icon: const Icon(Icons.route_outlined),
+          label: Text(
+            _plannedRoute == null && _commute == null
+                ? 'Choose in Journey Planning'
+                : 'Change in Journey Planning',
+          ),
         ),
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 12),
+          child: Row(
+            children: [
+              Expanded(child: Divider()),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 10),
+                child: Text(
+                  'OR USE A FAVOURITE ROUTE',
+                  style: TextStyle(
+                    color: Color(0xFF8290A5),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              Expanded(child: Divider()),
+            ],
+          ),
+        ),
+        if (_routes.isEmpty) ...[
+          const Text(
+            'No Favourite Routes yet. You can choose a route above without saving it as a favourite.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Color(0xFF64748B), fontSize: 12),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            key: const Key('add-favourite-journey'),
+            onPressed: _saving ? null : _addNewFavouriteJourney,
+            icon: const Icon(Icons.favorite_border),
+            label: const Text('Add New Favourite Journey'),
+          ),
+        ] else ...[
+          KeyedSubtree(
+            key: const Key('commute-route'),
+            child: DropdownButtonFormField<String>(
+              key: ValueKey(_routePickerRevision),
+              initialValue: _selectedRoute?.id,
+              isExpanded: true,
+              decoration: _inputDecoration(
+                Icons.favorite_border,
+                'Favourite Route (optional)',
+              ),
+              items: [
+                ..._routes.map(
+                  (route) => DropdownMenuItem(
+                    value: route.id,
+                    child: Text(
+                      '${route.origin.name} → ${route.destination.name}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+                const DropdownMenuItem(
+                  value: '__add_favourite_journey__',
+                  child: Row(
+                    children: [
+                      Icon(Icons.add_road_rounded, color: _blue),
+                      SizedBox(width: 9),
+                      Expanded(
+                        child: Text(
+                          'Add New Favourite Journey',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: _blue,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              onChanged: _saving ? null : _selectRoute,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            onPressed: _saving ? null : _openFavouriteRoutes,
+            icon: const Icon(Icons.open_in_new, size: 18),
+            label: const Text('Manage Favourite Routes'),
+          ),
+        ],
       ],
+    );
+  }
+
+  Widget _selectedRouteSummary(
+    String origin,
+    String destination, {
+    required String label,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEAF2FF),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '$origin → $destination',
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+        ],
+      ),
     );
   }
 
   Widget _calculationCard() {
     final saved = _commute;
     final commute = saved?.copyWith(
-      arriveByMinutes: _arriveBy.hour * 60 + _arriveBy.minute,
+      departureTimeMinutes: _departureTime.hour * 60 + _departureTime.minute,
       activeDays: _activeDays,
       reminderEnabled: _reminderEnabled,
       reminderMinutesBefore: _reminderMinutes,
     );
-    final routeChanged = commute == null;
+    final routeNeedsEstimate =
+        commute == null ||
+        _plannedRoute != null ||
+        (_selectedRoute != null && _selectedRoute!.id != saved?.savedRouteId);
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: const Color(0xFFEAF2FF),
         borderRadius: BorderRadius.circular(15),
       ),
-      child: routeChanged
-          ? const Row(
+      child: Column(
+        children: [
+          if (routeNeedsEstimate) ...[
+            const Row(
               children: [
                 Icon(Icons.calculate_outlined, color: _blue),
                 SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'Travel time and departure time will be calculated when you save.',
+                    'Travel time and estimated arrival will be calculated when you save.',
                     style: TextStyle(color: Color(0xFF48627F), fontSize: 12),
                   ),
                 ),
               ],
-            )
-          : Column(
-              children: [
-                _calculationRow(
-                  'Estimated travel time',
-                  '${commute.estimatedDurationMinutes} min',
-                ),
-                const SizedBox(height: 10),
-                _calculationRow(
-                  'Recommended departure',
-                  _formatMinutes(commute.recommendedDepartureMinutes),
-                ),
-                if (commute.reminderEnabled) ...[
-                  const SizedBox(height: 10),
-                  _calculationRow(
-                    'Notification time',
-                    _formatMinutes(commute.notificationTimeMinutes),
-                  ),
-                ],
-              ],
             ),
+          ] else ...[
+            _calculationRow(
+              'Estimated travel time',
+              '${commute.estimatedDurationMinutes} min',
+            ),
+            const SizedBox(height: 10),
+            _calculationRow(
+              'Estimated arrival',
+              _formatMinutes(commute.estimatedArrivalMinutes),
+            ),
+          ],
+          if (_reminderEnabled) ...[
+            const SizedBox(height: 10),
+            _calculationRow(
+              'Notification time',
+              _formatMinutes(
+                _departureTime.hour * 60 +
+                    _departureTime.minute -
+                    _reminderMinutes,
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 
@@ -3590,7 +3734,7 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
               ),
               const SizedBox(height: 6),
               const Text(
-                'Create reminders and NextRoute will calculate when you should leave.',
+                'Choose when you will leave and receive a reminder before departure.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Color(0xFF7B879A), fontSize: 12),
               ),
@@ -3679,7 +3823,7 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '${_daysLabel(commute.activeDays)} · Leave ${_formatMinutes(commute.recommendedDepartureMinutes)}',
+                      '${_daysLabel(commute.activeDays)} · Departure ${_formatMinutes(commute.departureTimeMinutes)}',
                       style: const TextStyle(
                         color: Color(0xFF8793A6),
                         fontSize: 10,

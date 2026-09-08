@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/api_service.dart';
@@ -568,6 +569,12 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   int? _connIncoming;
   List<MapEntry<String, int>>? _connBusiestNetwork;
   bool _loadingConnections = false;
+  // Elapsed-seconds counter shown alongside "Loading connections…", purely
+  // a UI reassurance that the request is still progressing (not a real
+  // download/query progress percentage — the underlying Supabase calls
+  // don't report progress). Ticks up once per second while loading.
+  int _connLoadingSeconds = 0;
+  Timer? _connLoadingTimer;
   String? _connValidationMsg; // shown when Show Connections is pressed with no station
 
   // ── Tab 5: Station Crowd Ranking state ──
@@ -619,6 +626,12 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   void initState() {
     super.initState();
     _loadData();
+  }
+
+  @override
+  void dispose() {
+    _connLoadingTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadData({int attempt = 0}) async {
@@ -954,21 +967,35 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     setState(() {
       _connValidationMsg = null;
       _loadingConnections = true;
+      _connLoadingSeconds = 0;
     });
-    final topDest = await _api.getTopDestinationsFrom(station, limit: 5);
-    final topOrig = await _api.getTopOriginsInto(station, limit: 5);
-    final outgoing = await _api.getTotalOutgoing(station);
-    final incoming = await _api.getTotalIncoming(station);
-    final busiest = await _api.getBusiestConnections(limit: 10);
-    if (!mounted) return;
-    setState(() {
-      _connTopDestinations = topDest;
-      _connTopOrigins = topOrig;
-      _connOutgoing = outgoing;
-      _connIncoming = incoming;
-      _connBusiestNetwork = busiest;
-      _loadingConnections = false;
+    // Ticks the elapsed-seconds counter shown next to "Loading connections…"
+    // so the message visibly changes every second instead of sitting
+    // static — reassurance that the app is still working, not stuck.
+    _connLoadingTimer?.cancel();
+    _connLoadingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() => _connLoadingSeconds++);
     });
+    try {
+      final topDest = await _api.getTopDestinationsFrom(station, limit: 5);
+      final topOrig = await _api.getTopOriginsInto(station, limit: 5);
+      final outgoing = await _api.getTotalOutgoing(station);
+      final incoming = await _api.getTotalIncoming(station);
+      final busiest = await _api.getBusiestConnections(limit: 10);
+      if (!mounted) return;
+      setState(() {
+        _connTopDestinations = topDest;
+        _connTopOrigins = topOrig;
+        _connOutgoing = outgoing;
+        _connIncoming = incoming;
+        _connBusiestNetwork = busiest;
+        _loadingConnections = false;
+      });
+    } finally {
+      _connLoadingTimer?.cancel();
+      _connLoadingTimer = null;
+    }
   }
 
   // Station Crowd Ranking (Tab 5): a single query to the
@@ -2889,7 +2916,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     Widget diffLine;
     if (weekdayAvg != null && weekendAvg != null) {
       final diff = weekdayAvg - weekendAvg;
-      final higherLabel = diff >= 0 ? 'weekdays' : 'weekends';
       final lowerAvg = diff >= 0 ? weekendAvg : weekdayAvg;
       final diffPct = lowerAvg > 0 ? (diff.abs() / lowerAvg * 100) : 0.0;
       diffLine = Container(
@@ -2899,12 +2925,33 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           color: Colors.grey.withValues(alpha: 0.06),
           borderRadius: BorderRadius.circular(8),
         ),
-        child: Text(
-          diff.abs() < 0.5
-              ? 'Difference: 0/day (0.0%, essentially tied)'
-              : 'Difference: ${_formatNumber(diff.abs())}/day (${diffPct.toStringAsFixed(1)}% higher on $higherLabel)',
+        child: diff.abs() < 0.5
+            ? const Text(
+          'Difference: 0/day (0.0%, essentially tied)',
           textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+          style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+        )
+            : Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Difference: ${_formatNumber(diff.abs())}/day',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+            ),
+            const SizedBox(height: 2),
+            // Weekday is described as either higher (red, more people)
+            // or lower (green, fewer people) than weekend — matching the
+            // crowd convention and the ranking compare-stations style.
+            Text(
+              'Weekday is ${diffPct.toStringAsFixed(1)}% ${diff > 0 ? 'higher' : 'lower'}',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.bold,
+                  color: diff > 0 ? const Color(0xFFDC2626) : const Color(0xFF16A34A)),
+            ),
+          ],
         ),
       );
     } else {
@@ -3067,7 +3114,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       return _sectionCard(
         title: 'MONTHLY RIDERSHIP TREND',
         icon: Icons.show_chart,
-        subtitle: 'Average daily ridership by month, from all real records for this station.',
+        subtitle: 'Average daily ridership by month.',
         child: _emptyState('No records available to compute a monthly trend.'),
       );
     }
@@ -3091,8 +3138,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return _sectionCard(
       title: 'MONTHLY RIDERSHIP TREND',
       icon: Icons.show_chart,
-      subtitle: 'Average daily ridership by month, from all real records for this station '
-          '(not affected by the month filter).',
+      subtitle: 'Average daily ridership by month.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -3572,6 +3618,18 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               ],
             ),
           ),
+
+          if (_loadingConnections) ...[
+            const SizedBox(height: _sectionGap),
+            Row(
+              children: [
+                const SizedBox(
+                    width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5))),
+                const SizedBox(width: 10),
+                Text('Loading connections… ${_connLoadingSeconds}s', style: const TextStyle(fontSize: 12.5, color: Colors.black54)),
+              ],
+            ),
+          ],
 
           if (_connTopDestinations != null) ...[
             const SizedBox(height: _sectionGap),
@@ -4430,7 +4488,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               ),
               const SizedBox(height: 2),
               // Station A is described as either higher (red, more
-              // people) or lower (cyan, fewer people) than Station B
+              // people) or lower (green, fewer people) than Station B
               // — matching the crowd convention used elsewhere.
               Text(
                 '${a.station} is ${diffPct.toStringAsFixed(1)}% ${diff > 0 ? 'higher' : 'lower'}',
@@ -4438,7 +4496,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 style: TextStyle(
                     fontSize: 12.5,
                     fontWeight: FontWeight.bold,
-                    color: diff > 0 ? const Color(0xFFDC2626) : const Color(0xFF0891B2)),
+                    color: diff > 0 ? const Color(0xFFDC2626) : const Color(0xFF16A34A)),
               ),
             ],
           ),

@@ -184,8 +184,7 @@ export function parseGtfsTime(value: string | null | undefined): number | null {
   return hours * 3600 + minutes * 60 + seconds;
 }
 
-// GTFS text files may quote commas and escaped quotes. Embedded newlines are
-// not used by the official Rapid KL files, so parsing stays line-oriented.
+
 export function parseCsvRow(line: string): string[] {
   const values: string[] = [];
   let value = "";
@@ -323,10 +322,7 @@ export function buildTripSchedules(
       ) continue;
       matched.set(candidate.tripId!, {
         staticTripId: trip.trip_id,
-        // Prasarana's MRT feeder realtime feed uses public route codes such as
-        // T559 while its static feed uses internal IDs such as 30000172. The
-        // trip ID is the stable cross-feed key, so keep the realtime route ID
-        // for user-facing notifications after matching the trip.
+
         routeId: candidate.routeId!,
         serviceId: trip.service_id,
         headsign: text(trip.trip_headsign),
@@ -447,9 +443,6 @@ export function estimateDelay(
         currentIndex = index;
       }
     }
-    // A bus between stops cannot safely be assigned to an arbitrary timetable
-    // point. 75 m retains genuine near-stop observations in the production
-    // feeder feed while rejecting most in-transit positions.
     if (nearestDistance > 75) return null;
     estimateMethod = "schedule_near_stop_position";
   }
@@ -478,8 +471,7 @@ export function estimateDelay(
   const rawDelayMinutes = Math.round(
     (timestamp * 1000 - scheduledCurrent) / 60_000,
   );
-  // Larger differences normally mean the realtime and static trip instances did
-  // not match. Reject them instead of presenting a confident but false delay.
+
   if (rawDelayMinutes < -30 || rawDelayMinutes > 180) return null;
   const delayMinutes = Math.max(0, rawDelayMinutes);
   const scheduledTerminal = serviceStart + scheduledTerminalSeconds * 1000;
@@ -504,7 +496,7 @@ export function estimateDelay(
   };
 }
 
-// Explicit quality threshold: five minutes, with 60s allowed for clock skew.
+
 function positionAge(entity: VehicleEntity, now: Date): number | null {
   const raw = entity.vehicle?.timestamp;
   if (raw == null) return null;
@@ -514,9 +506,6 @@ function positionAge(entity: VehicleEntity, now: Date): number | null {
   return age < -60_000 ? null : age;
 }
 
-// The national feed often omits current_stop_sequence and stop_id. A fresh GPS
-// position can still become a candidate; estimateDelay later requires it to be
-// within 75 m of a stop in the matching published timetable.
 export function findDelayCandidates(
   vehicles: VehicleEntity[],
   now: Date,
@@ -598,10 +587,7 @@ export function estimateMovement(
         longitude,
       );
       speedKmh = travelled / intervalSeconds * 3.6;
-      // STOPPED_AT is normal dwell, not evidence of road congestion. A
-      // minimum movement speed also prevents GPS jitter from looking like a
-      // traffic crawl. Three qualifying intervals (at least six minutes) are
-      // required before a user-facing estimate is published.
+
       const movingSlow = entity.vehicle?.currentStatus !== 1 &&
         travelled >= 40 && speedKmh >= 1 && speedKmh <= 10;
       const previousSlow = previous.slow_interval_streak ??
@@ -776,7 +762,7 @@ export function analyzeVehicles(vehicles: VehicleEntity[], now: Date) {
 
     congestedCount += 1;
     if (level === 4) severeCount += 1;
-    // Never publish a current congestion alert from stale/undated positions.
+
     if (!fresh) continue;
     freshCongestedCount++;
     const current = congestedByRoute.get(routeId) ?? {
@@ -984,8 +970,7 @@ export async function collectAnalytics(request: Request) {
         );
       if (cleanupError) throw cleanupError;
     } catch (error) {
-      // Movement estimates are supplementary and must not discard a valid
-      // service snapshot if observation storage is temporarily unavailable.
+
       movementError = error instanceof Error ? error.message : "unknown error";
       console.error("Movement estimation unavailable", error);
     }
@@ -1044,8 +1029,7 @@ export async function collectAnalytics(request: Request) {
           if (estimate.delayMinutes >= delayThresholdMinutes) delayAlerts++;
         }
       } catch (error) {
-        // Delay estimation is supplementary. A static timetable or RPC problem
-        // must be visible to monitoring without discarding a valid live snapshot.
+
         delayError = error instanceof Error
           ? error.message
           : "unknown delay error";

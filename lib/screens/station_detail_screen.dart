@@ -423,13 +423,18 @@ class _DepartureCard extends StatelessWidget {
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text(
-                        note,
-                        softWrap: true,
-                        style: const TextStyle(
-                          color: Color(0xFF64748B),
-                          fontSize: 13,
-                          height: 1.35,
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          note,
+                          maxLines: 1,
+                          softWrap: false,
+                          style: const TextStyle(
+                            color: Color(0xFF64748B),
+                            fontSize: 13,
+                            height: 1.35,
+                          ),
                         ),
                       ),
                     ),

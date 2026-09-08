@@ -220,6 +220,23 @@ void main() {
     expect(() => tz.getLocation('Asia/Singapore'), returnsNormally);
   });
 
+  test('normalizes Android timezone identifiers used by notifications', () {
+    expect(
+      LocalPushNotificationService.timezoneNameForDeviceIdentifier(
+        'Asia/Kuala_Lumpur',
+      ),
+      'Asia/Singapore',
+    );
+    expect(
+      LocalPushNotificationService.timezoneNameForDeviceIdentifier('GMT+08:00'),
+      'Etc/GMT-8',
+    );
+    expect(
+      LocalPushNotificationService.timezoneNameForDeviceIdentifier('UTC'),
+      'Etc/UTC',
+    );
+  });
+
   test('calculates notification and arrival time from departure time', () {
     final commute = DailyCommute(
       userId: 'user-1',

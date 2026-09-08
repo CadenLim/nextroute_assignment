@@ -18,6 +18,12 @@ class _TransitRoutePicker extends StatefulWidget {
 class _TransitRoutePickerState extends State<_TransitRoutePicker> {
   String query = '';
 
+  String _badgeLabel(TransitRoute route) {
+    final name = route.displayName;
+    final abbreviation = RegExp(r'\(([^()]{1,10})\)\s*$').firstMatch(name);
+    return abbreviation?.group(1) ?? name;
+  }
+
   @override
   Widget build(BuildContext context) {
     final normalizedQuery = query.trim().toLowerCase();
@@ -82,9 +88,9 @@ class _TransitRoutePickerState extends State<_TransitRoutePicker> {
                     return ListTile(
                       selected: selected,
                       leading: Container(
-                        constraints: const BoxConstraints(minWidth: 54),
+                        width: 72,
                         padding: const EdgeInsets.symmetric(
-                          horizontal: 9,
+                          horizontal: 6,
                           vertical: 7,
                         ),
                         decoration: BoxDecoration(
@@ -94,8 +100,10 @@ class _TransitRoutePickerState extends State<_TransitRoutePicker> {
                           borderRadius: BorderRadius.circular(9),
                         ),
                         child: Text(
-                          route.displayName,
+                          _badgeLabel(route),
                           textAlign: TextAlign.center,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             color: selected ? Colors.white : _blue,
                             fontWeight: FontWeight.w800,

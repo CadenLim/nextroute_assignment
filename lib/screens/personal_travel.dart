@@ -181,10 +181,7 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
         _didSyncDailyCommuteNotifications = true;
         try {
           await service.syncNotifications(commutes);
-        } catch (_) {
-          // Loading the dashboard should still succeed if the OS rejects a
-          // notification refresh. A later save/toggle will schedule again.
-        }
+        } catch (_) {}
       }
       if (mounted) {
         setState(() {
@@ -2738,10 +2735,6 @@ class _SavedPlacesScreenState extends State<SavedPlacesScreen> {
       .replaceFirst('Bad state: ', '')
       .replaceFirst('Invalid argument(s): ', '');
 }
-
-// -----------------------------------------------------------------------------
-// Daily Commute settings and overview
-// -----------------------------------------------------------------------------
 
 class DailyCommuteSettingsScreen extends StatefulWidget {
   const DailyCommuteSettingsScreen({

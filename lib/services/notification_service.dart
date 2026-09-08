@@ -215,7 +215,6 @@ class LocalPushNotificationService {
     final deviceTimezone =
         await _deviceChannel.invokeMethod<String>('getLocalTimezone') ?? 'UTC';
     final timezoneName = switch (deviceTimezone) {
-
       'Asia/Kuala_Lumpur' => 'Asia/Singapore',
       'GMT' || 'UTC' => 'Etc/UTC',
       final identifier => identifier,
@@ -325,9 +324,7 @@ class NotificationRepository {
                 isRead: false,
               );
               await showPushIfEnabled(notification);
-            } on FormatException {
-
-            }
+            } on FormatException catch (_) {}
             onChanged();
           },
         )
@@ -352,7 +349,6 @@ class NotificationRepository {
 
   Future<List<Map<String, dynamic>>> _loadSupabaseRows() async {
     final now = DateTime.now().toUtc().toIso8601String();
-
     final pages = await Future.wait([
       _supabase
           .from('notifications')
@@ -495,9 +491,7 @@ class NotificationRepository {
     }
     try {
       await devicePush.show(notification);
-    } on Object {
-
-    }
+    } on Object catch (_) {}
   }
 
   static bool _notificationEnabled(
@@ -514,7 +508,6 @@ class NotificationRepository {
     };
   }
 }
-
 
 class DailyCommute {
   const DailyCommute({
@@ -533,7 +526,6 @@ class DailyCommute {
   });
 
   factory DailyCommute.fromJson(Map<String, dynamic> json) {
-
     final timeParts = json['arrive_by'].toString().split(':');
     final hour = int.tryParse(timeParts.first) ?? 9;
     final minute = timeParts.length > 1 ? int.tryParse(timeParts[1]) ?? 0 : 0;
@@ -657,7 +649,6 @@ class DailyCommute {
         '${(normalized % 60).toString().padLeft(2, '0')}:00';
   }
 }
-
 
 abstract interface class DailyCommuteRepository {
   Future<List<DailyCommute>> loadAll();

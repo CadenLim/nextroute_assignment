@@ -18,8 +18,7 @@ class RouteGeometry {
     if(stops is List && stops.length>=2) return stops.map((p)=>point(p as Map)).toList();
     final from=leg['from'], to=leg['to'];
     if(from is Map && to is Map) return [point(from),point(to)];
-    // Leg carries no usable coordinates (missing 'from'/'to'/'stops') — caller must skip it,
-    // not let the whole route collapse to a single fallback line.
+
     return null;
   }
   static List<LegGeometry> fallback(List legs) {
@@ -65,7 +64,7 @@ class RouteGeometry {
       final leg=raw as Map;
       if(leg['mode']=='Wait') continue;
       final points=anchors(leg);
-      if(points==null) continue; // no from/to/stops on this leg — skip rather than abort the whole route
+      if(points==null) continue;
       List<LatLng>? shape;
       final folder=leg['folder']?.toString();
       final shapeId=leg['shapeId']?.toString();
@@ -76,12 +75,12 @@ class RouteGeometry {
         } catch(_) { _shapes.remove(folder); }
       }
       if(shape!=null) { result.add(LegGeometry(leg['mode'],'GTFS shape',shape)); continue; }
-      // A driving router must never route rail tracks or pedestrian legs.
+
       if(leg['mode']=='Bus') {
         try {
           final road=await _road(points);
           result.add(LegGeometry('Bus','estimated road path',road)); continue;
-        } catch(_) { /* Keep visible fallback on timeout/offline/invalid response. */ }
+        } catch(_) {  }
       }
       result.add(LegGeometry(leg['mode'],'straight-line fallback',points));
     }
@@ -89,7 +88,7 @@ class RouteGeometry {
   }
   static Future<List<LatLng>> _road(List<LatLng> stops) async {
     final result=<LatLng>[];
-    // Retain every bus stop; split long requests instead of skipping anchors.
+
     for(var start=0;start<stops.length-1;start+=24) {
       final end=(start+25).clamp(0,stops.length);
       final chunk=stops.sublist(start,end);

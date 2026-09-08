@@ -11,7 +11,7 @@ class EstimatedLrt {
   const EstimatedLrt(this.id, this.line, this.name, this.destination, this.point);
 }
 
-// Pure timetable model: these positions are estimates, never GPS observations.
+
 class LrtEstimator {
   final Map<String, List<Map<String, String>>> tables;
   final List<_Trip> _trips = [];
@@ -28,7 +28,7 @@ class LrtEstimator {
     }
     for (final t in tables['trips']!) {
       final r = routes[t['route_id']];
-      // Explicit LRT allowlist. No KTMB, MRT, Monorail or BRT estimates.
+
       if (r == null || !['AG', 'KJ', 'PH', 'SA'].contains(r['route_id']) || r['category'] != 'LRT') continue;
       final times = tables['stop_times']!.where((s) => s['trip_id'] == t['trip_id']).toList()
         ..sort((a, b) => int.parse(a['stop_sequence']!).compareTo(int.parse(b['stop_sequence']!)));
@@ -59,8 +59,7 @@ class LrtEstimator {
   }
 
   List<EstimatedLrt> positions(DateTime now) {
-    // Malaysia UTC+8, independent of the phone's timezone. Include yesterday
-    // for services that continue after midnight, including GTFS hours > 24.
+
     final local = now.toUtc().add(const Duration(hours: 8));
     final midnight = DateTime.utc(local.year, local.month, local.day);
     final result = <EstimatedLrt>[];

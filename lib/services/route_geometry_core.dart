@@ -1,6 +1,5 @@
 import 'transit_planner.dart';
 
-// Coordinates are [latitude, longitude]. Anchors retain GTFS stop order.
 List<List<double>>? cropGtfsShape(List<List<double>> path,List<List<double>> anchors) {
   if(path.length<2 || anchors.length<2) return null;
   var previous=0;

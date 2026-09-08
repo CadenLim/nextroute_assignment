@@ -1,4 +1,3 @@
-// api_service.dart
 import 'dart:math' show cos, sqrt, asin;
 import 'package:http/http.dart' as http;
 import 'package:flutter/services.dart' show rootBundle;
@@ -11,9 +10,7 @@ import 'package:gtfs_realtime_bindings/gtfs_realtime_bindings.dart' as gtfs;
 import 'personal_assistance_functions.dart';
 import 'gtfs_route_timetable.dart';
 
-// =========================================================
-// YOUR CODE (Module 1 / Journey Planning)
-// =========================================================
+
 class StationModel {
   final List<String> ids;
   final String name;
@@ -50,9 +47,7 @@ class LiveVehicle {
   });
 }
 
-// =========================================================
-// FRIEND'S CODE (Module 3 / Crowd AI / Ridership)
-// =========================================================
+
 class RidershipRecord {
   final DateTime date;
   final String origin;
@@ -67,9 +62,7 @@ class RidershipRecord {
   });
 }
 
-// =========================================================
-// API SERVICE CLASS
-// =========================================================
+
 class ApiService {
   final Map<String, List<RidershipRecord>> _stationRecordsCache = {};
   List<String>? _stationListCache;
@@ -97,7 +90,7 @@ class ApiService {
   final Map<String, GtfsServiceCalendar> _serviceCalendars = {};
   final Map<String, Map<int, bool>> _calendarExceptions = {};
 
-  // 🌟 新增：存储轻快铁/捷运的频次信息 (frequencies.txt)
+
   final Map<String, List<Map<String, int>>> _railFrequencies = {};
 
   bool _isGtfsFullyCached = false;
@@ -177,7 +170,7 @@ class ApiService {
     return '$h:$m';
   }
 
-  // 🌟 新增：解析 frequencies.txt（folder 用于和 trip_id 的前缀保持一致，例如 'bus_', 'mrt_feeder_', 'rail_'）
+
   void _parseRailFrequencies(String raw, String folder) {
     final lines = const CsvToListConverter(eol: '\n', shouldParseNumbers: false)
         .convert(raw.replaceAll('\uFEFF', '').replaceAll('\r\n', '\n'))
@@ -214,7 +207,7 @@ class ApiService {
     }
   }
 
-  // 🌟 核心修复：根据真实的轻快铁班次间隔计算等待时间，防止错估导致 1000+ 分钟等待
+
   Map<String, dynamic> _computeDepartureAndWait(
     String tripId,
     List<Map<String, dynamic>> stops,
@@ -227,7 +220,7 @@ class ApiService {
       final tOriginBase = _timeToSeconds(
         stops[originStopIndex]['arrival_time'],
       );
-      final offsetSecs = tOriginBase - tStartBase; // 首站到达当前站的耗时
+      final offsetSecs = tOriginBase - tStartBase;
       final tReq = nowSeconds - offsetSecs;
 
       for (final f in freqs) {
@@ -256,7 +249,7 @@ class ApiService {
         }
       }
 
-      // 已过末班车，算次日首班车
+
       final firstF = freqs.first;
       final depStationTomorrow = firstF['start']! + offsetSecs + 86400;
       final waitTomorrow = ((depStationTomorrow - nowSeconds) / 60).ceil();
@@ -266,15 +259,15 @@ class ApiService {
       };
     }
 
-    // 普通巴士 / MRT Feeder fallback 算法
+
     final arrivalTimeStr = stops[originStopIndex]['arrival_time'] as String;
-    final oMins = _timeToMinutes(arrivalTimeStr); // 自动处理 25:30 -> 1530 mins
+    final oMins = _timeToMinutes(arrivalTimeStr);
     final nowMinutes = (nowSeconds / 60).floor();
 
     int wait = oMins - nowMinutes;
-    if (wait < 0) wait += 1440; // 处理跨午夜班次
+    if (wait < 0) wait += 1440;
 
-    // 格式化真实的出发时间 (将 25:xx:xx 转换回正常的 01:xx)
+
     String departStr;
     try {
       final parts = arrivalTimeStr.split(':');
@@ -328,12 +321,10 @@ class ApiService {
             'assets/gtfs/$folder/frequencies.txt',
           );
           _tripFrequencies.addAll(_parseFrequencies(rawFrequencies, folder));
-          // Journey Planning and Smart Reminder share the same GTFS frequency
-          // asset while keeping the compact representations each calculation
-          // needs.
+
           _parseRailFrequencies(rawFrequencies, folder);
         } catch (e) {
-          // frequencies.txt is optional. Fixed timetable trips remain usable.
+
           debugPrint('GTFS frequencies load error for $folder: $e');
         }
 
@@ -345,7 +336,7 @@ class ApiService {
             _parseCalendarExceptions(rawExceptions, folder),
           );
         } catch (_) {
-          // calendar_dates.txt is optional when calendar.txt is complete.
+
         }
 
         final rawCalendar = await rootBundle.loadString(
@@ -595,14 +586,14 @@ class ApiService {
           for (var id in s.ids) id: s,
       };
 
-      // 🌟 核心修复 1：强制使用马来西亚时间 (UTC+8) 并处理 GTFS 午夜翻滚 (24:00:00+)
+
       final nowUTC = DateTime.now().toUtc();
       final nowMYT = nowUTC.add(const Duration(hours: 8));
 
       int nowSeconds = nowMYT.hour * 3600 + nowMYT.minute * 60 + nowMYT.second;
-      final weekday = nowMYT.weekday; // 1 = Monday, 7 = Sunday
+      final weekday = nowMYT.weekday;
 
-      // 如果当前时间是凌晨 (0点~4点)，将时间推至 24 小时以后，以匹配 GTFS 的 25:00:00 格式
+
       if (nowMYT.hour < 4) {
         nowSeconds += 24 * 3600;
       }
@@ -615,7 +606,7 @@ class ApiService {
         final stops = _allTripStopTimes[tripId]!;
         if (stops.length < 2) continue;
 
-        // 🌟 基于日历的过滤
+
         if (tripId.startsWith('rail_')) {
           if (weekday <= 5 && !tripId.contains('MonFri')) continue;
           if (weekday == 6 && !tripId.contains('Sat')) continue;
@@ -1136,8 +1127,7 @@ class ApiService {
     }
   }
 
-  /// Validates a stable Favourite Route against the same GTFS assets and
-  /// station grouping used by Journey Planning.
+
   Future<RouteServiceAvailability> validateRouteTimetable({
     required StationModel origin,
     required StationModel destination,

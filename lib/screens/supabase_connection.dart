@@ -44,7 +44,7 @@ class _SupabaseConnectionScreenState extends State<SupabaseConnectionScreen> {
                   children: [
                     CircularProgressIndicator(),
                     SizedBox(height: 16),
-                    Text('正在连接 Supabase...'),
+                    Text('Connecting to Supabase...'),
                   ],
                 );
               }
@@ -62,7 +62,9 @@ class _SupabaseConnectionScreenState extends State<SupabaseConnectionScreen> {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    isConnected ? 'Supabase 连接成功' : 'Supabase 连接失败',
+                    isConnected
+                        ? 'Connected to Supabase'
+                        : 'Unable to connect to Supabase',
                     style: Theme.of(context).textTheme.headlineSmall,
                     textAlign: TextAlign.center,
                   ),
@@ -75,7 +77,7 @@ class _SupabaseConnectionScreenState extends State<SupabaseConnectionScreen> {
                   FilledButton.icon(
                     onPressed: _retry,
                     icon: const Icon(Icons.refresh),
-                    label: const Text('重新测试'),
+                    label: const Text('Try Again'),
                   ),
                 ],
               );

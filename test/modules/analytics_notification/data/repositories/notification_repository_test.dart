@@ -6,6 +6,7 @@ import 'package:nextroute_assignment/screens/notification_centre.dart';
 import 'package:nextroute_assignment/models/analytics_notification_models.dart';
 import 'package:nextroute_assignment/services/notification_service.dart';
 import 'package:nextroute_assignment/services/module5_route_preferences.dart';
+import 'package:nextroute_assignment/services/module5_user_route_context.dart';
 
 void main() {
   testWidgets('notification controls scroll in keyboard-sized embedded space', (
@@ -104,6 +105,45 @@ void main() {
     expect(find.text('Bus delay test'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('active journey notifications take the default route scope', (
+    tester,
+  ) async {
+    final routeContext = Module5UserRouteContext(
+      store: _MemoryRouteStore(),
+      savedRoutesLoader: () async => const [],
+      dailyCommutesLoader: () async => const [],
+    );
+    addTearDown(routeContext.dispose);
+    await routeContext.startJourney(
+      busRoutes: const ['T250'],
+      origin: 'Wangsa Maju',
+      destination: 'Setapak',
+      expiresAt: DateTime.now().add(const Duration(hours: 1)),
+    );
+    final repository = NotificationRepository(
+      _FakeNotificationLocalStorage(),
+      rowsLoader: () async => [
+        {..._row(id: 'active', routeId: 'T250'), 'title': 'T250 alert'},
+        {..._row(id: 'other', routeId: '250'), 'title': '250 alert'},
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: NotificationCentreScreen(
+          repository: repository,
+          enableRealtime: false,
+          routeContext: routeContext,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Active Journey'), findsWidgets);
+    expect(find.text('T250 alert'), findsOneWidget);
+    expect(find.text('250 alert'), findsNothing);
   });
   test(
     'expired messages remain in history, never in current or unread',
@@ -254,7 +294,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.textContaining('Choose My Routes'), findsWidgets);
+    // With no personal route context, the safe default is All network.
+    expect(find.text('All network'), findsWidgets);
     expect(find.text('0 unread (current)'), findsOneWidget);
     await tester.tap(find.text('History'));
     await tester.pumpAndSettle();
@@ -583,5 +624,22 @@ class _FakeNotificationLocalStorage implements NotificationLocalStorage {
   @override
   Future<void> writeNotificationPreferences(String preferencesJson) async {
     this.preferencesJson = preferencesJson;
+  }
+}
+
+class _MemoryRouteStore implements Module5RouteStore {
+  final Map<String, String> values = {};
+
+  @override
+  Future<String?> getString(String key) async => values[key];
+
+  @override
+  Future<void> remove(String key) async {
+    values.remove(key);
+  }
+
+  @override
+  Future<void> setString(String key, String value) async {
+    values[key] = value;
   }
 }

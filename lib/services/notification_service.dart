@@ -134,8 +134,8 @@ class LocalPushNotificationService {
     if (!isSupported || !commute.reminderEnabled) return;
     await _initialize();
     final notificationTime = commute.notificationTimeMinutes;
-    final leaveTime = _formatMinutes(commute.recommendedDepartureMinutes);
-    final arriveTime = _formatMinutes(commute.arriveByMinutes);
+    final departureTime = _formatMinutes(commute.departureTimeMinutes);
+    final estimatedArrival = _formatMinutes(commute.estimatedArrivalMinutes);
     final details = NotificationDetails(
       android: AndroidNotificationDetails(
         'daily_commute_reminders',
@@ -147,36 +147,36 @@ class LocalPushNotificationService {
       ),
     );
 
-    for (final arrivalWeekday in commute.activeDays) {
-      final notificationWeekday = commute.notificationWeekdayForArrivalDay(
-        arrivalWeekday,
+    for (final departureWeekday in commute.activeDays) {
+      final notificationWeekday = commute.notificationWeekdayForDepartureDay(
+        departureWeekday,
       );
       await _plugin.zonedSchedule(
-        id: notificationId(commute, arrivalWeekday),
+        id: notificationId(commute, departureWeekday),
         title: 'NextRoute – Time to leave soon',
         body:
             'Your trip to ${commute.destination} takes about '
-            '${commute.estimatedDurationMinutes} minutes. Leave by $leaveTime '
-            'to arrive by $arriveTime.',
+            '${commute.estimatedDurationMinutes} minutes. Leave at '
+            '$departureTime to arrive around $estimatedArrival.',
         scheduledDate: _nextWeekdayTime(notificationWeekday, notificationTime),
         notificationDetails: details,
         androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
         matchDateTimeComponents: DateTimeComponents.dayOfWeekAndTime,
-        payload: 'daily_commute:${commute.id}:$arrivalWeekday',
+        payload: 'daily_commute:${commute.id}:$departureWeekday',
       );
     }
   }
 
-  int notificationId(DailyCommute commute, int arrivalWeekday) {
+  int notificationId(DailyCommute commute, int departureWeekday) {
     final identity =
         commute.id ??
-        '${commute.userId}|${commute.savedRouteId}|${commute.arriveByMinutes}';
+        '${commute.userId}|${commute.savedRouteId}|${commute.departureTimeMinutes}';
     var hash = 0x811c9dc5;
     for (final unit in identity.codeUnits) {
       hash ^= unit;
       hash = (hash * 0x01000193) & 0x0fffffff;
     }
-    return hash * 8 + arrivalWeekday;
+    return hash * 8 + departureWeekday;
   }
 
   tz.TZDateTime _nextWeekdayTime(int weekday, int minutes) {
@@ -523,7 +523,7 @@ class DailyCommute {
     required this.savedRouteId,
     required this.origin,
     required this.destination,
-    required this.arriveByMinutes,
+    required this.departureTimeMinutes,
     required this.activeDays,
     required this.reminderEnabled,
     required this.reminderMinutesBefore,
@@ -532,6 +532,9 @@ class DailyCommute {
   });
 
   factory DailyCommute.fromJson(Map<String, dynamic> json) {
+    // `arrive_by` is retained as the legacy database key to avoid a schema
+    // change. Its value is a departure time after the departure-based data
+    // migration has run.
     final timeParts = json['arrive_by'].toString().split(':');
     final hour = int.tryParse(timeParts.first) ?? 9;
     final minute = timeParts.length > 1 ? int.tryParse(timeParts[1]) ?? 0 : 0;
@@ -541,7 +544,7 @@ class DailyCommute {
       savedRouteId: json['saved_route_id'] as String?,
       origin: json['origin'] as String,
       destination: json['destination'] as String,
-      arriveByMinutes: hour * 60 + minute,
+      departureTimeMinutes: hour * 60 + minute,
       activeDays: Set<int>.from(json['active_days'] as List),
       reminderEnabled: json['reminder_enabled'] as bool? ?? true,
       reminderMinutesBefore:
@@ -557,41 +560,40 @@ class DailyCommute {
   final String? savedRouteId;
   final String origin;
   final String destination;
-  final int arriveByMinutes;
+  final int departureTimeMinutes;
   final Set<int> activeDays;
   final bool reminderEnabled;
   final int reminderMinutesBefore;
   final int estimatedDurationMinutes;
   final DateTime? updatedAt;
 
-  int get recommendedDepartureMinutes =>
-      _minutesInDay(arriveByMinutes - estimatedDurationMinutes);
+  int get estimatedArrivalMinutes =>
+      _minutesInDay(departureTimeMinutes + estimatedDurationMinutes);
 
   int get notificationTimeMinutes =>
-      _minutesInDay(recommendedDepartureMinutes - reminderMinutesBefore);
+      _minutesInDay(departureTimeMinutes - reminderMinutesBefore);
 
-  int notificationWeekdayForArrivalDay(int arrivalWeekday) {
-    final rawNotificationMinutes =
-        arriveByMinutes - estimatedDurationMinutes - reminderMinutesBefore;
+  int notificationWeekdayForDepartureDay(int departureWeekday) {
+    final rawNotificationMinutes = departureTimeMinutes - reminderMinutesBefore;
     final dayOffset = rawNotificationMinutes < 0 ? -1 : 0;
-    return (arrivalWeekday - 1 + dayOffset) % 7 + 1;
+    return (departureWeekday - 1 + dayOffset) % 7 + 1;
   }
 
   DateTime? nextReminderAfter(DateTime now) {
     if (!reminderEnabled || activeDays.isEmpty) return null;
     DateTime? next;
     for (var offset = 0; offset <= 7; offset++) {
-      final arrivalDay = DateTime(now.year, now.month, now.day + offset);
-      if (!activeDays.contains(arrivalDay.weekday)) continue;
-      final arrival = DateTime(
-        arrivalDay.year,
-        arrivalDay.month,
-        arrivalDay.day,
-        arriveByMinutes ~/ 60,
-        arriveByMinutes % 60,
+      final departureDay = DateTime(now.year, now.month, now.day + offset);
+      if (!activeDays.contains(departureDay.weekday)) continue;
+      final departure = DateTime(
+        departureDay.year,
+        departureDay.month,
+        departureDay.day,
+        departureTimeMinutes ~/ 60,
+        departureTimeMinutes % 60,
       );
-      final reminder = arrival.subtract(
-        Duration(minutes: estimatedDurationMinutes + reminderMinutesBefore),
+      final reminder = departure.subtract(
+        Duration(minutes: reminderMinutesBefore),
       );
       if (!reminder.isAfter(now)) continue;
       if (next == null || reminder.isBefore(next)) next = reminder;
@@ -605,7 +607,7 @@ class DailyCommute {
     String? savedRouteId,
     String? origin,
     String? destination,
-    int? arriveByMinutes,
+    int? departureTimeMinutes,
     Set<int>? activeDays,
     bool? reminderEnabled,
     int? reminderMinutesBefore,
@@ -618,7 +620,7 @@ class DailyCommute {
       savedRouteId: savedRouteId ?? this.savedRouteId,
       origin: origin ?? this.origin,
       destination: destination ?? this.destination,
-      arriveByMinutes: arriveByMinutes ?? this.arriveByMinutes,
+      departureTimeMinutes: departureTimeMinutes ?? this.departureTimeMinutes,
       activeDays: activeDays ?? this.activeDays,
       reminderEnabled: reminderEnabled ?? this.reminderEnabled,
       reminderMinutesBefore:
@@ -635,7 +637,8 @@ class DailyCommute {
     'saved_route_id': savedRouteId,
     'origin': origin,
     'destination': destination,
-    'arrive_by': _databaseTime(arriveByMinutes),
+    // Keep the deployed column name for compatibility; it stores departure.
+    'arrive_by': _databaseTime(departureTimeMinutes),
     'active_days': activeDays.toList()..sort(),
     'reminder_enabled': reminderEnabled,
     'reminder_minutes_before': reminderMinutesBefore,
@@ -677,22 +680,34 @@ class SupabaseDailyCommuteRepository implements DailyCommuteRepository {
   @override
   Future<DailyCommute> upsert(DailyCommute commute) async {
     final commuteData = commute.toUpsert()..remove('user_id');
-    final response = await _functions.invoke(
-      'daily-commutes',
-      'upsert',
-      payload: {'commute': commuteData},
-    );
-    final row = Map<String, dynamic>.from(response['data'] as Map);
-    return DailyCommute.fromJson(row);
+    try {
+      final response = await _functions.invoke(
+        'daily-commutes',
+        'upsert',
+        payload: {'commute': commuteData},
+      );
+      final row = Map<String, dynamic>.from(response['data'] as Map);
+      return DailyCommute.fromJson(row);
+    } on FunctionsHttpException catch (error) {
+      if (error.status != 409) rethrow;
+      dynamic details = error.details;
+      if (details is String) {
+        try {
+          details = jsonDecode(details);
+        } catch (_) {}
+      }
+      final message = details is Map ? details['error']?.toString() : null;
+      throw StateError(
+        message == null || message.isEmpty
+            ? 'An identical Daily Commute already exists.'
+            : message,
+      );
+    }
   }
 
   @override
   Future<void> delete(String id) async {
-    await _functions.invoke(
-      'daily-commutes',
-      'delete',
-      payload: {'id': id},
-    );
+    await _functions.invoke('daily-commutes', 'delete', payload: {'id': id});
   }
 }
 
@@ -736,6 +751,15 @@ class DailyCommuteService {
 
   Future<List<DailyCommute>> loadAll() => repository.loadAll();
 
+  Future<void> syncNotifications(Iterable<DailyCommute> commutes) async {
+    for (final commute in commutes) {
+      await _notificationService.cancelDailyCommuteNotifications(commute);
+      if (commute.reminderEnabled) {
+        await _notificationService.scheduleDailyCommuteNotifications(commute);
+      }
+    }
+  }
+
   static UpcomingDailyCommuteReminder? nextReminder(
     Iterable<DailyCommute> commutes,
     DateTime now,
@@ -766,7 +790,7 @@ class DailyCommuteService {
       throw StateError('No route is currently available for this commute.');
     }
     final preferred = routes.cast<Map<String, dynamic>?>().firstWhere(
-      (result) => result?['sig'] == route.signature,
+      (result) => result != null && route.matchesJourney(result),
       orElse: () => null,
     );
     final selected = preferred ?? routes.first;
@@ -780,30 +804,54 @@ class DailyCommuteService {
 
   Future<DailyCommute> save({
     String? reminderId,
-    required SavedRoute route,
-    required int arriveByMinutes,
+    SavedRoute? route,
+    String? origin,
+    String? destination,
+    int? estimatedDurationMinutes,
+    required int departureTimeMinutes,
     required Set<int> activeDays,
     required bool reminderEnabled,
     required int reminderMinutesBefore,
   }) async {
-    if (route.id == null) {
-      throw ArgumentError('Select a saved favourite route.');
+    final routeId = route?.id;
+    final commuteOrigin = route?.origin.name ?? origin?.trim();
+    final commuteDestination = route?.destination.name ?? destination?.trim();
+    final duration = route == null
+        ? estimatedDurationMinutes
+        : await estimateDuration(route);
+    if (commuteOrigin == null ||
+        commuteOrigin.isEmpty ||
+        commuteDestination == null ||
+        commuteDestination.isEmpty) {
+      throw ArgumentError('Choose an origin and destination.');
+    }
+    if (duration == null || duration <= 0) {
+      throw ArgumentError('Choose a valid travel duration.');
     }
     if (activeDays.isEmpty) {
       throw ArgumentError('Select at least one active day.');
     }
-    if (arriveByMinutes < 0 || arriveByMinutes >= 1440) {
-      throw ArgumentError('Choose a valid arrival time.');
+    if (departureTimeMinutes < 0 || departureTimeMinutes >= 1440) {
+      throw ArgumentError('Choose a valid departure time.');
     }
     if (!const {5, 10, 15, 30}.contains(reminderMinutesBefore)) {
       throw ArgumentError('Choose a valid reminder time.');
     }
+    await _ensureUniqueSettings(
+      reminderId: reminderId,
+      savedRouteId: routeId,
+      origin: commuteOrigin,
+      destination: commuteDestination,
+      departureTimeMinutes: departureTimeMinutes,
+      activeDays: activeDays,
+      reminderEnabled: reminderEnabled,
+      reminderMinutesBefore: reminderMinutesBefore,
+    );
     if (reminderEnabled && _notificationService.isSupported) {
       final allowed = await _notificationService.requestPermission();
       if (!allowed) throw const NotificationPermissionException();
     }
 
-    final duration = await estimateDuration(route);
     final userId =
         userIdProvider?.call() ??
         (_client ?? Supabase.instance.client).auth.currentUser?.id;
@@ -812,10 +860,10 @@ class DailyCommuteService {
       DailyCommute(
         id: reminderId,
         userId: userId,
-        savedRouteId: route.id,
-        origin: route.origin.name,
-        destination: route.destination.name,
-        arriveByMinutes: arriveByMinutes,
+        savedRouteId: routeId,
+        origin: commuteOrigin,
+        destination: commuteDestination,
+        departureTimeMinutes: departureTimeMinutes,
         activeDays: activeDays,
         reminderEnabled: reminderEnabled,
         reminderMinutesBefore: reminderMinutesBefore,
@@ -834,6 +882,16 @@ class DailyCommuteService {
     DailyCommute commute,
     bool enabled,
   ) async {
+    await _ensureUniqueSettings(
+      reminderId: commute.id,
+      savedRouteId: commute.savedRouteId,
+      origin: commute.origin,
+      destination: commute.destination,
+      departureTimeMinutes: commute.departureTimeMinutes,
+      activeDays: commute.activeDays,
+      reminderEnabled: enabled,
+      reminderMinutesBefore: commute.reminderMinutesBefore,
+    );
     if (enabled && _notificationService.isSupported) {
       final allowed = await _notificationService.requestPermission();
       if (!allowed) throw const NotificationPermissionException();
@@ -853,5 +911,34 @@ class DailyCommuteService {
     if (id == null) throw ArgumentError('This reminder does not have an ID.');
     await repository.delete(id);
     await _notificationService.cancelDailyCommuteNotifications(commute);
+  }
+
+  Future<void> _ensureUniqueSettings({
+    required String? reminderId,
+    required String? savedRouteId,
+    required String origin,
+    required String destination,
+    required int departureTimeMinutes,
+    required Set<int> activeDays,
+    required bool reminderEnabled,
+    required int reminderMinutesBefore,
+  }) async {
+    final commutes = await repository.loadAll();
+    final duplicate = commutes.any(
+      (commute) =>
+          commute.id != reminderId &&
+          commute.savedRouteId == savedRouteId &&
+          commute.origin.trim().toLowerCase() == origin.trim().toLowerCase() &&
+          commute.destination.trim().toLowerCase() ==
+              destination.trim().toLowerCase() &&
+          commute.departureTimeMinutes == departureTimeMinutes &&
+          commute.activeDays.length == activeDays.length &&
+          commute.activeDays.containsAll(activeDays) &&
+          commute.reminderEnabled == reminderEnabled &&
+          commute.reminderMinutesBefore == reminderMinutesBefore,
+    );
+    if (duplicate) {
+      throw StateError('An identical Daily Commute already exists.');
+    }
   }
 }

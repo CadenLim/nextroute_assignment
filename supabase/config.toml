@@ -19,3 +19,8 @@ verify_jwt = false
 
 [functions.profile-avatar]
 verify_jwt = false
+
+[functions.auth-account-check]
+# This pre-login endpoint validates the password and enforces the server-side
+# attempt limit. The service-role key remains inside the Edge Function.
+verify_jwt = false

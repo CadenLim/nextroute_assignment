@@ -6,17 +6,24 @@ normal migration process. This adds only `public.saved_routes`, its indexes,
 and permissions. No existing application tables are changed.
 
 The table stores the owner's user ID, a custom title, the two GTFS station
-snapshots, and the chosen route signature. The assignment app filters records
+snapshots, and a stable route signature. The stable signature contains the
+ordered transit service/line sequence and transport modes. Departure time,
+arrival time, waiting time, duration, trip ID, and search-result rank are not
+part of the favourite identity. The assignment app filters records
 by the signed-in user's ID, but the database does not enforce row isolation.
 A unique constraint on `user_id, route_key` prevents repeated saves from
 creating duplicates. Re-saving an existing favourite leaves its custom title
 intact; rename it in Profile.
 
 The app does not store old departure times or fares as current information.
-Plan again resolves the saved station IDs against the current station dataset,
-calls the existing route planner, and selects the matching route signature if
-available. Otherwise it explains that alternatives are being shown. Missing
-stations require the user to choose new locations.
+View live route resolves the saved station IDs against the current station dataset,
+recalculates routes using the current timetable, and selects the candidate with
+the same ordered service sequence and transport modes. The planner searches its
+complete candidate set, even when the favourite is outside the four routes
+normally displayed. Only when that service sequence is absent from the complete
+set does the app explain that alternatives are being shown. Missing stations
+require the user to choose new locations. Existing favourites with legacy
+signatures remain readable and are matched using their saved line name.
 
 ## Verify in the app
 
@@ -24,7 +31,8 @@ stations require the user to choose new locations.
 2. Select a route, tap Save route, enter a name, and save.
 3. Open Profile > Favourite Routes. Check the saved title and endpoints.
 4. Rename it, close and reopen the page, and verify the title persists.
-5. Tap Plan again. Check the endpoints and refreshed route results.
+5. Tap View live route. Check the endpoints, current departures, waiting times,
+   and live vehicles.
 6. Save the same route again and check it still appears only once.
 7. Remove the favourite and check the Profile Saved Routes count updates.
 8. Sign in with another account and verify the app's user-ID filter does not

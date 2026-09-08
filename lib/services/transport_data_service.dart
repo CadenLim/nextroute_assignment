@@ -253,7 +253,7 @@ class TransitRouteRepository {
       }
       return result;
     } catch (_) {
-      // A route can still show its stops when an optional shapes file is absent.
+
       return const {};
     }
   }
@@ -1112,7 +1112,7 @@ class RecentStationService {
           await preferences.setStringList(_storageKey, keys);
         }
       } catch (_) {
-        // Keep using the local cache when Supabase is unavailable.
+
         keys = localKeys;
       }
     }
@@ -1174,7 +1174,7 @@ class RecentStationService {
             .eq('station_key', oldKey);
       }
     } catch (_) {
-      // The local history remains available when cloud synchronisation fails.
+
     }
   }
 
@@ -1190,7 +1190,7 @@ class RecentStationService {
           .delete()
           .eq('user_id', user.id);
     } catch (_) {
-      // Clearing local history should still work while offline.
+
     }
   }
 
@@ -1233,7 +1233,7 @@ Future<void> openStationDetails(BuildContext context, Station station) async {
   try {
     await RecentStationService.add(station);
   } catch (_) {
-    // Local history must never prevent the user from opening station details.
+
   }
   if (!context.mounted) return;
   await Navigator.push(

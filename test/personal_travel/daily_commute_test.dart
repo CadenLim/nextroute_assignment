@@ -111,6 +111,7 @@ class CommuteNotifications extends LocalPushNotificationService {
 
   final bool permission;
   int cancellations = 0;
+  int schedules = 0;
   DailyCommute? scheduled;
 
   @override
@@ -125,6 +126,7 @@ class CommuteNotifications extends LocalPushNotificationService {
 
   @override
   Future<void> scheduleDailyCommuteNotifications(DailyCommute commute) async {
+    schedules++;
     scheduled = commute;
   }
 }
@@ -158,21 +160,41 @@ void main() {
     expect(() => tz.getLocation('Asia/Singapore'), returnsNormally);
   });
 
-  test('calculates departure and notification time from arrival time', () {
+  test('calculates notification and arrival time from departure time', () {
     final commute = DailyCommute(
       userId: 'user-1',
       savedRouteId: 'route-1',
       origin: 'Home',
       destination: 'TAR UMT',
-      arriveByMinutes: 9 * 60,
+      departureTimeMinutes: 8 * 60 + 30,
       activeDays: const {1, 2, 3, 4, 5},
       reminderEnabled: true,
       reminderMinutesBefore: 10,
-      estimatedDurationMinutes: 35,
+      estimatedDurationMinutes: 30,
     );
 
-    expect(commute.recommendedDepartureMinutes, 8 * 60 + 25);
-    expect(commute.notificationTimeMinutes, 8 * 60 + 15);
+    expect(commute.notificationTimeMinutes, 8 * 60 + 20);
+    expect(commute.estimatedArrivalMinutes, 9 * 60);
+  });
+
+  test('uses the legacy database time field as departure time', () {
+    final commute = DailyCommute.fromJson({
+      'id': 'commute-1',
+      'user_id': 'user-1',
+      'saved_route_id': 'route-1',
+      'origin': 'Home',
+      'destination': 'TAR UMT',
+      'arrive_by': '08:30:00',
+      'active_days': [1, 2, 3, 4, 5],
+      'reminder_enabled': true,
+      'reminder_minutes_before': 10,
+      'estimated_duration_minutes': 30,
+    });
+
+    expect(commute.departureTimeMinutes, 8 * 60 + 30);
+    expect(commute.notificationTimeMinutes, 8 * 60 + 20);
+    expect(commute.estimatedArrivalMinutes, 9 * 60);
+    expect(commute.toUpsert()['arrive_by'], '08:30:00');
   });
 
   test('moves an after-midnight commute reminder to the previous weekday', () {
@@ -181,16 +203,16 @@ void main() {
       savedRouteId: 'route-1',
       origin: 'Home',
       destination: 'TAR UMT',
-      arriveByMinutes: 20,
+      departureTimeMinutes: 5,
       activeDays: const {DateTime.monday},
       reminderEnabled: true,
       reminderMinutesBefore: 10,
       estimatedDurationMinutes: 35,
     );
 
-    expect(commute.notificationTimeMinutes, 23 * 60 + 35);
+    expect(commute.notificationTimeMinutes, 23 * 60 + 55);
     expect(
-      commute.notificationWeekdayForArrivalDay(DateTime.monday),
+      commute.notificationWeekdayForDepartureDay(DateTime.monday),
       DateTime.sunday,
     );
   });
@@ -201,7 +223,7 @@ void main() {
       savedRouteId: 'route-1',
       origin: 'Home',
       destination: 'TAR UMT',
-      arriveByMinutes: 9 * 60,
+      departureTimeMinutes: 9 * 60,
       activeDays: const {DateTime.monday, DateTime.wednesday},
       reminderEnabled: true,
       reminderMinutesBefore: 10,
@@ -209,8 +231,8 @@ void main() {
     );
 
     expect(
-      commute.nextReminderAfter(DateTime(2026, 9, 7, 8, 16)),
-      DateTime(2026, 9, 9, 8, 15),
+      commute.nextReminderAfter(DateTime(2026, 9, 7, 8, 51)),
+      DateTime(2026, 9, 9, 8, 50),
     );
     expect(
       commute
@@ -227,7 +249,7 @@ void main() {
       savedRouteId: 'route-1',
       origin: 'Home',
       destination: 'Office',
-      arriveByMinutes: 10 * 60,
+      departureTimeMinutes: 10 * 60,
       activeDays: const {DateTime.monday},
       reminderEnabled: true,
       reminderMinutesBefore: 10,
@@ -236,11 +258,11 @@ void main() {
     final nearer = first.copyWith(
       id: 'nearer',
       destination: 'Campus',
-      arriveByMinutes: 9 * 60,
+      departureTimeMinutes: 9 * 60,
     );
     final disabled = first.copyWith(
       id: 'disabled',
-      arriveByMinutes: 8 * 60,
+      departureTimeMinutes: 8 * 60,
       reminderEnabled: false,
     );
 
@@ -250,7 +272,7 @@ void main() {
       nearer,
     ], DateTime(2026, 9, 7, 7));
     expect(next!.commute.id, 'nearer');
-    expect(next.time, DateTime(2026, 9, 7, 8, 20));
+    expect(next.time, DateTime(2026, 9, 7, 8, 50));
   });
 
   test('each reminder and weekday receives a unique notification ID', () {
@@ -261,7 +283,7 @@ void main() {
       savedRouteId: 'route-1',
       origin: 'Home',
       destination: 'Office',
-      arriveByMinutes: 9 * 60,
+      departureTimeMinutes: 9 * 60,
       activeDays: const {1, 2},
       reminderEnabled: true,
       reminderMinutesBefore: 10,
@@ -287,14 +309,14 @@ void main() {
     );
     await service.save(
       route: route,
-      arriveByMinutes: 9 * 60,
+      departureTimeMinutes: 9 * 60,
       activeDays: {1, 3, 5},
       reminderEnabled: true,
       reminderMinutesBefore: 10,
     );
     await service.save(
       route: route,
-      arriveByMinutes: 18 * 60,
+      departureTimeMinutes: 18 * 60,
       activeDays: {2, 4},
       reminderEnabled: false,
       reminderMinutesBefore: 15,
@@ -313,7 +335,7 @@ void main() {
       savedRouteId: route.id,
       origin: route.origin.name,
       destination: route.destination.name,
-      arriveByMinutes: 9 * 60,
+      departureTimeMinutes: 9 * 60,
       activeDays: const {1, 3, 5},
       reminderEnabled: true,
       reminderMinutesBefore: 10,
@@ -329,7 +351,7 @@ void main() {
     await expectLater(
       service.save(
         route: route,
-        arriveByMinutes: 9 * 60,
+        departureTimeMinutes: 9 * 60,
         activeDays: {5, 1, 3},
         reminderEnabled: true,
         reminderMinutesBefore: 10,
@@ -360,17 +382,48 @@ void main() {
 
       final saved = await service.save(
         route: route,
-        arriveByMinutes: 9 * 60,
+        departureTimeMinutes: 9 * 60,
         activeDays: {1, 2, 3, 4, 5},
         reminderEnabled: true,
         reminderMinutesBefore: 10,
       );
 
       expect(saved.estimatedDurationMinutes, 35);
-      expect(saved.recommendedDepartureMinutes, 8 * 60 + 25);
+      expect(saved.estimatedArrivalMinutes, 9 * 60 + 35);
       expect(repository.saves, 1);
       expect(notifications.cancellations, 1);
       expect(notifications.scheduled, same(saved));
+    },
+  );
+
+  test(
+    'save supports an independent commute without a favourite route',
+    () async {
+      final repository = MemoryCommuteRepository();
+      final notifications = CommuteNotifications();
+      final service = DailyCommuteService(
+        repository: repository,
+        apiService: CommuteApi(commuteRoute()),
+        notificationService: notifications,
+        userIdProvider: () => 'user-1',
+      );
+
+      final saved = await service.save(
+        route: null,
+        origin: 'Home',
+        destination: 'Office',
+        estimatedDurationMinutes: 35,
+        departureTimeMinutes: 9 * 60,
+        activeDays: {1, 2, 3},
+        reminderEnabled: false,
+        reminderMinutesBefore: 10,
+      );
+
+      expect(saved.savedRouteId, isNull);
+      expect(saved.origin, 'Home');
+      expect(saved.destination, 'Office');
+      expect(saved.estimatedDurationMinutes, 35);
+      expect(notifications.scheduled, isNull);
     },
   );
 
@@ -387,7 +440,7 @@ void main() {
     await expectLater(
       service.save(
         route: route,
-        arriveByMinutes: 9 * 60,
+        departureTimeMinutes: 9 * 60,
         activeDays: {1},
         reminderEnabled: true,
         reminderMinutesBefore: 10,
@@ -411,7 +464,7 @@ void main() {
       savedRouteId: 'route-1',
       origin: 'Home',
       destination: 'TAR UMT',
-      arriveByMinutes: 9 * 60,
+      departureTimeMinutes: 9 * 60,
       activeDays: const {1, 2, 3, 4, 5},
       reminderEnabled: true,
       reminderMinutesBefore: 10,
@@ -432,6 +485,35 @@ void main() {
     await service.delete(enabled);
     expect(repository.value, isNull);
     expect(notifications.cancellations, 3);
+  });
+
+  test('notification sync refreshes existing enabled reminders', () async {
+    final notifications = CommuteNotifications();
+    final service = DailyCommuteService(
+      repository: MemoryCommuteRepository(),
+      apiService: CommuteApi(commuteRoute()),
+      notificationService: notifications,
+      userIdProvider: () => 'user-1',
+    );
+    final enabled = DailyCommute(
+      id: 'enabled',
+      userId: 'user-1',
+      savedRouteId: 'route-1',
+      origin: 'Home',
+      destination: 'Office',
+      departureTimeMinutes: 8 * 60 + 30,
+      activeDays: const {DateTime.monday},
+      reminderEnabled: true,
+      reminderMinutesBefore: 10,
+      estimatedDurationMinutes: 30,
+    );
+    final disabled = enabled.copyWith(id: 'disabled', reminderEnabled: false);
+
+    await service.syncNotifications([enabled, disabled]);
+
+    expect(notifications.cancellations, 2);
+    expect(notifications.schedules, 1);
+    expect(notifications.scheduled, same(enabled));
   });
 
   testWidgets('Daily Commute settings fits a phone screen', (tester) async {
@@ -458,15 +540,22 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Daily Commute'), findsOneWidget);
+    expect(find.text('Departure Time'), findsOneWidget);
+    expect(find.text('Notification time'), findsOneWidget);
+    expect(find.text('8:50 AM'), findsOneWidget);
     expect(find.byKey(const Key('commute-route')), findsOneWidget);
-    expect(find.byKey(const Key('save-daily-commute')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('commute-arrive-by')));
+    await tester.tap(find.byKey(const Key('commute-departure-time')));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('arrive-hour-wheel')), findsOneWidget);
-    expect(find.byKey(const Key('arrive-minute-wheel')), findsOneWidget);
-    expect(find.byKey(const Key('arrive-period-wheel')), findsOneWidget);
+    expect(find.byKey(const Key('departure-hour-wheel')), findsOneWidget);
+    expect(find.byKey(const Key('departure-minute-wheel')), findsOneWidget);
+    expect(find.byKey(const Key('departure-period-wheel')), findsOneWidget);
     await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('save-daily-commute')),
+      400,
+    );
+    expect(find.byKey(const Key('save-daily-commute')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -526,6 +615,69 @@ void main() {
     expect(find.text('Home → Office'), findsWidgets);
   });
 
+  testWidgets(
+    'a commute route can be selected in Journey Planning without a favourite',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final source = commuteRoute();
+      final plannedRoute = SavedRoute(
+        name: source.name,
+        origin: source.origin,
+        destination: source.destination,
+        signature: source.signature,
+        lineName: source.lineName,
+      );
+      final commuteRepository = MemoryCommuteRepository();
+      final favourites = MutableSavedRoutes([]);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DailyCommuteSettingsScreen(
+            service: DailyCommuteService(
+              repository: commuteRepository,
+              apiService: CommuteApi(plannedRoute),
+              notificationService: CommuteNotifications(),
+              userIdProvider: () => 'user-1',
+            ),
+            savedRoutesRepository: favourites,
+            chooseJourneyRoute: (_) async {
+              favourites.routes.add(source);
+              return plannedRoute;
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('commute-origin')), findsNothing);
+      expect(find.textContaining('No Favourite Routes yet.'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('choose-commute-route')));
+      await tester.pumpAndSettle();
+      expect(find.text('Home → TAR UMT'), findsOneWidget);
+      expect(find.byKey(const Key('commute-route')), findsOneWidget);
+      expect(
+        find.textContaining('independent from Favourite Routes'),
+        findsNothing,
+      );
+
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('save-daily-commute')),
+        400,
+      );
+      await tester.tap(find.byKey(const Key('save-daily-commute')));
+      await tester.pumpAndSettle();
+
+      expect(commuteRepository.value!.savedRouteId, isNull);
+      expect(commuteRepository.value!.origin, 'Home');
+      expect(commuteRepository.value!.destination, 'TAR UMT');
+      expect(commuteRepository.value!.estimatedDurationMinutes, 35);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('routine suggestion prefills route and detected weekdays', (
     tester,
   ) async {
@@ -556,7 +708,10 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.byKey(const Key('save-daily-commute')));
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('save-daily-commute')),
+      400,
+    );
     await tester.tap(find.byKey(const Key('save-daily-commute')));
     await tester.pumpAndSettle();
 
@@ -576,7 +731,7 @@ void main() {
           savedRouteId: route.id,
           origin: 'Home',
           destination: 'Campus',
-          arriveByMinutes: 9 * 60,
+          departureTimeMinutes: 9 * 60,
           activeDays: const {1, 3, 5},
           reminderEnabled: true,
           reminderMinutesBefore: 10,
@@ -588,7 +743,7 @@ void main() {
           savedRouteId: route.id,
           origin: 'Campus',
           destination: 'Home',
-          arriveByMinutes: 18 * 60,
+          departureTimeMinutes: 18 * 60,
           activeDays: const {1, 3, 5},
           reminderEnabled: false,
           reminderMinutesBefore: 15,

@@ -138,7 +138,7 @@ void main() {
             savedRouteId: 'route-2',
             origin: 'A',
             destination: 'B',
-            arriveByMinutes: 9 * 60,
+            departureTimeMinutes: 9 * 60,
             activeDays: const {1, 2, 3, 4, 5},
             reminderEnabled: true,
             reminderMinutesBefore: 10,

@@ -77,6 +77,7 @@ Deno.serve(async (request) => {
         reminder_enabled: commute.reminder_enabled,
         reminder_minutes_before: commute.reminder_minutes_before,
         estimated_duration_minutes: commute.estimated_duration_minutes,
+        has_service_warning: commute.has_service_warning === true,
         updated_at: new Date().toISOString(),
       };
 

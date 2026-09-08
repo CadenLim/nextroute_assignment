@@ -9,6 +9,7 @@ import 'package:intl/intl.dart';
 import 'package:gtfs_realtime_bindings/gtfs_realtime_bindings.dart' as gtfs;
 
 import 'personal_assistance_functions.dart'; // 🌟 ADDED FRIEND'S FUNCTION
+import 'gtfs_route_timetable.dart';
 
 // =========================================================
 // YOUR CODE (Module 1 / Journey Planning)
@@ -92,6 +93,10 @@ class ApiService {
   final Map<String, Map<String, dynamic>> _allRouteMetadata = {};
   final Map<String, String> _tripToRouteCache = {};
   final Map<String, String> _tripToShapeCache = {};
+  final Map<String, String> _tripToServiceCache = {};
+  final Map<String, List<GtfsFrequencyWindow>> _tripFrequencies = {};
+  final Map<String, GtfsServiceCalendar> _serviceCalendars = {};
+  final Map<String, Map<int, bool>> _calendarExceptions = {};
   bool _isGtfsFullyCached = false;
 
   String _cleanStationName(String rawName) {
@@ -193,6 +198,31 @@ class ApiService {
             folder,
           ),
         );
+
+        try {
+          final rawFrequencies = await rootBundle.loadString(
+            'assets/gtfs/$folder/frequencies.txt',
+          );
+          _tripFrequencies.addAll(_parseFrequencies(rawFrequencies, folder));
+        } catch (_) {
+          // frequencies.txt is optional in GTFS. Fixed trips remain usable.
+        }
+
+        try {
+          final rawExceptions = await rootBundle.loadString(
+            'assets/gtfs/$folder/calendar_dates.txt',
+          );
+          _calendarExceptions.addAll(
+            _parseCalendarExceptions(rawExceptions, folder),
+          );
+        } catch (_) {
+          // calendar_dates.txt is optional when calendar.txt is complete.
+        }
+
+        final rawCalendar = await rootBundle.loadString(
+          'assets/gtfs/$folder/calendar.txt',
+        );
+        _serviceCalendars.addAll(_parseCalendars(rawCalendar, folder));
       } catch (e) {
         debugPrint('GTFS load error for $folder: $e');
       }
@@ -982,6 +1012,256 @@ class ApiService {
     }
   }
 
+  /// Validates a stable Favourite Route against the same GTFS assets and
+  /// station grouping used by Journey Planning.
+  Future<RouteServiceAvailability> validateRouteTimetable({
+    required StationModel origin,
+    required StationModel destination,
+    required List<String> serviceSequence,
+    required Set<int> weekdays,
+    required int departureTimeMinutes,
+    DateTime? referenceDate,
+  }) async {
+    final stations = await loadAllStations();
+    final expectedServices = serviceSequence
+        .map(_normaliseRouteService)
+        .where((service) => service.isNotEmpty)
+        .toSet();
+    final timetableTrips = <GtfsTimetableTrip>[];
+
+    for (final entry in _allTripStopTimes.entries) {
+      final tripId = entry.key;
+      final routeId = _tripToRouteCache[tripId];
+      final serviceId = _tripToServiceCache[tripId];
+      final metadata = routeId == null ? null : _allRouteMetadata[routeId];
+      final routeName = metadata?['short_name']?.toString() ?? routeId ?? '';
+      if (serviceId == null ||
+          !expectedServices.contains(_normaliseRouteService(routeName))) {
+        continue;
+      }
+      final folder =
+          metadata?['folder']?.toString() ??
+          (tripId.contains('_') ? tripId.split('_').first : 'bus');
+      final calls = <GtfsTimetableCall>[];
+      for (final stop in entry.value) {
+        final arrival = _gtfsTimeSeconds(stop['arrival_time']?.toString());
+        final departure = _gtfsTimeSeconds(stop['departure_time']?.toString());
+        if (arrival == null || departure == null) continue;
+        calls.add(
+          GtfsTimetableCall(
+            stopId: stop['stop_id'].toString(),
+            arrivalSeconds: arrival,
+            departureSeconds: departure,
+          ),
+        );
+      }
+      if (calls.length < 2) continue;
+      timetableTrips.add(
+        GtfsTimetableTrip(
+          id: tripId,
+          folder: folder,
+          routeName: routeName,
+          serviceId: serviceId,
+          calls: calls,
+          frequencies: _tripFrequencies[tripId] ?? const [],
+        ),
+      );
+    }
+
+    final stopGroups = <String, String>{};
+    for (final station in stations) {
+      final ids = station.ids.toList()..sort();
+      final group = ids.join('|');
+      for (final id in ids) {
+        stopGroups[id] = group;
+      }
+    }
+    return const GtfsRouteTimetableValidator().validate(
+      trips: timetableTrips,
+      calendars: _serviceCalendars,
+      stopGroups: stopGroups,
+      originStopIds: origin.ids.toSet(),
+      destinationStopIds: destination.ids.toSet(),
+      serviceSequence: serviceSequence,
+      weekdays: weekdays,
+      departureTimeMinutes: departureTimeMinutes,
+      referenceDate: referenceDate ?? DateTime.now(),
+    );
+  }
+
+  Map<String, List<GtfsFrequencyWindow>> _parseFrequencies(
+    String raw,
+    String folder,
+  ) {
+    final rows = _gtfsRows(raw);
+    final result = <String, List<GtfsFrequencyWindow>>{};
+    if (rows.isEmpty) return result;
+    final header = rows.first;
+    final tripIndex = header.indexOf('trip_id');
+    final startIndex = header.indexOf('start_time');
+    final endIndex = header.indexOf('end_time');
+    final headwayIndex = header.indexOf('headway_secs');
+    if ([tripIndex, startIndex, endIndex, headwayIndex].contains(-1)) {
+      return result;
+    }
+    for (final row in rows.skip(1)) {
+      if (row.length <=
+          [
+            tripIndex,
+            startIndex,
+            endIndex,
+            headwayIndex,
+          ].reduce((first, second) => first > second ? first : second)) {
+        continue;
+      }
+      final start = _gtfsTimeSeconds(row[startIndex]);
+      final end = _gtfsTimeSeconds(row[endIndex]);
+      final headway = int.tryParse(row[headwayIndex]);
+      if (start == null || end == null || headway == null || headway <= 0) {
+        continue;
+      }
+      final tripId = '${folder}_${row[tripIndex]}';
+      result
+          .putIfAbsent(tripId, () => [])
+          .add(
+            GtfsFrequencyWindow(
+              startSeconds: start,
+              endSeconds: end,
+              headwaySeconds: headway,
+            ),
+          );
+    }
+    return result;
+  }
+
+  Map<String, Map<int, bool>> _parseCalendarExceptions(
+    String raw,
+    String folder,
+  ) {
+    final rows = _gtfsRows(raw);
+    final result = <String, Map<int, bool>>{};
+    if (rows.isEmpty) return result;
+    final header = rows.first;
+    final serviceIndex = header.indexOf('service_id');
+    final dateIndex = header.indexOf('date');
+    final typeIndex = header.indexOf('exception_type');
+    if ([serviceIndex, dateIndex, typeIndex].contains(-1)) return result;
+    for (final row in rows.skip(1)) {
+      if (row.length <=
+          [
+            serviceIndex,
+            dateIndex,
+            typeIndex,
+          ].reduce((first, second) => first > second ? first : second)) {
+        continue;
+      }
+      final date = int.tryParse(row[dateIndex]);
+      final type = int.tryParse(row[typeIndex]);
+      if (date == null || (type != 1 && type != 2)) continue;
+      final serviceId = '${folder}_${row[serviceIndex]}';
+      result.putIfAbsent(serviceId, () => {})[date] = type == 1;
+    }
+    return result;
+  }
+
+  Map<String, GtfsServiceCalendar> _parseCalendars(String raw, String folder) {
+    final rows = _gtfsRows(raw);
+    final result = <String, GtfsServiceCalendar>{};
+    if (rows.isEmpty) return result;
+    final header = rows.first;
+    final serviceIndex = header.indexOf('service_id');
+    final startIndex = header.indexOf('start_date');
+    final endIndex = header.indexOf('end_date');
+    const dayNames = [
+      'monday',
+      'tuesday',
+      'wednesday',
+      'thursday',
+      'friday',
+      'saturday',
+      'sunday',
+    ];
+    final dayIndexes = dayNames.map(header.indexOf).toList();
+    if ([serviceIndex, startIndex, endIndex, ...dayIndexes].contains(-1)) {
+      return result;
+    }
+    for (final row in rows.skip(1)) {
+      final largestIndex = [
+        serviceIndex,
+        startIndex,
+        endIndex,
+        ...dayIndexes,
+      ].reduce((first, second) => first > second ? first : second);
+      if (row.length <= largestIndex) continue;
+      final start = _gtfsDate(row[startIndex]);
+      final end = _gtfsDate(row[endIndex]);
+      if (start == null || end == null) continue;
+      final serviceId = '${folder}_${row[serviceIndex]}';
+      result[serviceId] = GtfsServiceCalendar(
+        weekdays: {
+          for (var index = 0; index < dayIndexes.length; index++)
+            if (row[dayIndexes[index]] == '1') index + 1,
+        },
+        startDate: start,
+        endDate: end,
+        exceptions: _calendarExceptions[serviceId] ?? const {},
+      );
+    }
+    return result;
+  }
+
+  List<List<String>> _gtfsRows(String raw) =>
+      const CsvToListConverter(eol: '\n', shouldParseNumbers: false)
+          .convert(raw.replaceAll('\uFEFF', '').replaceAll('\r\n', '\n'))
+          .where((row) => row.any((cell) => cell.toString().trim().isNotEmpty))
+          .map((row) => row.map((cell) => cell.toString().trim()).toList())
+          .toList();
+
+  static int? _gtfsTimeSeconds(String? value) {
+    if (value == null) return null;
+    final parts = value.trim().split(':');
+    if (parts.length != 3) return null;
+    final hour = int.tryParse(parts[0]);
+    final minute = int.tryParse(parts[1]);
+    final second = int.tryParse(parts[2]);
+    if (hour == null ||
+        minute == null ||
+        second == null ||
+        hour < 0 ||
+        minute < 0 ||
+        minute > 59 ||
+        second < 0 ||
+        second > 59) {
+      return null;
+    }
+    return hour * 3600 + minute * 60 + second;
+  }
+
+  static DateTime? _gtfsDate(String value) {
+    if (!RegExp(r'^\d{8}$').hasMatch(value)) return null;
+    return DateTime(
+      int.parse(value.substring(0, 4)),
+      int.parse(value.substring(4, 6)),
+      int.parse(value.substring(6, 8)),
+    );
+  }
+
+  static String _normaliseRouteService(String value) {
+    var result = value
+        .trim()
+        .toUpperCase()
+        .replaceAll(RegExp(r'[^A-Z0-9]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (result.contains('KELANA JAYA') ||
+        result == 'KJ' ||
+        result == 'KJL' ||
+        result == 'LINE 5') {
+      result = 'KELANA JAYA';
+    }
+    return result;
+  }
+
   Map<String, Map<String, dynamic>> _parseRouteMetadata(
     String raw,
     String folder,
@@ -1112,6 +1392,7 @@ class ApiService {
     final header = lines[0].map((e) => e.toString().trim()).toList();
     final routeIdIdx = header.indexOf('route_id');
     final tripIdIdx = header.indexOf('trip_id');
+    final serviceIdIdx = header.indexOf('service_id');
     final shapeIdIdx = header.indexOf('shape_id');
     if (routeIdIdx == -1 || tripIdIdx == -1) return tripToRoute;
 
@@ -1120,6 +1401,10 @@ class ApiService {
       if (parts.length > tripIdIdx && parts.length > routeIdIdx) {
         final tripId = '${folder}_${parts[tripIdIdx]}';
         tripToRoute[tripId] = '${folder}_${parts[routeIdIdx]}';
+        if (serviceIdIdx != -1 && parts.length > serviceIdIdx) {
+          _tripToServiceCache[tripId] =
+              '${folder}_${parts[serviceIdIdx].trim()}';
+        }
         if (shapeIdIdx != -1 &&
             parts.length > shapeIdIdx &&
             parts[shapeIdIdx].trim().isNotEmpty) {
@@ -1146,6 +1431,7 @@ class ApiService {
     final tripIdIdx = header.indexOf('trip_id');
     final stopIdIdx = header.indexOf('stop_id');
     final arrivalTimeIdx = header.indexOf('arrival_time');
+    final departureTimeIdx = header.indexOf('departure_time');
     final seqIdx = header.indexOf('stop_sequence');
 
     if (tripIdIdx == -1 || stopIdIdx == -1 || arrivalTimeIdx == -1)
@@ -1166,6 +1452,10 @@ class ApiService {
         tripStopTimes[tripId]!.add({
           'stop_id': '${folder}_${parts[stopIdIdx]}',
           'arrival_time': parts[arrivalTimeIdx],
+          'departure_time':
+              departureTimeIdx != -1 && parts.length > departureTimeIdx
+              ? parts[departureTimeIdx]
+              : parts[arrivalTimeIdx],
           'route_id': tripToRoute[tripId] ?? tripId,
           'seq': seq,
         });

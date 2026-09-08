@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/notification_service.dart';
 import '../services/api_service.dart';
+import '../services/gtfs_route_timetable.dart';
 import '../services/personal_travel_service.dart';
 import 'auth_screen.dart';
 import 'favourite_routes.dart';
@@ -1183,6 +1184,8 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
                   Text(
                     commute == null
                         ? 'Choose a route and departure time'
+                        : commute.hasServiceWarning
+                        ? 'No scheduled service around this departure time'
                         : '${commute.estimatedDurationMinutes} min  •  ${_activeDaysLabel(commute.activeDays)}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -1274,6 +1277,8 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
                 ? (commute.reminderEnabled
                       ? 'Choose at least one active day'
                       : 'Reminder is turned off')
+                : commute.hasServiceWarning
+                ? '${commute.origin} → ${commute.destination}\nNo scheduled service around this departure time'
                 : '${commute.origin} → ${commute.destination}\n${commute.reminderMinutesBefore} min before departure',
             maxLines: 3,
             overflow: TextOverflow.ellipsis,
@@ -2677,6 +2682,10 @@ class _DailyCommuteSettingsScreenState
   String? _error;
   int _routePickerRevision = 0;
   SavedRoute? _plannedRoute;
+  RouteServiceAvailability? _serviceAvailability;
+  bool _validatingService = false;
+  String? _serviceValidationError;
+  int _serviceValidationRevision = 0;
 
   @override
   void initState() {
@@ -2731,12 +2740,55 @@ class _DailyCommuteSettingsScreenState
         }
         _loading = false;
       });
+      await _validateServiceAvailability();
     } catch (error) {
       if (!mounted) return;
       setState(() {
         _loading = false;
         _error = 'Unable to load Daily Commute settings. ${_message(error)}';
       });
+    }
+  }
+
+  Future<RouteServiceAvailability?> _validateServiceAvailability() async {
+    final route = _selectedRoute ?? _plannedRoute;
+    final revision = ++_serviceValidationRevision;
+    if (route == null || _activeDays.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _serviceAvailability = null;
+          _serviceValidationError = null;
+          _validatingService = false;
+        });
+      }
+      return null;
+    }
+    setState(() {
+      _validatingService = true;
+      _serviceValidationError = null;
+    });
+    try {
+      final result = await _service.validateRouteAvailability(
+        route: route,
+        departureTimeMinutes: _departureTime.hour * 60 + _departureTime.minute,
+        activeDays: Set<int>.from(_activeDays),
+      );
+      if (!mounted || revision != _serviceValidationRevision) return result;
+      setState(() {
+        _serviceAvailability = result;
+        _validatingService = false;
+      });
+      return result;
+    } catch (error) {
+      if (!mounted || revision != _serviceValidationRevision) return null;
+      setState(() {
+        _serviceAvailability = null;
+        _validatingService = false;
+        _serviceValidationError =
+            'Unable to validate this route against the GTFS timetable. '
+            '${_message(error)}';
+      });
+      return null;
     }
   }
 
@@ -2867,6 +2919,7 @@ class _DailyCommuteSettingsScreenState
     periodController.dispose();
     if (selected != null && mounted) {
       setState(() => _departureTime = selected);
+      await _validateServiceAvailability();
     }
   }
 
@@ -2887,6 +2940,7 @@ class _DailyCommuteSettingsScreenState
             .firstOrNull;
         _plannedRoute = null;
       });
+      await _validateServiceAvailability();
     }
   }
 
@@ -2914,6 +2968,7 @@ class _DailyCommuteSettingsScreenState
         _routePickerRevision++;
         _error = null;
       });
+      await _validateServiceAvailability();
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -2922,6 +2977,7 @@ class _DailyCommuteSettingsScreenState
         _routePickerRevision++;
         _error = 'Route selected, but Favourite Routes could not be refreshed.';
       });
+      await _validateServiceAvailability();
     }
   }
 
@@ -2957,6 +3013,7 @@ class _DailyCommuteSettingsScreenState
         _routePickerRevision++;
         _error = null;
       });
+      await _validateServiceAvailability();
     } catch (error) {
       if (mounted) {
         setState(() => _error = 'Unable to refresh Favourite Routes.');
@@ -2973,6 +3030,7 @@ class _DailyCommuteSettingsScreenState
       _selectedRoute = _routes.where((route) => route.id == id).firstOrNull;
       if (_selectedRoute != null) _plannedRoute = null;
     });
+    await _validateServiceAvailability();
   }
 
   Future<void> _save() async {
@@ -2995,6 +3053,46 @@ class _DailyCommuteSettingsScreenState
       _error = null;
     });
     try {
+      RouteServiceAvailability? availability;
+      var saveWithWarning = existing?.hasServiceWarning ?? false;
+      if (route != null) {
+        availability = await _validateServiceAvailability();
+        if (availability == null) {
+          throw StateError(
+            _serviceValidationError ??
+                'Unable to validate this route against the GTFS timetable.',
+          );
+        }
+        saveWithWarning = !availability.isAvailable;
+        if (saveWithWarning) {
+          if (!mounted) return;
+          setState(() => _saving = false);
+          final saveAnyway = await showDialog<bool>(
+            context: context,
+            builder: (dialogContext) => AlertDialog(
+              title: const Text('No scheduled service'),
+              content: Text(_unavailableMessage(availability!)),
+              actions: [
+                TextButton(
+                  key: const Key('choose-another-commute-time'),
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Choose Another Time'),
+                ),
+                FilledButton(
+                  key: const Key('save-commute-anyway'),
+                  onPressed: () => Navigator.pop(dialogContext, true),
+                  child: const Text('Save Anyway'),
+                ),
+              ],
+            ),
+          );
+          if (saveAnyway != true) {
+            return;
+          }
+          if (!mounted) return;
+          setState(() => _saving = true);
+        }
+      }
       final commute = await _service.save(
         reminderId: _commute?.id,
         route: route,
@@ -3003,6 +3101,10 @@ class _DailyCommuteSettingsScreenState
         estimatedDurationMinutes: route == null
             ? existing?.estimatedDurationMinutes
             : null,
+        validatedDurationMinutes:
+            availability?.estimatedDurationMinutes ??
+            availability?.fallbackDurationMinutes,
+        hasServiceWarning: saveWithWarning,
         departureTimeMinutes: _departureTime.hour * 60 + _departureTime.minute,
         activeDays: _activeDays,
         reminderEnabled: _reminderEnabled,
@@ -3085,13 +3187,16 @@ class _DailyCommuteSettingsScreenState
                         final selected = _activeDays.contains(weekday);
                         return InkWell(
                           key: Key('commute-day-$weekday'),
-                          onTap: () => setState(() {
-                            if (selected) {
-                              _activeDays.remove(weekday);
-                            } else {
-                              _activeDays.add(weekday);
-                            }
-                          }),
+                          onTap: () {
+                            setState(() {
+                              if (selected) {
+                                _activeDays.remove(weekday);
+                              } else {
+                                _activeDays.add(weekday);
+                              }
+                            });
+                            _validateServiceAvailability();
+                          },
                           customBorder: const CircleBorder(),
                           child: AnimatedContainer(
                             duration: const Duration(milliseconds: 160),
@@ -3240,6 +3345,7 @@ class _DailyCommuteSettingsScreenState
             _plannedRoute!.origin.name,
             _plannedRoute!.destination.name,
             label: 'Selected in Journey Planning',
+            routeName: _plannedRoute!.name,
           ),
           const SizedBox(height: 10),
         ] else if (_selectedRoute == null && _commute != null) ...[
@@ -3308,11 +3414,7 @@ class _DailyCommuteSettingsScreenState
                 ..._routes.map(
                   (route) => DropdownMenuItem(
                     value: route.id,
-                    child: Text(
-                      '${route.origin.name} → ${route.destination.name}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    child: _favouriteRouteOption(route),
                   ),
                 ),
                 const DropdownMenuItem(
@@ -3353,6 +3455,7 @@ class _DailyCommuteSettingsScreenState
     String origin,
     String destination, {
     required String label,
+    String? routeName,
   }) {
     return Container(
       padding: const EdgeInsets.all(12),
@@ -3368,27 +3471,75 @@ class _DailyCommuteSettingsScreenState
             style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
           ),
           const SizedBox(height: 4),
+          if (routeName != null) ...[
+            Text(
+              routeName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: _navy, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 3),
+          ],
           Text(
             '$origin → $destination',
-            style: const TextStyle(fontWeight: FontWeight.w800),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: routeName == null
+                  ? const Color(0xFF172033)
+                  : const Color(0xFF64748B),
+              fontSize: routeName == null ? 14 : 11,
+              fontWeight: routeName == null ? FontWeight.w800 : FontWeight.w600,
+            ),
           ),
         ],
       ),
     );
   }
 
+  Widget _favouriteRouteOption(SavedRoute route) {
+    return Row(
+      children: [
+        Flexible(
+          flex: 2,
+          child: Text(
+            route.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFF172033),
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+        const Text(
+          '  ·  ',
+          style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+        ),
+        Expanded(
+          flex: 3,
+          child: Text(
+            '${route.origin.name} → ${route.destination.name}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Color(0xFF64748B), fontSize: 10),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _calculationCard() {
     final saved = _commute;
-    final commute = saved?.copyWith(
-      departureTimeMinutes: _departureTime.hour * 60 + _departureTime.minute,
-      activeDays: _activeDays,
-      reminderEnabled: _reminderEnabled,
-      reminderMinutesBefore: _reminderMinutes,
-    );
-    final routeNeedsEstimate =
-        commute == null ||
-        _plannedRoute != null ||
-        (_selectedRoute != null && _selectedRoute!.id != saved?.savedRouteId);
+    final departureMinutes = _departureTime.hour * 60 + _departureTime.minute;
+    final availability = _serviceAvailability;
+    final unavailable =
+        availability?.isAvailable == false ||
+        (availability == null && saved?.hasServiceWarning == true);
+    final duration =
+        availability?.estimatedDurationMinutes ??
+        (!unavailable ? saved?.estimatedDurationMinutes : null);
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -3397,28 +3548,57 @@ class _DailyCommuteSettingsScreenState
       ),
       child: Column(
         children: [
-          if (routeNeedsEstimate) ...[
+          _calculationRow('Departure time', _formatMinutes(departureMinutes)),
+          const SizedBox(height: 10),
+          if (_validatingService) ...[
             const Row(
+              key: Key('commute-service-validating'),
               children: [
-                Icon(Icons.calculate_outlined, color: _blue),
-                SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Travel time and estimated arrival will be calculated when you save.',
-                    style: TextStyle(color: Color(0xFF48627F), fontSize: 12),
-                  ),
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
                 ),
+                SizedBox(width: 9),
+                Expanded(child: Text('Checking the GTFS timetable…')),
               ],
             ),
-          ] else ...[
-            _calculationRow(
-              'Estimated travel time',
-              '${commute.estimatedDurationMinutes} min',
+          ] else if (_serviceValidationError != null) ...[
+            _serviceStatus(
+              icon: Icons.error_outline,
+              color: Colors.red.shade700,
+              message: _serviceValidationError!,
             ),
+          ] else if (availability?.isAvailable == true) ...[
+            _serviceStatus(
+              key: const Key('commute-service-available'),
+              icon: Icons.check_circle,
+              color: const Color(0xFF15803D),
+              message: 'Service available',
+            ),
+          ] else if (unavailable && availability != null) ...[
+            _serviceStatus(
+              key: const Key('commute-service-unavailable'),
+              icon: Icons.warning_amber_rounded,
+              color: const Color(0xFFB45309),
+              message: _unavailableMessage(availability),
+            ),
+          ] else if (unavailable) ...[
+            _serviceStatus(
+              key: const Key('commute-service-unavailable'),
+              icon: Icons.warning_amber_rounded,
+              color: const Color(0xFFB45309),
+              message:
+                  'No scheduled service around ${_formatMinutes(departureMinutes)}.',
+            ),
+          ],
+          if (duration != null && !_validatingService && !unavailable) ...[
+            const SizedBox(height: 10),
+            _calculationRow('Estimated travel time', '$duration min'),
             const SizedBox(height: 10),
             _calculationRow(
               'Estimated arrival',
-              _formatMinutes(commute.estimatedArrivalMinutes),
+              _formatMinutes(departureMinutes + duration),
             ),
           ],
           if (_reminderEnabled) ...[
@@ -3436,6 +3616,50 @@ class _DailyCommuteSettingsScreenState
       ),
     );
   }
+
+  Widget _serviceStatus({
+    Key? key,
+    required IconData icon,
+    required Color color,
+    required String message,
+  }) {
+    return Row(
+      key: key,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, color: color, size: 19),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            message,
+            style: TextStyle(color: color, fontSize: 12, height: 1.35),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _unavailableMessage(RouteServiceAvailability availability) {
+    final time = _formatMinutes(
+      _departureTime.hour * 60 + _departureTime.minute,
+    );
+    final unavailableDays = availability.unavailableWeekdays.toList()..sort();
+    final daySuffix = unavailableDays.length == _activeDays.length
+        ? ''
+        : ' on ${unavailableDays.map(_fullDayLabel).join(', ')}';
+    var message = 'No scheduled service around $time$daySuffix.';
+    final next = availability.nextDeparture;
+    if (next != null) {
+      message +=
+          '\nNext available service: '
+          '${_formatMinutes(next.hour * 60 + next.minute)} '
+          '(${_fullDayLabel(next.weekday)})';
+    }
+    return message;
+  }
+
+  static String _fullDayLabel(int weekday) =>
+      const ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][weekday - 1];
 
   Widget _calculationRow(String label, String value) {
     return Row(
@@ -3829,6 +4053,18 @@ class _DailyCommuteOverviewSheetState extends State<DailyCommuteOverviewSheet> {
                         fontSize: 10,
                       ),
                     ),
+                    if (commute.hasServiceWarning) ...[
+                      const SizedBox(height: 5),
+                      const Text(
+                        'No scheduled service around this departure time',
+                        key: Key('saved-commute-service-warning'),
+                        style: TextStyle(
+                          color: Color(0xFFB45309),
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),

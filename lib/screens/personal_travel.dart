@@ -24,6 +24,8 @@ class PersonalTravelScreen extends StatefulWidget {
     this.savedPlacesRepository,
     this.dailyCommuteService,
     this.smartRoutineService,
+    this.journeyApiService,
+    this.journeyAuthenticate,
     this.onOpenJourneyPlanning,
     this.onAccountDeleted,
   });
@@ -34,6 +36,8 @@ class PersonalTravelScreen extends StatefulWidget {
   final SavedPlacesRepository? savedPlacesRepository;
   final DailyCommuteService? dailyCommuteService;
   final SmartRoutineService? smartRoutineService;
+  final ApiService? journeyApiService;
+  final Future<bool> Function(BuildContext)? journeyAuthenticate;
   final VoidCallback? onOpenJourneyPlanning;
   final VoidCallback? onAccountDeleted;
 
@@ -451,6 +455,90 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
       await _loadHistory();
     }
   }
+
+  Future<void> _startJourneyAgain(TravelHistoryEntry entry) async {
+    final apiService = widget.journeyApiService ?? ApiService();
+    var origin = entry.originStation;
+    var destination = entry.destinationStation;
+
+    try {
+      if (origin == null || destination == null) {
+        final stations = await apiService.loadAllStations();
+        origin ??= _matchHistoryStation(stations, entry.origin);
+        destination ??= _matchHistoryStation(stations, entry.destination);
+      }
+
+      if (origin == null || destination == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'This older trip can no longer be matched to the current station list.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      final services = SavedRoute.servicesFromLineName(entry.lineName);
+      final transportModes = entry.transitSteps
+          .map((step) => step.mode)
+          .toList(growable: false);
+      final signature = entry.routeSignature.trim().isNotEmpty
+          ? entry.routeSignature
+          : SavedRoute.stableSignatureFor(services, transportModes);
+      final route = SavedRoute(
+        name: '${entry.origin} → ${entry.destination}',
+        origin: origin,
+        destination: destination,
+        signature: signature,
+        lineName: entry.lineName,
+        serviceSequence: services,
+        transportModes: transportModes,
+      );
+
+      if (!mounted) return;
+      await Navigator.push<void>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => JourneyPlanningScreen(
+            savedRoute: route,
+            apiService: apiService,
+            savedRoutesRepository: widget.savedRoutesRepository,
+            savedPlacesRepository: widget.savedPlacesRepository,
+            authenticate: widget.journeyAuthenticate,
+          ),
+        ),
+      );
+      if (mounted) await _loadHistory();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Unable to prepare this journey right now. Please try again.',
+          ),
+        ),
+      );
+    }
+  }
+
+  StationModel? _matchHistoryStation(
+    Iterable<StationModel> stations,
+    String historyName,
+  ) {
+    final key = _historyStationKey(historyName);
+    if (key.isEmpty) return null;
+    for (final station in stations) {
+      if (_historyStationKey(station.name) == key) return station;
+    }
+    return null;
+  }
+
+  String _historyStationKey(String value) => value
+      .toUpperCase()
+      .replaceAll(RegExp(r'\(\s*OPP\s*\)'), '')
+      .replaceAll(RegExp(r'[^A-Z0-9]+'), '');
 
   Future<void> _openEditProfile() async {
     final confirmedEmail = await Navigator.push<String>(
@@ -1695,7 +1783,7 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
 
   Future<void> _showTripDetails(TravelHistoryEntry entry) async {
     final line = _lineDetails(entry.lineName);
-    await showModalBottomSheet<void>(
+    final startAgain = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
@@ -1882,11 +1970,37 @@ class _PersonalTravelScreenState extends State<PersonalTravelScreen> {
                   ],
                 ),
               ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    key: const Key('start-journey-again'),
+                    onPressed: () => Navigator.pop(sheetContext, true),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _blue,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    icon: const Icon(Icons.replay_rounded),
+                    label: const Text(
+                      'Start Journey Again',
+                      style: TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ),
+              ),
             ],
           ),
         ),
       ),
     );
+    if (startAgain == true && mounted) {
+      await _startJourneyAgain(entry);
+    }
   }
 
   Widget _tripMetric(String label, String value) {

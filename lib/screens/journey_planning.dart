@@ -1948,6 +1948,9 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    if (widget.savedRoute != null && !widget.selectForDailyCommute) {
+      return _buildSavedRouteView();
+    }
     return Scaffold(
       backgroundColor: _bgLight,
       appBar: widget.selectForDailyCommute
@@ -2057,6 +2060,80 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSavedRouteView() {
+    final savedRoute = widget.savedRoute!;
+    return Scaffold(
+      backgroundColor: _bgLight,
+      appBar: AppBar(title: Text(savedRoute.name)),
+      body: SafeArea(
+        child: RefreshIndicator(
+          onRefresh: () => _handleSearch(preferredRoute: savedRoute),
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+            children: [
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  key: const Key('refresh-saved-route'),
+                  onPressed:
+                      _isLoading ||
+                          _isSavingRoute ||
+                          _isStartingNavigation ||
+                          _originGtfsStation == null ||
+                          _destinationGtfsStation == null
+                      ? null
+                      : () => _handleSearch(preferredRoute: savedRoute),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Refresh live status'),
+                ),
+              ),
+              if (_searchError != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF3E0),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    _searchError!,
+                    style: const TextStyle(color: Color(0xFF7C2D12)),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 20),
+              if (_isLoading)
+                const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(40),
+                    child: CircularProgressIndicator(),
+                  ),
+                )
+              else if (_realRoutes.isNotEmpty)
+                _buildJourneySummaryCard()
+              else
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 40),
+                    child: Text(
+                      'No transit routes found.',
+                      style: TextStyle(
+                        color: _textGrey,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );

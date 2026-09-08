@@ -164,8 +164,8 @@ class ApiService {
     return '$h:$m';
   }
 
-  // 🌟 新增：解析 frequencies.txt
-  void _parseRailFrequencies(String raw) {
+  // 🌟 新增：解析 frequencies.txt（folder 用于和 trip_id 的前缀保持一致，例如 'bus_', 'mrt_feeder_', 'rail_'）
+  void _parseRailFrequencies(String raw, String folder) {
     final lines = const CsvToListConverter(eol: '\n', shouldParseNumbers: false)
         .convert(raw.replaceAll('\uFEFF', '').replaceAll('\r\n', '\n'))
         .where((row) => row.any((cell) => cell.toString().trim().isNotEmpty))
@@ -183,7 +183,7 @@ class ApiService {
     for (final line in lines.skip(1)) {
       final parts = line.map((e) => e.toString().trim()).toList();
       if (parts.length > headwayIdx) {
-        final tripKey = 'rail_${parts[tripIdIdx]}';
+        final tripKey = '${folder}_${parts[tripIdIdx]}';
         final startSecs = _timeToSeconds(parts[startIdx]);
         final endSecs = _timeToSeconds(parts[endIdx]);
         final headwaySecs = int.tryParse(parts[headwayIdx]) ?? 300;
@@ -296,14 +296,18 @@ class ApiService {
           ),
         );
 
-        // 🌟 加载轨交排班频次
-        if (folder == 'rail') {
-          try {
-            final String rawFreq = await rootBundle.loadString('assets/gtfs/rail/frequencies.txt');
-            _parseRailFrequencies(rawFreq);
-          } catch (e) {
-            debugPrint('GTFS frequencies load error: $e');
-          }
+        // 🌟 修复：加载每个分类(rail/bus/mrt_feeder)自己的排班频次文件。
+        // 之前只加载了 rail 的 frequencies.txt，导致像 T250 这类按班距(headway)运行的
+        // 巴士/接驳车路线找不到频次数据，退回到"把某一班次的固定时刻当成唯一发车时间"的
+        // fallback 算法，从而算出几百分钟的错误等待时间。
+        try {
+          final String rawFreq = await rootBundle.loadString(
+            'assets/gtfs/$folder/frequencies.txt',
+          );
+          _parseRailFrequencies(rawFreq, folder);
+        } catch (e) {
+          // 该分类没有 frequencies.txt 是正常情况（例如固定时刻表路线），忽略即可
+          debugPrint('GTFS frequencies load error for $folder: $e');
         }
 
       } catch (e) {

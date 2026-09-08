@@ -10,6 +10,7 @@ import 'package:timezone/data/latest.dart' as tz_data;
 import 'package:timezone/timezone.dart' as tz;
 
 import 'api_service.dart';
+import 'gtfs_route_timetable.dart';
 import 'personal_assistance_functions.dart';
 import 'personal_travel_service.dart';
 
@@ -154,10 +155,12 @@ class LocalPushNotificationService {
       await _plugin.zonedSchedule(
         id: notificationId(commute, departureWeekday),
         title: 'NextRoute – Time to leave soon',
-        body:
-            'Your trip to ${commute.destination} takes about '
-            '${commute.estimatedDurationMinutes} minutes. Leave at '
-            '$departureTime to arrive around $estimatedArrival.',
+        body: commute.hasServiceWarning
+            ? 'Leave at $departureTime for ${commute.destination}. '
+                  'No scheduled service was found around this departure time.'
+            : 'Your trip to ${commute.destination} takes about '
+                  '${commute.estimatedDurationMinutes} minutes. Leave at '
+                  '$departureTime to arrive around $estimatedArrival.',
         scheduledDate: _nextWeekdayTime(notificationWeekday, notificationTime),
         notificationDetails: details,
         androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
@@ -528,6 +531,7 @@ class DailyCommute {
     required this.reminderEnabled,
     required this.reminderMinutesBefore,
     required this.estimatedDurationMinutes,
+    this.hasServiceWarning = false,
     this.updatedAt,
   });
 
@@ -551,6 +555,7 @@ class DailyCommute {
           (json['reminder_minutes_before'] as num?)?.toInt() ?? 10,
       estimatedDurationMinutes:
           (json['estimated_duration_minutes'] as num?)?.toInt() ?? 1,
+      hasServiceWarning: json['has_service_warning'] as bool? ?? false,
       updatedAt: DateTime.tryParse(json['updated_at']?.toString() ?? ''),
     );
   }
@@ -565,6 +570,7 @@ class DailyCommute {
   final bool reminderEnabled;
   final int reminderMinutesBefore;
   final int estimatedDurationMinutes;
+  final bool hasServiceWarning;
   final DateTime? updatedAt;
 
   int get estimatedArrivalMinutes =>
@@ -612,6 +618,7 @@ class DailyCommute {
     bool? reminderEnabled,
     int? reminderMinutesBefore,
     int? estimatedDurationMinutes,
+    bool? hasServiceWarning,
     DateTime? updatedAt,
   }) {
     return DailyCommute(
@@ -627,6 +634,7 @@ class DailyCommute {
           reminderMinutesBefore ?? this.reminderMinutesBefore,
       estimatedDurationMinutes:
           estimatedDurationMinutes ?? this.estimatedDurationMinutes,
+      hasServiceWarning: hasServiceWarning ?? this.hasServiceWarning,
       updatedAt: updatedAt ?? this.updatedAt,
     );
   }
@@ -643,6 +651,7 @@ class DailyCommute {
     'reminder_enabled': reminderEnabled,
     'reminder_minutes_before': reminderMinutesBefore,
     'estimated_duration_minutes': estimatedDurationMinutes,
+    'has_service_warning': hasServiceWarning,
     'updated_at': DateTime.now().toUtc().toIso8601String(),
   };
 
@@ -802,12 +811,38 @@ class DailyCommuteService {
     return minutes;
   }
 
+  Future<RouteServiceAvailability> validateRouteAvailability({
+    required SavedRoute route,
+    required int departureTimeMinutes,
+    required Set<int> activeDays,
+    DateTime? referenceDate,
+  }) async {
+    final stations = await _apiService.loadAllStations();
+    final origin = route.resolveOrigin(stations);
+    final destination = route.resolveDestination(stations);
+    if (origin == null || destination == null) {
+      throw StateError(
+        'This favourite route contains a station that is no longer available.',
+      );
+    }
+    return _apiService.validateRouteTimetable(
+      origin: origin,
+      destination: destination,
+      serviceSequence: route.stableServiceSequence,
+      weekdays: activeDays,
+      departureTimeMinutes: departureTimeMinutes,
+      referenceDate: referenceDate,
+    );
+  }
+
   Future<DailyCommute> save({
     String? reminderId,
     SavedRoute? route,
     String? origin,
     String? destination,
     int? estimatedDurationMinutes,
+    int? validatedDurationMinutes,
+    bool hasServiceWarning = false,
     required int departureTimeMinutes,
     required Set<int> activeDays,
     required bool reminderEnabled,
@@ -816,9 +851,11 @@ class DailyCommuteService {
     final routeId = route?.id;
     final commuteOrigin = route?.origin.name ?? origin?.trim();
     final commuteDestination = route?.destination.name ?? destination?.trim();
-    final duration = route == null
-        ? estimatedDurationMinutes
-        : await estimateDuration(route);
+    final duration =
+        validatedDurationMinutes ??
+        (route == null
+            ? estimatedDurationMinutes
+            : await estimateDuration(route));
     if (commuteOrigin == null ||
         commuteOrigin.isEmpty ||
         commuteDestination == null ||
@@ -868,6 +905,7 @@ class DailyCommuteService {
         reminderEnabled: reminderEnabled,
         reminderMinutesBefore: reminderMinutesBefore,
         estimatedDurationMinutes: duration,
+        hasServiceWarning: hasServiceWarning,
       ),
     );
 

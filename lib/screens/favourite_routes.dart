@@ -360,6 +360,18 @@ class _FavouriteRoutesScreenState extends State<FavouriteRoutesScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Text(
+                      route.name,
+                      key: Key('favourite-route-name-${route.id}'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF172033),
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
                     _compactEndpoint(
                       route.origin.name,
                       const Color(0xFF9AA8BC),

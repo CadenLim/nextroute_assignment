@@ -826,8 +826,14 @@ void main() {
 
       expect(api.requestedOrigin!.ids, contains('pv128-t250-platform'));
       expect(api.requestedDestination!.ids, contains('pv16-t250-platform'));
+      expect(find.text('PV128 to PV16'), findsOneWidget);
+      expect(find.byKey(const Key('refresh-saved-route')), findsOneWidget);
+      expect(find.text('JOURNEY SUMMARY'), findsOneWidget);
+      expect(find.text('ROUTE OPTIMIZATION'), findsNothing);
+      expect(find.text('ROAD SEARCH'), findsNothing);
+      expect(find.text('ROUTE COMPARISON'), findsNothing);
       expect(find.text('T250'), findsWidgets);
-      expect(find.text('7 min'), findsNWidgets(2));
+      expect(find.text('7 min'), findsOneWidget);
       expect(
         find.text('No routes found. Try another origin or destination.'),
         findsNothing,
@@ -849,6 +855,30 @@ void main() {
     await tester.tap(find.text('Retry'));
     await tester.pumpAndSettle();
     expect(find.text('No favourite routes yet'), findsOneWidget);
+  });
+
+  testWidgets('compact favourite card displays and renames the route name', (
+    tester,
+  ) async {
+    final repository = MemoryRoutes()..routes = [sampleRoute()];
+    await launch(
+      tester,
+      FavouriteRoutesScreen(repository: repository, sheetMode: true),
+    );
+
+    expect(
+      find.byKey(const Key('favourite-route-name-saved-1')),
+      findsOneWidget,
+    );
+    expect(find.text('Work'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Rename'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField), 'Campus Run');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Campus Run'), findsOneWidget);
   });
 
   testWidgets(
@@ -1001,7 +1031,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('30 min'), findsNWidgets(2));
+      expect(find.text('30 min'), findsOneWidget);
       expect(
         find.text(
           'Your saved route is unavailable. Showing other routes for these locations.',
@@ -1108,16 +1138,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Current route status'), findsOneWidget);
+    expect(find.text('Work'), findsOneWidget);
     expect(find.text('Refresh live status'), findsOneWidget);
-    final matchingCard = find.ancestor(
-      of: find.text('T222 -> Line 5 (Kelana Jaya) -> 300'),
-      matching: find.byType(AnimatedContainer),
-    );
-    expect(
-      find.descendant(of: matchingCard, matching: find.byIcon(Icons.check)),
-      findsOneWidget,
-    );
+    expect(find.text('44 min'), findsOneWidget);
     expect(
       find.text(
         'Your saved route is unavailable. Showing other routes for these locations.',
@@ -1237,7 +1260,7 @@ void main() {
     },
   );
 
-  testWidgets('a previously saved search result shows a red heart', (
+  testWidgets('a previously saved route shows the Saved summary action', (
     tester,
   ) async {
     final repository = MemoryRoutes()..routes = [sampleRoute()];
@@ -1251,12 +1274,13 @@ void main() {
       ),
     );
 
-    final heart = find.byTooltip('Saved route');
-    expect(heart, findsOneWidget);
-    final icon = tester.widget<Icon>(
-      find.descendant(of: heart, matching: find.byIcon(Icons.favorite)),
+    final savedAction = find.byKey(const Key('toggle-saved-route'));
+    expect(savedAction, findsOneWidget);
+    expect(
+      find.descendant(of: savedAction, matching: find.byIcon(Icons.favorite)),
+      findsOneWidget,
     );
-    expect(icon.color, const Color(0xFFE11D48));
+    expect(find.text('Saved'), findsOneWidget);
   });
 
   testWidgets('the Saved summary button removes the favourite route', (

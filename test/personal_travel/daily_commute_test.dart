@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nextroute_assignment/screens/personal_travel.dart';
 import 'package:nextroute_assignment/services/api_service.dart';
+import 'package:nextroute_assignment/services/gtfs_route_timetable.dart';
 import 'package:nextroute_assignment/services/notification_service.dart';
 import 'package:nextroute_assignment/services/personal_travel_service.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
@@ -86,10 +87,17 @@ class MutableSavedRoutes implements SavedRoutesRepository {
 }
 
 class CommuteApi extends ApiService {
-  CommuteApi(this.route, {this.duration = '35 min'});
+  CommuteApi(
+    this.route, {
+    this.duration = '35 min',
+    this.serviceAvailable = true,
+    this.nextDepartureMinutes,
+  });
 
   final SavedRoute route;
   final String duration;
+  final bool serviceAvailable;
+  final int? nextDepartureMinutes;
 
   @override
   Future<List<StationModel>> loadAllStations() async => [
@@ -104,6 +112,58 @@ class CommuteApi extends ApiService {
   ) async => [
     {'sig': route.signature, 'duration': duration},
   ];
+
+  @override
+  Future<RouteServiceAvailability> validateRouteTimetable({
+    required StationModel origin,
+    required StationModel destination,
+    required List<String> serviceSequence,
+    required Set<int> weekdays,
+    required int departureTimeMinutes,
+    DateTime? referenceDate,
+  }) async {
+    final reference = referenceDate ?? DateTime(2026, 9, 7);
+    return RouteServiceAvailability(
+      days: [
+        for (final weekday in weekdays)
+          RouteServiceDayAvailability(
+            weekday: weekday,
+            date: reference.add(
+              Duration(days: (weekday - reference.weekday) % 7),
+            ),
+            isAvailable: serviceAvailable,
+            departure: serviceAvailable
+                ? DateTime(
+                    reference.year,
+                    reference.month,
+                    reference.day,
+                  ).add(Duration(minutes: departureTimeMinutes))
+                : null,
+            arrival: serviceAvailable
+                ? DateTime(
+                    reference.year,
+                    reference.month,
+                    reference.day,
+                  ).add(Duration(minutes: departureTimeMinutes + 35))
+                : null,
+            nextDeparture: nextDepartureMinutes == null
+                ? null
+                : DateTime(
+                    reference.year,
+                    reference.month,
+                    reference.day,
+                  ).add(Duration(minutes: nextDepartureMinutes!)),
+            nextArrival: nextDepartureMinutes == null
+                ? null
+                : DateTime(
+                    reference.year,
+                    reference.month,
+                    reference.day,
+                  ).add(Duration(minutes: nextDepartureMinutes! + 35)),
+          ),
+      ],
+    );
+  }
 }
 
 class CommuteNotifications extends LocalPushNotificationService {
@@ -195,6 +255,28 @@ void main() {
     expect(commute.notificationTimeMinutes, 8 * 60 + 20);
     expect(commute.estimatedArrivalMinutes, 9 * 60);
     expect(commute.toUpsert()['arrive_by'], '08:30:00');
+    expect(commute.hasServiceWarning, isFalse);
+    expect(commute.toUpsert()['has_service_warning'], isFalse);
+  });
+
+  test('persists the Save Anyway service warning', () {
+    final commute = DailyCommute.fromJson({
+      'id': 'commute-1',
+      'user_id': 'user-1',
+      'saved_route_id': 'route-1',
+      'origin': 'Home',
+      'destination': 'TAR UMT',
+      'arrive_by': '04:00:00',
+      'active_days': [1],
+      'reminder_enabled': true,
+      'reminder_minutes_before': 10,
+      'estimated_duration_minutes': 30,
+      'has_service_warning': true,
+    });
+
+    expect(commute.hasServiceWarning, isTrue);
+    expect(commute.toUpsert()['has_service_warning'], isTrue);
+    expect(commute.departureTimeMinutes, 4 * 60);
   });
 
   test('moves an after-midnight commute reminder to the previous weekday', () {
@@ -559,6 +641,124 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('an unavailable GTFS route can be saved with a warning', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final route = commuteRoute();
+    final repository = MemoryCommuteRepository();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DailyCommuteSettingsScreen(
+          service: DailyCommuteService(
+            repository: repository,
+            apiService: CommuteApi(
+              route,
+              serviceAvailable: false,
+              nextDepartureMinutes: 10 * 60 + 20,
+            ),
+            notificationService: CommuteNotifications(),
+            userIdProvider: () => 'user-1',
+          ),
+          savedRoutesRepository: MemorySavedRoutes(route),
+          initialRoute: route,
+          initialActiveDays: const {DateTime.monday},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const Key('commute-service-unavailable')),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('No scheduled service around 9:00 AM'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('Next available service: 10:20 AM'),
+      findsOneWidget,
+    );
+    expect(find.text('Estimated arrival'), findsNothing);
+
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('save-daily-commute')),
+      400,
+    );
+    await tester.tap(find.byKey(const Key('save-daily-commute')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const Key('choose-another-commute-time')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('save-commute-anyway')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('choose-another-commute-time')));
+    await tester.pumpAndSettle();
+    expect(repository.value, isNull);
+
+    await tester.tap(find.byKey(const Key('save-daily-commute')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('save-commute-anyway')));
+    await tester.pumpAndSettle();
+
+    expect(repository.value!.departureTimeMinutes, 9 * 60);
+    expect(repository.value!.hasServiceWarning, isTrue);
+  });
+
+  testWidgets('editing to a valid departure removes the saved warning', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final route = commuteRoute();
+    final repository = MemoryCommuteRepository();
+    repository.value = DailyCommute(
+      id: 'existing',
+      userId: 'user-1',
+      savedRouteId: route.id,
+      origin: route.origin.name,
+      destination: route.destination.name,
+      departureTimeMinutes: 9 * 60,
+      activeDays: const {DateTime.monday},
+      reminderEnabled: false,
+      reminderMinutesBefore: 10,
+      estimatedDurationMinutes: 35,
+      hasServiceWarning: true,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DailyCommuteSettingsScreen(
+          service: DailyCommuteService(
+            repository: repository,
+            apiService: CommuteApi(route),
+            notificationService: CommuteNotifications(),
+            userIdProvider: () => 'user-1',
+          ),
+          savedRoutesRepository: MemorySavedRoutes(route),
+          initialCommute: repository.value,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('commute-service-available')), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('save-daily-commute')),
+      400,
+    );
+    await tester.tap(find.byKey(const Key('save-daily-commute')));
+    await tester.pumpAndSettle();
+
+    expect(repository.value!.hasServiceWarning, isFalse);
+  });
+
   testWidgets('route picker can add and select a new favourite journey', (
     tester,
   ) async {
@@ -612,6 +812,7 @@ void main() {
     expect(openedJourneyPlanning, isTrue);
     await tester.tap(find.byType(DropdownButtonFormField<String>));
     await tester.pumpAndSettle();
+    expect(find.text('Work commute'), findsWidgets);
     expect(find.text('Home → Office'), findsWidgets);
   });
 
@@ -748,6 +949,7 @@ void main() {
           reminderEnabled: false,
           reminderMinutesBefore: 15,
           estimatedDurationMinutes: 35,
+          hasServiceWarning: true,
         ),
       ]);
     final service = DailyCommuteService(
@@ -771,6 +973,10 @@ void main() {
     expect(find.text('Home → Campus'), findsOneWidget);
     expect(find.text('Campus → Home'), findsOneWidget);
     expect(find.byType(Switch), findsNWidgets(2));
+    expect(
+      find.byKey(const Key('saved-commute-service-warning')),
+      findsOneWidget,
+    );
     expect(find.text('Add'), findsOneWidget);
   });
 

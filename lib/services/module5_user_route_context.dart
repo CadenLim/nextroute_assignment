@@ -109,11 +109,7 @@ class Module5ActiveJourney {
   };
 }
 
-/// Read-only personal route context for Module 5.
-///
-/// Active journeys are device-local. Daily Commutes and Favourite Routes are
-/// read through the Personal Assistance repositories; this service never
-/// writes to, updates or deletes another module's data.
+
 class Module5UserRouteContext extends ChangeNotifier {
   Module5UserRouteContext({
     Module5RouteStore? store,
@@ -310,7 +306,7 @@ class Module5UserRouteContext extends ChangeNotifier {
       );
       _personalRoutesUpdatedAt = DateTime.now();
     } on Object catch (error) {
-      // Personalisation is optional. Keep My Routes and All Network usable.
+
       _personalRoutesError = error;
       _dailyCommuteRoutes = const {};
       _favouriteRoutes = const {};
@@ -336,18 +332,11 @@ class Module5UserRouteContext extends ChangeNotifier {
       for (final identifier in _routeIdentifiers(route)) identifier,
   };
 
-  /// Saved routes created by older Journey versions may use a generic
-  /// `line_name` such as "Rapid Bus" while retaining the real GTFS route ID
-  /// in `route_signature` (for example `DIR_bus_U1510`). Return both complete
-  /// values and route-like tokens so Module 5 can resolve them against its
-  /// read-only GTFS catalogue without changing the saved route.
+
   static Iterable<String> _routeIdentifiers(SavedRoute route) sync* {
     final lineName = _normaliseRoute(route.lineName);
     if (lineName.isNotEmpty) yield lineName;
 
-    // A signature is structured metadata rather than a displayable route
-    // name, so expose only its route-like tokens (for example U1510), never
-    // the complete DIR_BUS_U1510 value.
     final signature = _normaliseRoute(route.signature);
     for (final value in [lineName, signature]) {
       for (final match in RegExp(r'[A-Z]*\d+[A-Z0-9]*').allMatches(value)) {

@@ -358,8 +358,7 @@ class SupabaseAnalyticsRepository {
         ),
       );
     } on PostgrestException catch (error) {
-      // Safe transition before the additive migration has been deployed.
-      // Do not mask permission/network errors with an apparently empty report.
+
       if (error.code != 'PGRST202' && error.code != '42883') rethrow;
       final rows = await _client
           .from('analytics_daily_summary')
@@ -376,8 +375,7 @@ class SupabaseAnalyticsRepository {
     required DateTime end,
   }) async {
     final alerts = <AnalyticsAlert>[];
-    // An RPC exposes only published public alerts, including expired ones.
-    // A missing RPC is an explicit error, not "0 alerts".
+
     for (var offset = 0; ; offset += 500) {
       final rows = await _client.rpc(
         'module5_alert_history',
@@ -411,8 +409,7 @@ class SupabaseAnalyticsRepository {
       '${date.day.toString().padLeft(2, '0')}';
 }
 
-/// Calendar calculations use Malaysia time, regardless of the device timezone.
-/// Calendar dates are represented as UTC midnight; they are not instants.
+
 class AnalyticsPeriod {
   static DateTime day(DateTime instant) {
     final malaysia = instant.toUtc().add(const Duration(hours: 8));
@@ -467,7 +464,7 @@ class AnalyticsPeriod {
       .toList();
 
   static int expectedChecks(DateTime start, DateTime end, DateTime now) {
-    // Collector runs at :00 and :30. Allow two minutes for a running job.
+
     final cutoff = now.toUtc().subtract(const Duration(minutes: 2));
     final finish = utcBoundary(end);
     final until = cutoff.isBefore(finish) ? cutoff : finish;
@@ -480,8 +477,7 @@ class AnalyticsPeriod {
   }
 }
 
-/// Spreadsheet-friendly report with explicit missing data and Malaysia dates.
-/// Uses only already-loaded public records; never exports credentials/user data.
+
 class WeeklyReportExport {
   static String date(DateTime day) =>
       '${day.year}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
@@ -636,7 +632,7 @@ class WeeklyReportExport {
         'Published archive record',
       ]);
     }
-    // Prevent spreadsheet formula execution from publisher-controlled text.
+
     Object? safe(Object? value) =>
         value is String && RegExp(r'^[\s\x00-\x1f]*[=+@-]').hasMatch(value)
         ? "'$value"
@@ -710,10 +706,7 @@ class BusRouteCatalog {
           sourceCategory: source.category,
         );
         routes[id] = info;
-        // MRT feeder realtime uses public codes (for example T559), whereas
-        // routes.txt uses a numeric internal route_id and places that public
-        // code in route_long_name. Keep both keys so live cards and alerts can
-        // resolve the same route without rewriting teammate GTFS assets.
+
         final publicCode = routeCode;
         if (publicCode.isNotEmpty && publicCode != id) {
           routes.putIfAbsent(publicCode, () => info);

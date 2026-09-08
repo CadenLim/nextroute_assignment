@@ -31,8 +31,7 @@ class _AnalyticsCentreScreenState extends State<AnalyticsCentreScreen> {
     _routePreferences = Module5RoutePreferences();
     _routeContext = Module5UserRouteContext.shared;
     _routePreferences.load();
-    // Re-read Favourite Routes and Daily Commutes whenever Module 5 opens so
-    // a route saved moments ago is immediately available for prioritisation.
+
     _routeContext.load(forcePersonalRoutes: true);
     _refreshUnreadCount();
   }
@@ -52,7 +51,7 @@ class _AnalyticsCentreScreenState extends State<AnalyticsCentreScreen> {
         });
       }
     } on Object {
-      // Child screens provide detailed storage errors when opened.
+
     }
   }
 

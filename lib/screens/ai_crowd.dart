@@ -111,11 +111,11 @@ class _MonthlyLineChartPainter extends CustomPainter {
       final p = pointAt(i);
       final isHighest = i == highestIndex;
       final isLowest = i == lowestIndex && lowestIndex != highestIndex;
-      final color = isHighest
-          ? const Color(0xFF4F46E5) // highest — purple, matches other History charts
-          : isLowest
-          ? const Color(0xFFDC2626) // lowest — red, matches other History charts
-          : Colors.blueGrey;
+      // Gradient across every month — green (least crowded) through to red
+      // (most crowded) — same crowd convention used elsewhere, scaled by
+      // where this month's average falls between the real min and max.
+      final t = maxVal == minVal ? 1.0 : ((values[i] - minVal) / range).clamp(0.0, 1.0);
+      final color = Color.lerp(const Color(0xFF16A34A), const Color(0xFFDC2626), t)!;
       if (isHighest || isLowest) {
         canvas.drawCircle(p, 7, Paint()..color = color.withValues(alpha: 0.15));
       }
@@ -421,36 +421,6 @@ TimeCategory timeCategoryFor(int minutesOfDay) {
 
 const List<String> kWeekdayLabels = [
   'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
-];
-
-// Human-readable version of the weekday/weekend threshold ladders in
-// _baselineOccupancy() below, for display in the "How is this estimated?"
-// section. Keep these in sync with that function if its thresholds change.
-const List<MapEntry<String, int>> kWeekdayBaselineRanges = [
-  MapEntry('Before 7am', 15),
-  MapEntry('7:00–7:30am', 35),
-  MapEntry('7:30–8:00am', 55),
-  MapEntry('8:00–8:30am', 70),
-  MapEntry('8:30–9:00am', 65),
-  MapEntry('9:00am–12pm', 45),
-  MapEntry('12–3pm', 42),
-  MapEntry('3–5pm', 45),
-  MapEntry('5:00–5:30pm', 55),
-  MapEntry('5:30–6:00pm', 65),
-  MapEntry('6:00–7:00pm', 75),
-  MapEntry('7:00–9:00pm', 45),
-  MapEntry('9:00–10:00pm', 30),
-  MapEntry('After 10pm', 15),
-];
-
-const List<MapEntry<String, int>> kWeekendBaselineRanges = [
-  MapEntry('Before 9am', 15),
-  MapEntry('9am–12pm', 25),
-  MapEntry('12–3pm', 32),
-  MapEntry('3–6pm', 38),
-  MapEntry('6–8pm', 35),
-  MapEntry('8–10pm', 25),
-  MapEntry('After 10pm', 15),
 ];
 
 
@@ -2202,33 +2172,24 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Full breakdown of every range in _baselineOccupancy() — not just the
-  // hours sampled by _peakSlots — so the collapsed methodology section
-  // documents the complete rule table. Values are copied straight from
-  // that function's thresholds (see kWeekdayBaselineRanges /
-  // kWeekendBaselineRanges below); nothing new computed here. Rendered as
-  // two tables (weekday ranges and weekend ranges have different row
-  // counts, so they can't share columns of one table); whichever one
-  // matches the selected day is highlighted, mirroring the old
-  // sampled-hours table's styling.
+  // Full breakdown of the baseline, one row per hour from 6am through 12am
+  // (the full Rapid KL operating window) — not just the 9 hours sampled by
+  // _peakSlots — as a single Time | Weekday | Weekend | Estimated table,
+  // mirroring the original sampled-hours table's layout. Weekday/Weekend
+  // columns are read straight from _baselineOccupancy(); Estimated is that
+  // same rule table for the selected day, multiplied by the station factor
+  // — nothing new computed here.
   Widget _buildFullBaselineRanges() {
     final weekday = _peakWeekday!;
     final isWeekend = weekday == DateTime.saturday || weekday == DateTime.sunday;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _baselineRangeTable('Weekday', kWeekdayBaselineRanges, selected: !isWeekend),
-        const SizedBox(height: 8),
-        _baselineRangeTable('Weekend', kWeekendBaselineRanges, selected: isWeekend),
-      ],
-    );
-  }
-
-  Widget _baselineRangeTable(String label, List<MapEntry<String, int>> ranges, {required bool selected}) {
+    final factor = _peakFactor ?? 0;
     final accent = const Color(0xFF4F46E5);
-    final headerColor = selected ? accent : Colors.black54;
-    final rowColor = selected ? Colors.black87 : Colors.black45;
-    final valueColor = selected ? accent : Colors.black45;
+    TextStyle colStyle(bool selected) => TextStyle(
+        fontSize: 12,
+        color: selected ? accent : Colors.black45,
+        fontWeight: selected ? FontWeight.bold : FontWeight.normal);
+
+    final hours = List.generate(19, (i) => 6 + i); // 6am..12am inclusive, one row per hour
 
     return Container(
       width: double.infinity,
@@ -2243,35 +2204,62 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         children: [
           Row(
             children: [
-              Expanded(
-                  flex: 5,
-                  child: Text(label,
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: headerColor))),
+              const Expanded(
+                  flex: 2,
+                  child: Text('Hour',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black54))),
               Expanded(
                   flex: 3,
-                  child: Text('Baseline %',
+                  child: Text('Weekday',
                       textAlign: TextAlign.right,
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: headerColor))),
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: isWeekend ? Colors.black54 : accent))),
+              Expanded(
+                  flex: 3,
+                  child: Text('Weekend',
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: isWeekend ? accent : Colors.black54))),
+              const Expanded(
+                  flex: 3,
+                  child: Text('Estimated',
+                      textAlign: TextAlign.right,
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black54))),
             ],
           ),
           const Divider(height: 10),
-          ...ranges.map((r) => Padding(
-            padding: const EdgeInsets.symmetric(vertical: 2),
-            child: Row(
-              children: [
-                Expanded(
-                    flex: 5, child: Text(r.key, style: TextStyle(fontSize: 12, color: rowColor))),
-                Expanded(
-                    flex: 3,
-                    child: Text('${r.value}%',
-                        textAlign: TextAlign.right,
-                        style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-                            color: valueColor))),
-              ],
-            ),
-          )),
+          ...hours.map((hour) {
+            final minutes = hour * 60;
+            final weekdayBaseline = _baselineOccupancy(DateTime.monday, minutes);
+            final weekendBaseline = _baselineOccupancy(DateTime.saturday, minutes);
+            final estimated = predictCrowd(weekday, minutes, factor);
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Expanded(
+                      flex: 2,
+                      child: Text(_hourLabel(hour), style: const TextStyle(fontSize: 12, color: Colors.black87))),
+                  Expanded(
+                      flex: 3,
+                      child: Text('$weekdayBaseline%', textAlign: TextAlign.right, style: colStyle(!isWeekend))),
+                  Expanded(
+                      flex: 3,
+                      child: Text('$weekendBaseline%', textAlign: TextAlign.right, style: colStyle(isWeekend))),
+                  Expanded(
+                      flex: 3,
+                      child: Text('${estimated.occupancy}%',
+                          textAlign: TextAlign.right,
+                          style: TextStyle(
+                              fontSize: 12, fontWeight: FontWeight.bold, color: estimated.level.color))),
+                ],
+              ),
+            );
+          }),
         ],
       ),
     );
@@ -2428,7 +2416,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 4),
           const Text(
-            'Real daily ridership totals from the local dataset — no modelling here.',
+            'Real daily ridership records for the selected station.',
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: _sectionGap),
@@ -2498,6 +2486,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
               ];
+              final monthFilterLabel = _historyMonthFilter == null
+                  ? 'all months'
+                  : '${monthNames[_historyMonthFilter!.month - 1]} ${_historyMonthFilter!.year}';
 
               // B. History filters — month only. Always shown once data is
               // loaded, so the filter stays visible even if it currently
@@ -2534,7 +2525,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               // vs Weekend comparison below.
               final weekdayWeekendStats = _computeWeekdayWeekendComparison(byMonth);
               final weeklyPatternSection =
-              _buildWeeklyPatternSection(weeklyPattern, weekdayWeekendStats);
+              _buildWeeklyPatternSection(weeklyPattern, weekdayWeekendStats, monthFilterLabel);
 
               // Monthly Ridership Trend — fed the full `_historyData` for
               // this station, NOT `byMonth`, so it always shows every
@@ -2618,21 +2609,40 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Row(
-                          children: [
-                            Expanded(child: _statCard('AVERAGE', avg.round().toString())),
-                            const SizedBox(width: 10),
-                            Expanded(child: _statCard('HIGHEST', maxRecord.ridership.toString(),
-                                subtitle: '${maxRecord.date.day}/${maxRecord.date.month}/${maxRecord.date.year}')),
-                            const SizedBox(width: 10),
-                            Expanded(child: _statCard('LOWEST', minRecord.ridership.toString(),
-                                subtitle: '${minRecord.date.day}/${minRecord.date.month}/${minRecord.date.year}')),
-                          ],
+                        IntrinsicHeight(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Expanded(
+                                  child: _statCard('AVERAGE', avg.round().toString(),
+                                      accentColor: const Color(0xFF4F46E5))),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                  child: _statCard('HIGHEST', maxRecord.ridership.toString(),
+                                      subtitle: '${maxRecord.date.day}/${maxRecord.date.month}/${maxRecord.date.year}',
+                                      accentColor: const Color(0xFFDC2626))),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                  child: _statCard('LOWEST', minRecord.ridership.toString(),
+                                      subtitle: '${minRecord.date.day}/${minRecord.date.month}/${minRecord.date.year}',
+                                      accentColor: const Color(0xFF16A34A))),
+                            ],
+                          ),
                         ),
                         const SizedBox(height: 12),
-                        Text(
-                          'Most recent on file: ${latest.date.day}/${latest.date.month}/${latest.date.year} — ${latest.ridership} trips.',
-                          style: const TextStyle(fontSize: 11, color: Colors.black45),
+                        Text.rich(
+                          TextSpan(
+                            style: const TextStyle(fontSize: 11, color: Colors.black45),
+                            children: [
+                              const TextSpan(text: 'Most recent on file: '),
+                              TextSpan(
+                                text:
+                                '${latest.date.day}/${latest.date.month}/${latest.date.year} — ${latest.ridership} trips',
+                                style: const TextStyle(color: Color(0xFF0891B2), fontWeight: FontWeight.bold),
+                              ),
+                              const TextSpan(text: '.'),
+                            ],
+                          ),
                         ),
                       ],
                     ),
@@ -2652,28 +2662,43 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                         ? _emptyState('Need at least 2 records in the current filter to compute a trend.')
                         : Builder(builder: (context) {
                       final (message, color, icon) = _ridershipInsight(trend);
+                      final pct = trend.percentChange;
+                      // % Change accent follows the same crowd-based
+                      // convention as _ridershipInsight/_monthlyChangeInsight
+                      // above: an increase means more crowding (red), a
+                      // decrease means less crowding (green), and a small
+                      // change is neutral. Same ±5% stability band as those.
+                      final pctColor = pct > 5
+                          ? const Color(0xFFDC2626)
+                          : pct < -5
+                          ? const Color(0xFF16A34A)
+                          : Colors.blueGrey;
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          Row(
-                            children: [
-                              Expanded(
-                                  child: _statCard('PREVIOUS PERIOD AVG',
-                                      trend.previousAvg.round().toString())),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                  child: _statCard('CURRENT PERIOD AVG',
-                                      trend.currentAvg.round().toString())),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                  child: _statCard('% CHANGE',
-                                      '${trend.percentChange >= 0 ? '+' : ''}${trend.percentChange.toStringAsFixed(1)}%')),
-                            ],
+                          IntrinsicHeight(
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Expanded(
+                                    child: _statCard('EARLIER PERIOD AVG',
+                                        trend.previousAvg.round().toString())),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                    child: _statCard('LATER PERIOD AVG',
+                                        trend.currentAvg.round().toString())),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                    child: _statCard('% CHANGE',
+                                        '${trend.percentChange >= 0 ? '+' : ''}${trend.percentChange.toStringAsFixed(1)}%',
+                                        accentColor: pctColor)),
+                              ],
+                            ),
                           ),
                           const SizedBox(height: 4),
-                          Text(
-                            'Based on the ${byMonth.length} record(s) currently shown, split chronologically into two equal halves.',
-                            style: const TextStyle(fontSize: 11, color: Colors.black45),
+                          const Text(
+                            'Based on the selected records, split chronologically into two equal periods.',
+                            style: TextStyle(fontSize: 11, color: Colors.black45),
                           ),
                           const SizedBox(height: 12),
                           // Ridership Insight — plain-language read of the
@@ -2729,7 +2754,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   // bar per day-of-week present in the real, month-filtered data, with the
   // highest/lowest day highlighted, plus a plain-language insight line.
   Widget _buildWeeklyPatternSection(List<({int weekday, double avg, int count})> pattern,
-      _WeekdayWeekendStats weekdayWeekendStats) {
+      _WeekdayWeekendStats weekdayWeekendStats, String monthFilterLabel) {
     const dayNames = [
       'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
     ];
@@ -2739,7 +2764,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       return _sectionCard(
         title: 'WEEKLY RIDERSHIP PATTERN',
         icon: Icons.calendar_view_week,
-        subtitle: 'Average ridership by day of week, from real records for the selected month.',
+        subtitle: 'Average ridership by day of week (Mon-Sun) for $monthFilterLabel.',
         child: _emptyState('No records available to compute a weekly pattern.'),
       );
     }
@@ -2748,22 +2773,25 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     final highest = sorted.first;
     final lowest = sorted.last;
     final maxAvg = highest.avg;
+    final minAvg = lowest.avg;
+    final avgRange = maxAvg - minAvg;
 
     return _sectionCard(
       title: 'WEEKLY RIDERSHIP PATTERN',
       icon: Icons.calendar_view_week,
-      subtitle: 'Average ridership by day of week (Mon–Sun), from real records for the selected month.',
+      subtitle: 'Average ridership by day of week (Mon-Sun) for $monthFilterLabel.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           ...pattern.map((p) {
             final isMax = p.weekday == highest.weekday;
             final isMin = p.weekday == lowest.weekday && lowest.weekday != highest.weekday;
-            final barColor = isMax
-                ? const Color(0xFF4F46E5) // highest — purple, matches Daily Totals chart
-                : isMin
-                ? const Color(0xFFDC2626) // lowest — red, matches Daily Totals chart
-                : Colors.blueGrey;
+            // Gradient across the whole week — green (least crowded day)
+            // through to red (most crowded day) — same crowd convention
+            // used elsewhere, scaled by where this day's average falls
+            // between the week's real min and max.
+            final t = avgRange == 0 ? 1.0 : ((p.avg - minAvg) / avgRange).clamp(0.0, 1.0);
+            final barColor = Color.lerp(const Color(0xFF16A34A), const Color(0xFFDC2626), t)!;
             return _weekdayRow(
               dayNames[p.weekday - 1],
               p.avg,
@@ -2793,7 +2821,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               ],
             ),
           ),
-          _weekdayWeekendComparisonSection(weekdayWeekendStats),
+          _weekdayWeekendComparisonSection(weekdayWeekendStats, monthFilterLabel),
         ],
       ),
     );
@@ -2804,10 +2832,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   // the same underlying real records (respects the month filter, ignores
   // the day-of-week filter). Shows both averages, the real difference and
   // percentage difference, plus a small bar chart. No hardcoded ridership.
-  Widget _weekdayWeekendComparisonSection(_WeekdayWeekendStats stats) {
-    const weekdayColor = Color(0xFF4F46E5);
-    const weekendColor = Color(0xFF16A34A);
-
+  Widget _weekdayWeekendComparisonSection(_WeekdayWeekendStats stats, String monthFilterLabel) {
     final header = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -2820,10 +2845,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black45, letterSpacing: 0.5),
         ),
         const SizedBox(height: 2),
-        const Text(
-          'Monday–Friday vs Saturday–Sunday, from the same real records above for the selected month '
-              '(not affected by the day-of-week filter).',
-          style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
+        Text(
+          'Average daily ridership for weekdays versus weekends in $monthFilterLabel.',
+          style: const TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
         ),
         const SizedBox(height: 12),
       ],
@@ -2847,12 +2871,23 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     final weekendAvg = stats.weekendAvg;
     final maxAvg = [weekdayAvg ?? 0.0, weekendAvg ?? 0.0].reduce((a, b) => a >= b ? a : b);
 
+    // More people = red, fewer people = green, matching the crowd
+    // convention used elsewhere in this tab. Tied or missing-data cases
+    // fall back to a neutral color rather than guessing.
+    const moreColor = Color(0xFFDC2626);
+    const fewerColor = Color(0xFF16A34A);
+    Color weekdayColor = Colors.blueGrey;
+    Color weekendColor = Colors.blueGrey;
+    if (weekdayAvg != null && weekendAvg != null && weekdayAvg != weekendAvg) {
+      weekdayColor = weekdayAvg > weekendAvg ? moreColor : fewerColor;
+      weekendColor = weekdayAvg > weekendAvg ? fewerColor : moreColor;
+    }
+
     // Difference / percentage difference — only meaningful when both sides
     // actually have real data.
     Widget diffLine;
     if (weekdayAvg != null && weekendAvg != null) {
       final diff = weekdayAvg - weekendAvg;
-      final higherLabel = diff >= 0 ? 'weekdays' : 'weekends';
       final lowerAvg = diff >= 0 ? weekendAvg : weekdayAvg;
       final diffPct = lowerAvg > 0 ? (diff.abs() / lowerAvg * 100) : 0.0;
       diffLine = Container(
@@ -2862,12 +2897,33 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           color: Colors.grey.withValues(alpha: 0.06),
           borderRadius: BorderRadius.circular(8),
         ),
-        child: Text(
-          diff.abs() < 0.5
-              ? 'Difference: 0/day (0.0%, essentially tied)'
-              : 'Difference: ${_formatNumber(diff.abs())}/day (${diffPct.toStringAsFixed(1)}% higher on $higherLabel)',
+        child: diff.abs() < 0.5
+            ? const Text(
+          'Difference: 0/day (0.0%, essentially tied)',
           textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+          style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+        )
+            : Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Difference: ${_formatNumber(diff.abs())}/day',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+            ),
+            const SizedBox(height: 2),
+            // Weekday is described as either higher (red, more people)
+            // or lower (green, fewer people) than weekend — matching the
+            // crowd convention and the ranking compare-stations style.
+            Text(
+              'Weekday is ${diffPct.toStringAsFixed(1)}% ${diff > 0 ? 'higher' : 'lower'}',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.bold,
+                  color: diff > 0 ? const Color(0xFFDC2626) : const Color(0xFF16A34A)),
+            ),
+          ],
         ),
       );
     } else {
@@ -3030,7 +3086,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       return _sectionCard(
         title: 'MONTHLY RIDERSHIP TREND',
         icon: Icons.show_chart,
-        subtitle: 'Average daily ridership by month, from all real records for this station.',
+        subtitle: 'Average daily ridership by month.',
         child: _emptyState('No records available to compute a monthly trend.'),
       );
     }
@@ -3054,8 +3110,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return _sectionCard(
       title: 'MONTHLY RIDERSHIP TREND',
       icon: Icons.show_chart,
-      subtitle: 'Average daily ridership by month, from all real records for this station '
-          '(not affected by the month filter).',
+      subtitle: 'Average daily ridership by month.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -3068,7 +3123,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 child: _compareStatBlock(
                   'Highest: ${DateFormat('MMM yyyy').format(highest.month)}',
                   highest.avg,
-                  const Color(0xFF4F46E5),
+                  const Color(0xFFDC2626),
                 ),
               ),
               Container(
@@ -3081,7 +3136,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 child: _compareStatBlock(
                   'Lowest: ${DateFormat('MMM yyyy').format(lowest.month)}',
                   lowest.avg,
-                  const Color(0xFFDC2626),
+                  const Color(0xFF16A34A),
                 ),
               ),
             ],
@@ -3260,15 +3315,15 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return (values.reduce((a, b) => a < b ? a : b), values.reduce((a, b) => a > b ? a : b));
   }
 
-  // Maps a real ridership value to a fill color: same indigo used
-  // throughout this tab, with alpha scaled by where the value falls
-  // between this month's real min and max. Empty days are handled by the
-  // caller (they never reach this function with a null value).
+  // Maps a real ridership value to a fill color: green (least crowded, this
+  // month's real min) through to red (most crowded, this month's real max)
+  // — same crowd convention used across the rest of this tab. Empty days
+  // are handled by the caller (they never reach this function with a null
+  // value).
   Color _heatmapColor(double value, (double, double) minMax) {
     final (minV, maxV) = minMax;
     final t = (maxV == minV) ? 1.0 : ((value - minV) / (maxV - minV)).clamp(0.0, 1.0);
-    final alpha = 0.12 + t * 0.83;
-    return const Color(0xFF4F46E5).withValues(alpha: alpha);
+    return Color.lerp(const Color(0xFF16A34A), const Color(0xFFDC2626), t)!.withValues(alpha: 0.15 + t * 0.65);
   }
 
   // `heatmapMonth` / `heatmapMonthLabel` come from the History Filters
@@ -3292,11 +3347,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return _sectionCard(
       title: 'CALENDAR HEATMAP',
       icon: Icons.calendar_month,
-      subtitle: showArrows
-          ? 'Daily ridership intensity from real records for this station. Tap a day for its exact '
-          'figure. Use the arrows below to browse other months.'
-          : 'Daily ridership intensity for $heatmapMonthLabel, from real records for this station. '
-          'Tap a day for its exact figure. Uses the month selected in History Filters above.',
+      subtitle: 'Daily ridership intensity for $heatmapMonthLabel. Tap a day to view its exact figure.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -3457,8 +3508,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             borderRadius: BorderRadius.circular(4),
             gradient: LinearGradient(
               colors: [
-                const Color(0xFF4F46E5).withValues(alpha: 0.12),
-                const Color(0xFF4F46E5).withValues(alpha: 0.95),
+                const Color(0xFF16A34A).withValues(alpha: 0.5),
+                const Color(0xFFDC2626).withValues(alpha: 0.8),
               ],
             ),
           ),
@@ -3496,7 +3547,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 4),
           const Text(
-            'Real origin-destination trip counts — where riders actually travel to/from. Trip counts only, not routes.',
+            'Real trip counts showing where riders travel to and from this station.',
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: _sectionGap),
@@ -3559,20 +3610,32 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 ),
               ),
             ] else ...[
-              // B. Connection summary
-              _sectionCard(
-                title: 'CONNECTION SUMMARY',
-                icon: Icons.swap_horiz,
-                child: Row(
-                  children: [
-                    Expanded(child: _connectionSummaryCard('OUTGOING TRIPS', _connOutgoing ?? 0,
-                        icon: Icons.north_east, color: const Color(0xFF4F46E5))),
-                    const SizedBox(width: 12),
-                    Expanded(child: _connectionSummaryCard('INCOMING TRIPS', _connIncoming ?? 0,
-                        icon: Icons.south_west, color: const Color(0xFF16A34A))),
-                  ],
-                ),
-              ),
+              // B. Connection summary. More trips = red, fewer = green,
+              // matching the crowd convention used elsewhere in the app —
+              // tied counts fall back to neutral rather than guessing.
+              Builder(builder: (context) {
+                final outgoing = _connOutgoing ?? 0;
+                final incoming = _connIncoming ?? 0;
+                Color outColor = Colors.blueGrey;
+                Color inColor = Colors.blueGrey;
+                if (outgoing != incoming) {
+                  outColor = outgoing > incoming ? const Color(0xFFDC2626) : const Color(0xFF16A34A);
+                  inColor = outgoing > incoming ? const Color(0xFF16A34A) : const Color(0xFFDC2626);
+                }
+                return _sectionCard(
+                  title: 'CONNECTION SUMMARY',
+                  icon: Icons.swap_horiz,
+                  child: Row(
+                    children: [
+                      Expanded(child: _connectionSummaryCard('OUTGOING TRIPS', outgoing,
+                          icon: Icons.north_east, color: outColor)),
+                      const SizedBox(width: 12),
+                      Expanded(child: _connectionSummaryCard('INCOMING TRIPS', incoming,
+                          icon: Icons.south_west, color: inColor)),
+                    ],
+                  ),
+                );
+              }),
               const SizedBox(height: _sectionGap),
 
               // C. Connection insight
@@ -3593,8 +3656,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     : Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: _connTopDestinations!
-                      .map((e) => _connectionRow(
-                      e.key, e.value, _connTopDestinations!.first.value, const Color(0xFF4F46E5)))
+                      .map((e) => _connectionRow(e.key, e.value, _connTopDestinations!.first.value))
                       .toList(),
                 ),
               ),
@@ -3610,8 +3672,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     : Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: _connTopOrigins!
-                      .map((e) => _connectionRow(
-                      e.key, e.value, _connTopOrigins!.first.value, const Color(0xFF16A34A)))
+                      .map((e) => _connectionRow(e.key, e.value, _connTopOrigins!.first.value))
                       .toList(),
                 ),
               ),
@@ -3630,7 +3691,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 children: _connBusiestNetwork!.asMap().entries.map((entry) {
                   final rank = entry.key + 1;
                   final e = entry.value;
-                  return _busiestConnectionRow(rank, e.key, e.value);
+                  return _busiestConnectionRow(rank, e.key, e.value, _connBusiestNetwork!.first.value);
                 }).toList(),
               ),
             ),
@@ -3686,9 +3747,13 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  Widget _busiestConnectionRow(int rank, String label, int trips) {
+  Widget _busiestConnectionRow(int rank, String label, int trips, int maxTrips) {
     final isTop = rank == 1;
-    const accent = Color(0xFF4F46E5);
+    // More trips = red, fewer trips = green, matching the crowd convention
+    // used elsewhere in the app — scaled by this row's trips relative to
+    // the single busiest connection in the network-wide list.
+    final factor = maxTrips == 0 ? 0.0 : trips / maxTrips;
+    final accent = Color.lerp(const Color(0xFF16A34A), const Color(0xFFDC2626), factor.clamp(0.0, 1.0))!;
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: EdgeInsets.symmetric(vertical: isTop ? 12 : 8, horizontal: isTop ? 10 : 4),
@@ -3764,8 +3829,12 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  Widget _connectionRow(String stationName, int trips, int maxTrips, Color color) {
+  Widget _connectionRow(String stationName, int trips, int maxTrips) {
     final factor = maxTrips == 0 ? 0.0 : trips / maxTrips;
+    // More trips = red, fewer trips = green, matching the crowd convention
+    // used elsewhere in the app — scaled by this row's trips relative to
+    // the busiest connection in its own top-5 list.
+    final color = Color.lerp(const Color(0xFF16A34A), const Color(0xFFDC2626), factor.clamp(0.0, 1.0))!;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Column(
@@ -3797,22 +3866,38 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  Widget _statCard(String label, String value, {String? subtitle}) {
+  Widget _statCard(String label, String value, {String? subtitle, Color? accentColor}) {
+    final neutral = accentColor == null;
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
       decoration: BoxDecoration(
-        color: Colors.grey.withValues(alpha: 0.06),
+        color: neutral ? Colors.grey.withValues(alpha: 0.06) : accentColor.withValues(alpha: 0.07),
         borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: neutral ? Colors.transparent : accentColor.withValues(alpha: 0.25)),
       ),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text(label, style: const TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
+          Text(label,
+              style: TextStyle(
+                  fontSize: 10,
+                  color: neutral ? Colors.grey : accentColor,
+                  fontWeight: FontWeight.bold)),
           const SizedBox(height: 4),
-          Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87)),
-          if (subtitle != null) ...[
-            const SizedBox(height: 2),
-            Text(subtitle, style: const TextStyle(fontSize: 10, color: Colors.black45)),
-          ],
+          Text(value,
+              style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: neutral ? Colors.black87 : accentColor)),
+          const SizedBox(height: 2),
+          // Always reserve this line (blank when no subtitle) so every stat
+          // card — Summary Statistics and Ridership Trend alike — is
+          // exactly the same height, whether or not it has a date caption.
+          Text(subtitle ?? '\u200b',
+              style: const TextStyle(fontSize: 10, color: Colors.black45),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis),
         ],
       ),
     );
@@ -4040,7 +4125,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                       children: busiest.asMap().entries.map((entry) {
                         final rank = entry.key + 1;
                         final r = entry.value;
-                        return _rankingRow(rank, r.station, r.avgRidership.round(), vsNetworkAvg(r.avgRidership), const Color(0xFF4F46E5));
+                        return _rankingRow(rank, r.station, r.avgRidership.round(), vsNetworkAvg(r.avgRidership), const Color(0xFFDC2626));
                       }).toList(),
                     ),
                   ),
@@ -4145,7 +4230,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
           const SizedBox(height: 4),
           const Text(
-            'See how two stations\' average ridership stacks up.',
+            'Compare average daily ridership between two stations.',
             style: TextStyle(fontSize: 11, color: Colors.black45, fontStyle: FontStyle.italic),
           ),
           const SizedBox(height: _sectionGap),
@@ -4236,10 +4321,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                     icon: Icons.stacked_bar_chart,
                     child: _compareBarChart(dataA, dataB),
                   ),
-                  const SizedBox(height: _sectionGap),
-
-                  // D. One-line insight
-                  _compareInsightCard(dataA, dataB),
                 ] else if (!_loadingCompare)
                   _emptyState('No ridership records found for one or both stations in this period.'),
               ],
@@ -4312,10 +4393,16 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   // ridership-difference line underneath — both values and the difference
   // are computed from the fetched Supabase rows, nothing hardcoded.
   Widget _compareAverageSection(_StationRidershipRow a, _StationRidershipRow b) {
-    const colorA = Color(0xFF4F46E5);
-    const colorB = Color(0xFF16A34A);
+    // More people = red, fewer people = green, matching the crowd
+    // convention used elsewhere in the app. Tied averages fall back to a
+    // neutral color rather than guessing.
+    Color colorA = Colors.blueGrey;
+    Color colorB = Colors.blueGrey;
+    if (a.avgRidership != b.avgRidership) {
+      colorA = a.avgRidership > b.avgRidership ? const Color(0xFFDC2626) : const Color(0xFF16A34A);
+      colorB = a.avgRidership > b.avgRidership ? const Color(0xFF16A34A) : const Color(0xFFDC2626);
+    }
     final diff = a.avgRidership - b.avgRidership;
-    final higher = diff >= 0 ? a.station : b.station;
     // Percentage is the difference relative to the lower of the two real
     // averages (i.e. "X% higher than the lower station"), guarded against
     // a zero average rather than dividing by it.
@@ -4345,12 +4432,33 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             color: Colors.grey.withValues(alpha: 0.06),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: Text(
-            diff.abs() < 0.5
-                ? 'Ridership Difference: 0/day (0.0%, essentially tied)'
-                : 'Ridership Difference: ${_formatNumber(diff.abs())}/day (${diffPct.toStringAsFixed(1)}% higher at $higher)',
+          child: diff.abs() < 0.5
+              ? const Text(
+            'Ridership Difference: 0/day (0.0%, essentially tied)',
             textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+            style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+          )
+              : Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Ridership Difference: ${_formatNumber(diff.abs())}/day',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
+              ),
+              const SizedBox(height: 2),
+              // Station A is described as either higher (red, more
+              // people) or lower (green, fewer people) than Station B
+              // — matching the crowd convention used elsewhere.
+              Text(
+                '${a.station} is ${diffPct.toStringAsFixed(1)}% ${diff > 0 ? 'higher' : 'lower'}',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.bold,
+                    color: diff > 0 ? const Color(0xFFDC2626) : const Color(0xFF16A34A)),
+              ),
+            ],
           ),
         ),
       ],
@@ -4378,12 +4486,18 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   // stacked instead of inline — no Highest/Lowest tags, just the bars.
   Widget _compareBarChart(_StationRidershipRow a, _StationRidershipRow b) {
     final maxAvg = a.avgRidership >= b.avgRidership ? a.avgRidership : b.avgRidership;
+    Color colorA = Colors.blueGrey;
+    Color colorB = Colors.blueGrey;
+    if (a.avgRidership != b.avgRidership) {
+      colorA = a.avgRidership > b.avgRidership ? const Color(0xFFDC2626) : const Color(0xFF16A34A);
+      colorB = a.avgRidership > b.avgRidership ? const Color(0xFF16A34A) : const Color(0xFFDC2626);
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _compareBarRow(a.station, a.avgRidership, maxAvg, color: const Color(0xFF4F46E5)),
+        _compareBarRow(a.station, a.avgRidership, maxAvg, color: colorA),
         const SizedBox(height: 14),
-        _compareBarRow(b.station, b.avgRidership, maxAvg, color: const Color(0xFF16A34A)),
+        _compareBarRow(b.station, b.avgRidership, maxAvg, color: colorB),
       ],
     );
   }
@@ -4430,39 +4544,4 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // One short, plain-language insight — derived entirely from the two
-  // fetched averages (ratio/difference), no hardcoded ridership.
-  Widget _compareInsightCard(_StationRidershipRow a, _StationRidershipRow b) {
-    const accent = Color(0xFF4F46E5);
-    final diff = a.avgRidership - b.avgRidership;
-    final String message;
-    if (diff.abs() < 0.5) {
-      message = '${a.station} and ${b.station} have almost identical average ridership over this period.';
-    } else {
-      final higher = diff > 0 ? a.station : b.station;
-      final lower = diff > 0 ? b.station : a.station;
-      final higherAvg = diff > 0 ? a.avgRidership : b.avgRidership;
-      final lowerAvg = diff > 0 ? b.avgRidership : a.avgRidership;
-      final ratioText = lowerAvg > 0 ? ' (about ${(higherAvg / lowerAvg).toStringAsFixed(1)}× busier)' : '';
-      message = '$higher sees noticeably higher ridership than $lower$ratioText.';
-    }
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: accent.withValues(alpha: 0.05),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: accent.withValues(alpha: 0.15)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Icon(Icons.insights, size: 18, color: accent),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(message, style: const TextStyle(fontSize: 12.5, color: Colors.black87)),
-          ),
-        ],
-      ),
-    );
-  }
 }

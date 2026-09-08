@@ -3,17 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 
-// Period filter modes for the Station Ridership Ranking tab (Tab 5).
 enum _RankingPeriod { overall, month, day }
 
-// Which sub-page of Tab 5 is showing: the existing Station Ranking view,
-// or the new Compare Stations view.
 enum _Tab5View { ranking, compare }
 
-// Shape of one row returned by ApiService.getStationRidershipTotals() —
-// named here just so the Compare Stations fields below don't have to
-// repeat the full anonymous record type. Structurally identical to what
-// _rankingData already uses.
 typedef _StationRidershipRow = ({
 String station,
 double avgRidership,
@@ -23,11 +16,6 @@ DateTime? minDate,
 DateTime? maxDate,
 });
 
-// Shape returned by _computeWeekdayWeekendComparison() for the History tab's
-// Weekday vs Weekend comparison. Averages are nullable because a given
-// month filter may genuinely contain zero weekday or zero weekend records
-// (e.g. a single-day selection) — null means "no real records for this
-// group", never a hardcoded/assumed 0.
 typedef _WeekdayWeekendStats = ({
 double? weekdayAvg,
 double? weekendAvg,
@@ -35,23 +23,10 @@ int weekdayCount,
 int weekendCount,
 });
 
-// One day-cell in the Calendar Heatmap for a given month. `ridership` is
-// null when the local dataset has no record for that date — the heatmap
-// must render that as visibly empty, never as a real 0.
 typedef _HeatmapDayCell = ({int day, DateTime date, double? ridership});
 
-// The currently tapped/selected day in the Calendar Heatmap, shown in the
-// detail line below the grid. `ridership` mirrors _HeatmapDayCell: null
-// means "no record for this date", not zero ridership.
 typedef _HeatmapSelection = ({DateTime date, double? ridership});
 
-// ── Monthly Ridership Trend line chart painter ─────────────────────────────
-// Draws a simple polyline + point markers across evenly-spaced month slots.
-// Pure presentation: takes the real per-month averages already computed by
-// _computeMonthlyTrend() and just plots them — no modelling, no synthetic
-// points. The highest/lowest indices get the same purple/red highlight
-// colors used by the Daily Totals and Weekly Pattern charts elsewhere in
-// this tab, for visual consistency.
 class _MonthlyLineChartPainter extends CustomPainter {
   final List<double> values;
   final int highestIndex;
@@ -112,9 +87,7 @@ class _MonthlyLineChartPainter extends CustomPainter {
       final p = pointAt(i);
       final isHighest = i == highestIndex;
       final isLowest = i == lowestIndex && lowestIndex != highestIndex;
-      // Gradient across every month — green (least crowded) through to red
-      // (most crowded) — same crowd convention used elsewhere, scaled by
-      // where this month's average falls between the real min and max.
+
       final t = maxVal == minVal ? 1.0 : ((values[i] - minVal) / range).clamp(0.0, 1.0);
       final color = Color.lerp(const Color(0xFF16A34A), const Color(0xFFDC2626), t)!;
       if (isHighest || isLowest) {
@@ -132,16 +105,6 @@ class _MonthlyLineChartPainter extends CustomPainter {
   }
 }
 
-// ── Full-Day Crowd Pattern line chart painter ──────────────────────────────
-// Draws a simple polyline + point markers across evenly-spaced hourly slots
-// (6am-12am). Pure presentation: takes the estimated occupancy % already
-// computed via predictCrowd()/_baselineOccupancy() and just plots it — no
-// new modelling here. Unlike the Monthly Ridership Trend chart, the y-axis
-// is fixed to the real 0-100% occupancy scale (not normalized to the
-// min/max of the visible hours) so the shape of the day is comparable
-// across stations and days. Each point is colored by its own crowd level
-// (matching the color-coding used elsewhere in this tab), and the single
-// highest point is highlighted as the peak.
 class _FullDayCrowdLineChartPainter extends CustomPainter {
   final List<int> occupancies;
   final List<Color> pointColors;
@@ -214,12 +177,6 @@ class _FullDayCrowdLineChartPainter extends CustomPainter {
   }
 }
 
-// ── Type-to-search station picker ────────────────────────────────────────
-// Drop-in replacement for DropdownButtonFormField<String> when the list of
-// choices is long (station names). Lets the user either tap and scroll a
-// list, or start typing to filter it, while looking like a normal form
-// field. Built on Flutter's built-in Autocomplete widget (no extra
-// packages required).
 class StationSearchField extends StatelessWidget {
   final String label;
   final List<String> stations;
@@ -236,11 +193,7 @@ class StationSearchField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Keying on the *selected* value (not on keystrokes) means the field
-    // remounts with the right initial text whenever the selection changes
-    // programmatically (e.g. once stations finish loading), but stays put
-    // — preserving whatever the user is currently typing — while they're
-    // filtering the list.
+
     return Autocomplete<String>(
       key: ValueKey(value),
       initialValue: TextEditingValue(text: value ?? ''),
@@ -297,16 +250,6 @@ class StationSearchField extends StatelessWidget {
   }
 }
 
-// ── Crowd levels & rule-based prediction ────────────────────────────────────
-// This is NOT a trained ML model. It is a transparent, rule-based estimator:
-//   1. REAL: the station's historical average ridership for the selected
-//      day-of-week, computed directly from the "A0: All Stations" rows.
-//   2. MODELLED (documented assumption): a typical urban-rail intraday shape
-//      (rush-hour bumps etc.), since the open dataset only has daily totals,
-//      not hourly ones. Stated clearly in the UI and in the report.
-// The Connections tab below uses NO modelling at all — it's pure real O-D
-// data, filtered/grouped/summed/sorted.
-
 enum CrowdLevel { low, moderate, high, critical }
 
 extension CrowdLevelX on CrowdLevel {
@@ -352,13 +295,10 @@ extension CrowdLevelX on CrowdLevel {
 
 class CrowdResult {
   final CrowdLevel level;
-  final int occupancy; // 0-100, a relative "capacity used" indicator
+  final int occupancy;
   CrowdResult(this.level, this.occupancy);
 }
 
-// ── Time-of-day category (display-only; does not affect the prediction) ────
-// A labelling layer over the existing exact time selection, matching the
-// bucket boundaries requested for the UI. Purely descriptive.
 enum TimeCategory { earlyMorning, morningPeak, midday, eveningPeak, night }
 
 extension TimeCategoryX on TimeCategory {
@@ -408,42 +348,24 @@ extension TimeCategoryX on TimeCategory {
   }
 }
 
-/// Maps a time-of-day (minutes since midnight) to its display category.
-/// This is purely descriptive for the UI — the underlying prediction in
-/// [predictCrowd] uses its own finer-grained rule table and is unaffected.
 TimeCategory timeCategoryFor(int minutesOfDay) {
   final h = minutesOfDay / 60.0;
   if (h >= 6.0 && h < 7.0) return TimeCategory.earlyMorning;
   if (h >= 7.0 && h < 9.0) return TimeCategory.morningPeak;
   if (h >= 9.0 && h < 17.0) return TimeCategory.midday;
   if (h >= 17.0 && h < 19.5) return TimeCategory.eveningPeak;
-  return TimeCategory.night; // 19:30–23:59 and 00:00–06:00
+  return TimeCategory.night;
 }
 
 const List<String> kWeekdayLabels = [
   'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
 ];
 
-
-// Rule-based intraday demand profile.
-// Time-of-day boundaries are informed by Rapid KL's published
-// operating hours (6am-12am) and weekday rush hours
-// (7am-9am and 5pm-7pm).
-// See: https://myrapid.com.my/resources/faqs/
-//
-// Exact baseline values are modelling assumptions.
-// They are not directly derived from the dataset because
-// the available dataset contains daily ridership totals,
-// not hourly ridership data.
-//
-// Only ever called for times within operating hours (06:00-23:59) —
-// times before 06:00 are blocked in the Crowd Prediction UI before this
-// function is reached, so there is no pre-6AM bucket here.
 int _baselineOccupancy(int weekday, int minutesOfDay) {
   final isWeekend =
       weekday == DateTime.saturday || weekday == DateTime.sunday;
   final h = minutesOfDay / 60.0;
-  // Weekend: flatter demand pattern without strong commuter peaks
+
   if (isWeekend) {
     if (h < 9.0) return 15;
     if (h < 12.0) return 25;
@@ -453,21 +375,21 @@ int _baselineOccupancy(int weekday, int minutesOfDay) {
     if (h < 22.0) return 25;
     return 15;
   }
-  // Weekday morning rush hour: 07:00–09:00
+
   if (h < 7.0) return 15;
   if (h < 7.5) return 35;
   if (h < 8.0) return 55;
   if (h < 8.5) return 70;
   if (h < 9.0) return 65;
-  // Weekday daytime / non-peak
+
   if (h < 12.0) return 45;
   if (h < 15.0) return 42;
   if (h < 17.0) return 45;
-  // Weekday evening rush hour: 17:00–19:00
+
   if (h < 17.5) return 55;
   if (h < 18.0) return 65;
   if (h < 19.0) return 75;
-  // Evening / night
+
   if (h < 21.0) return 45;
   if (h < 22.0) return 30;
   return 15;
@@ -510,8 +432,6 @@ extension on TimeOfDay {
   }
 }
 
-// ── Screen ───────────────────────────────────────────────────────────────
-
 class AiCrowdScreen extends StatefulWidget {
   const AiCrowdScreen({super.key});
 
@@ -528,40 +448,31 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   double _networkAverage = 1;
   String? _loadError;
 
-  // ── Tab 1: Crowd Estimate state ──
   String? _station;
-  int? _weekday; // null until the user picks a day — no default selection
-  TimeOfDay? _time; // null until the user picks a time — no default selection
+  int? _weekday;
+  TimeOfDay? _time;
   CrowdResult? _crowdResult;
   double? _crowdResultDayAvg;
   double? _crowdResultFactor;
   int? _crowdResultRecordCount;
-  String? _crowdValidationMsg; // shown when Predict is pressed with fields missing
+  String? _crowdValidationMsg;
 
-  // ── Tab 2: Peak Hours state ──
   String? _peakStation;
-  int? _peakWeekday; // null until the user picks a day — no default selection
+  int? _peakWeekday;
   List<MapEntry<int, CrowdResult>>? _peakSlots;
   double? _peakDayAvg;
   double? _peakFactor;
-  String? _peakValidationMsg; // shown when Show Peak Pattern is pressed with fields missing
-  int? _fullDayHoverIndex; // index into the Full-Day Crowd Pattern chart's hour list, while hovered/pressed
+  String? _peakValidationMsg;
+  int? _fullDayHoverIndex;
 
-  // ── Tab 3: Ridership History state ──
   String? _historyStation;
   List<RidershipRecord>? _historyData;
-  DateTime? _historyMonthFilter; // null = show all months
-  String? _historyValidationMsg; // shown when Load History is pressed with no station
+  DateTime? _historyMonthFilter;
+  String? _historyValidationMsg;
 
-  // Calendar Heatmap (still Tab 3 / History) — when the History Filters
-  // month is "All months" the grid shows one month at a time, stepped
-  // with left/right arrows via this index into that station's available
-  // months. When a specific month is selected in History Filters, that
-  // month is shown directly and the arrows are hidden.
   int? _heatmapAllMonthsIndex;
-  _HeatmapSelection? _heatmapSelectedDay; // last tapped day, null until tapped
+  _HeatmapSelection? _heatmapSelectedDay;
 
-  // ── Tab 4: Connections (O-D) state ──
   String? _connStation;
   List<MapEntry<String, int>>? _connTopDestinations;
   List<MapEntry<String, int>>? _connTopOrigins;
@@ -569,40 +480,24 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   int? _connIncoming;
   List<MapEntry<String, int>>? _connBusiestNetwork;
   bool _loadingConnections = false;
-  // Elapsed-seconds counter shown alongside "Loading connections…", purely
-  // a UI reassurance that the request is still progressing (not a real
-  // download/query progress percentage — the underlying Supabase calls
-  // don't report progress). Ticks up once per second while loading.
+
   int _connLoadingSeconds = 0;
   Timer? _connLoadingTimer;
-  String? _connValidationMsg; // shown when Show Connections is pressed with no station
+  String? _connValidationMsg;
 
-  // ── Tab 5: Station Crowd Ranking state ──
-  // Real per-station ridership from Supabase's "station_ridership_totals"
-  // view (Overall) or the station_ridership_totals_for_range() function
-  // (Month/Day) — one grouped query for every station, no hardcoded
-  // ridership, no modelling.
   bool _loadingRanking = false;
   String? _rankingError;
   List<({String station, double avgRidership, int totalRidership, int recordCount, DateTime? minDate, DateTime? maxDate})>?
   _rankingData;
   _RankingPeriod _rankingPeriod = _RankingPeriod.overall;
-  DateTime? _rankingMonth; // first-of-month, set when _rankingPeriod == month
-  DateTime? _rankingDay; // set when _rankingPeriod == day
-  // The dataset's true earliest/latest date, captured once from the first
-  // Overall (unfiltered) load — used only to bound the Month/Day pickers,
-  // never overwritten by a later Month/Day fetch's narrower range.
+  DateTime? _rankingMonth;
+  DateTime? _rankingDay;
+
   DateTime? _rankingDatasetMinDate;
   DateTime? _rankingDatasetMaxDate;
 
-  // Which sub-page of Tab 5 is currently shown.
   _Tab5View _tab5View = _Tab5View.ranking;
 
-  // ── Tab 5: Compare Stations state ──
-  // Same underlying query as Station Ranking
-  // (_api.getStationRidershipTotals — real per-station averages from
-  // Supabase, no hardcoded ridership); this view just reads off the two
-  // selected stations' rows instead of listing every station.
   String? _compareStationA;
   String? _compareStationB;
   _RankingPeriod _comparePeriod = _RankingPeriod.overall;
@@ -613,11 +508,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   _StationRidershipRow? _compareDataA;
   _StationRidershipRow? _compareDataB;
 
-  // ── Shared visual-hierarchy tokens (all four tabs) ──
-  // Single source of truth for section spacing/padding/radius, so the
-  // Crowd, Peak, History and Connections tabs all read as the same
-  // design language. Presentation-only — no calculation or query logic
-  // lives here.
   static const double _sectionGap = 20.0;
   static const double _sectionCardPadding = 16.0;
   static const double _sectionCardRadius = 12.0;
@@ -644,20 +534,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         _stations = stations;
         _stationsWithOdData = odStations.toSet();
         _networkAverage = networkAvg;
-        // No auto-selected station — Crowd, Peak, Connections, and History
-        // all start with an empty "Select Station" field, same as
-        // Ranking/Compare, so the user always makes an explicit choice.
+
         _statsReady = stations.isNotEmpty;
         if (stations.isEmpty) _loadError = 'No station records found in the local dataset.';
       });
-      // Kick off the Station Crowd Ranking fetch in the background, a
-      // short beat after the essential startup data has loaded — not
-      // immediately alongside it. Even with the ridership indexes in
-      // place, firing this alongside your other tabs' own startup queries
-      // (Journey, Stations, Profile, Analytics likely all fetch on app
-      // open too) can still exhaust Supabase's connection pool for a
-      // moment and trip a statement timeout (57014). This delay lets the
-      // initial burst of app-wide startup queries clear first.
+
       if (stations.isNotEmpty) {
         Future.delayed(const Duration(milliseconds: 1500), () {
           if (mounted) _runStationRanking();
@@ -665,23 +546,14 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       }
     } catch (e) {
       if (!mounted) return;
-      // A statement timeout at app-startup is usually transient (a burst
-      // of concurrent queries across the app's tabs, not a real outage),
-      // so retry automatically a couple of times with backoff before
-      // surfacing an error the user has to manually retry. Non-timeout
-      // errors (bad config, RLS block, etc.) fail immediately instead —
-      // retrying those would just waste time on something that won't fix
-      // itself.
+
       final isTimeout = e.toString().contains('57014') || e.toString().contains('statement timeout');
       if (isTimeout && attempt < 2) {
         await Future.delayed(Duration(milliseconds: 1000 * (attempt + 1)));
         if (!mounted) return;
         return _loadData(attempt: attempt + 1);
       }
-      // Shows the real exception instead of a canned message, so you can
-      // see exactly what Supabase/PostgREST is complaining about (missing
-      // view, RLS block, not-initialized client, etc.) rather than
-      // guessing from a generic string.
+
       setState(() => _loadError = 'Could not load ridership data from Supabase:\n$e');
     }
   }
@@ -691,10 +563,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return ratio.clamp(0.4, 1.8);
   }
 
-  // Describes the existing Relative Station Factor in words. Purely
-  // presentational — does not affect the factor or occupancy calculation.
-  // This reflects the STATION's historical ridership vs the network
-  // average — it is unrelated to the predicted occupancy % shown above it.
   (String, Color, IconData) _demandInterpretation(double factor) {
     if (factor > 1.05) {
       return ('Above Network Average', Colors.red.shade700, Icons.trending_up);
@@ -704,16 +572,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return ('Around Network Average', Colors.blueGrey, Icons.trending_flat);
   }
 
-  // Ridership Trend (Tab 3): compares the average of the more recent half
-  // of the currently-filtered records against the average of the earlier
-  // half. Purely derived from whatever real records are on screen after
-  // the month/day-of-week filters are applied — no modelling, no fixed
-  // window length, no hardcoded ridership figures. Assumes `records` is
-  // already in chronological (ascending date) order, matching how
-  // _historyData is loaded and rendered elsewhere in this tab.
   ({double currentAvg, double previousAvg, double percentChange})? _computeRidershipTrend(
       List<RidershipRecord> records) {
-    if (records.length < 2) return null; // not enough real data to compare two periods
+    if (records.length < 2) return null;
     final mid = records.length ~/ 2;
     final previousPeriod = records.sublist(0, mid);
     final currentPeriod = records.sublist(mid);
@@ -726,9 +587,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return (currentAvg: currentAvg, previousAvg: previousAvg, percentChange: percentChange);
   }
 
-  // Describes the trend above in words, mirroring the tone/threshold style
-  // of _demandInterpretation. Presentational only — does not alter the
-  // underlying averages or % change.
   (String, Color, IconData) _ridershipInsight(
       ({double currentAvg, double previousAvg, double percentChange}) trend) {
     final pct = trend.percentChange;
@@ -752,11 +610,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Weekly Ridership Pattern (Tab 3): groups whatever real records are
-  // currently on screen (month-filtered) by day-of-week and averages the
-  // real ridership for each day. Purely derived from actual records — no
-  // modelling, no fixed/hardcoded ridership figures. Days
-  // with no records in the current month filter simply don't appear.
   List<({int weekday, double avg, int count})> _computeWeeklyPattern(
       List<RidershipRecord> records) {
     final Map<int, List<num>> byWeekday = {};
@@ -771,13 +624,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return result;
   }
 
-  // Weekday vs Weekend comparison (Tab 3 / History, still inside the
-  // Weekly Ridership Pattern section). Fed the same `byMonth` records as
-  // _computeWeeklyPattern above — respects the month filter, deliberately
-  // ignores the day-of-week filter (that filter narrows to a single day,
-  // which would make a weekday-vs-weekend comparison meaningless). Real
-  // data only: Monday–Friday records average into weekdayAvg, Saturday–
-  // Sunday records average into weekendAvg, no modelling or fixed values.
   _WeekdayWeekendStats _computeWeekdayWeekendComparison(
       List<RidershipRecord> records) {
     final weekdayValues = <num>[];
@@ -799,15 +645,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Monthly Ridership Trend (Tab 3 / History): groups ALL of the loaded
-  // station's real records by calendar month and averages the real
-  // ridership within each month. Deliberately fed `_historyData` directly
-  // (not the month-filtered `byMonth` used elsewhere in this tab) since
-  // this chart's whole purpose is to show every available month for the
-  // selected station side by side — the existing month filter is not
-  // applied here by design. Still respects the station filter, since
-  // `_historyData` is already scoped to whichever station was loaded.
-  // Real data only — no modelling, no fixed/hardcoded ridership figures.
   List<({DateTime month, double avg, int count})> _computeMonthlyTrend(
       List<RidershipRecord> records) {
     final Map<DateTime, List<num>> byMonth = {};
@@ -823,8 +660,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return result;
   }
 
-  // Describes the weekly pattern above in words — names the real
-  // highest/lowest average day. Presentational only.
   (String, Color, IconData) _weeklyPatternInsight(
       List<({int weekday, double avg, int count})> pattern) {
     const dayNames = [
@@ -851,19 +686,13 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Rapid KL rail services operate 6:00 AM to 12:00 AM (midnight) per the
-  // official FAQ (see _baselineOccupancy comment). Times before 6:00 AM
-  // are outside operating hours, so no crowd prediction is offered for
-  // them — this only gates the Crowd Prediction tab's UI/flow; it does
-  // not touch any calculation or dataset value.
   bool get _isOutsideOperatingHours => _time != null && _time!.hour < 6;
 
   Future<void> _runCrowdEstimate() async {
     final station = _station;
     final weekday = _weekday;
     final time = _time;
-    // Required-field validation: never fall back to a default day/time —
-    // if anything's missing, tell the user and stop, without calculating.
+
     final missing = <String>[
       if (station == null) 'a station',
       if (weekday == null) 'a day',
@@ -878,11 +707,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     }
     if (_isOutsideOperatingHours) {
       setState(() => _crowdValidationMsg = null);
-      return; // no service — nothing to predict
+      return;
     }
     final dayAvg = await _api.getStationAverageForWeekday(station!, weekday!);
-    // Reuses the same daily-totals lookup that getStationAverageForWeekday
-    // is built on, just to expose how many real records fed that average.
+
     final dailyTotals = await _api.getDailyTotalsForStation(station);
     if (!mounted) return;
     final recordCount = dailyTotals.where((e) => e.key.weekday == weekday).length;
@@ -897,8 +725,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     });
   }
 
-  // Joins a list of missing-field descriptions into a natural-language
-  // phrase, e.g. ["a station", "a day"] -> "a station and a day".
   String _joinMissing(List<String> missing) {
     if (missing.length == 1) return missing.first;
     if (missing.length == 2) return '${missing[0]} and ${missing[1]}';
@@ -921,13 +747,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     }
     final dayAvg = await _api.getStationAverageForWeekday(station!, weekday!);
     if (!mounted) return;
-    // Full operating-hours coverage: 06:00–24:00 (00:00–06:00 excluded,
-    // matching Tab 1's _isOutsideOperatingHours cutoff), one hour per slot —
-    // the same 19-hour set already used by the Full-Day Crowd Pattern chart
-    // (_buildFullDayCrowdChart) and the Full Baseline Ranges table
-    // (_buildFullBaselineRanges), so Peak Summary, Top 3 Peak Hours, and
-    // Peak vs Off-Peak are now derived from the same hourly data as the
-    // chart instead of a smaller 9-hour sample.
+
     final hours = List.generate(19, (i) => 6 + i);
     final factor = _magnitudeFactor(dayAvg);
     final slots = hours
@@ -952,9 +772,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     setState(() {
       _historyValidationMsg = null;
       _historyData = data;
-      _historyMonthFilter = null; // reset filter on fresh load
-      _heatmapSelectedDay = null; // clear any previously tapped day
-      _heatmapAllMonthsIndex = null; // reset calendar navigation on fresh load
+      _historyMonthFilter = null;
+      _heatmapSelectedDay = null;
+      _heatmapAllMonthsIndex = null;
     });
   }
 
@@ -969,9 +789,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       _loadingConnections = true;
       _connLoadingSeconds = 0;
     });
-    // Ticks the elapsed-seconds counter shown next to "Loading connections…"
-    // so the message visibly changes every second instead of sitting
-    // static — reassurance that the app is still working, not stuck.
+
     _connLoadingTimer?.cancel();
     _connLoadingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
@@ -998,25 +816,9 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     }
   }
 
-  // Station Crowd Ranking (Tab 5): a single query to the
-  // "station_ridership_totals" Supabase view (Overall) or the
-  // station_ridership_totals_for_range() function (Month/Day), which
-  // compute real average/total ridership per station with a GROUP BY
-  // directly in Postgres. One round-trip for all stations — no
-  // per-station looping, no batching, no modelling, no hardcoded
-  // ridership.
-  //
-  // forceRefresh: true bypasses ApiService's in-memory cache for the
-  // Overall case so a manual re-pull actually re-queries Supabase instead
-  // of just re-showing the same cached numbers. Month/Day fetches are
-  // never cached, since the range changes with the user's selection.
   Future<void> _runStationRanking({bool forceRefresh = false}) async {
     if (_loadingRanking) return;
 
-    // Resolve the selected period into a concrete date range. If Month or
-    // Day is selected but nothing's been picked yet, wait for that pick
-    // instead of fetching — the picker's onChanged calls this again once
-    // a value is chosen.
     DateTime? startDate;
     DateTime? endDate;
     switch (_rankingPeriod) {
@@ -1045,10 +847,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         forceRefresh: forceRefresh,
       );
       if (!mounted) return;
-      // Capture the dataset's true earliest/latest date once, from the
-      // first Overall (unfiltered) load — this bounds the Month/Day
-      // pickers and must not get overwritten by a later, narrower
-      // Month/Day fetch's own min/max.
+
       if (startDate == null && endDate == null) {
         _captureRankingDatasetBounds(results);
       }
@@ -1079,9 +878,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     _rankingDatasetMaxDate = maxDate;
   }
 
-  // Every calendar month between the dataset's earliest and latest date
-  // (inclusive) — populates the Month dropdown. Real data range only, not
-  // a fixed/hardcoded list.
   List<DateTime> _rankingAvailableMonths() {
     final min = _rankingDatasetMinDate;
     final max = _rankingDatasetMaxDate;
@@ -1099,9 +895,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   void _onRankingPeriodChanged(_RankingPeriod period) {
     setState(() {
       _rankingPeriod = period;
-      // Month/Day with nothing picked yet must not keep showing results
-      // from whatever period was previously active — clear them and wait
-      // for the picker instead of displaying stale data.
+
       final needsSelection = (period == _RankingPeriod.month && _rankingMonth == null) ||
           (period == _RankingPeriod.day && _rankingDay == null);
       if (needsSelection) {
@@ -1109,8 +903,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         _rankingError = null;
       }
     });
-    // Overall and an already-picked Month/Day can fetch immediately;
-    // Month/Day with nothing picked yet just wait for the picker.
+
     if (period == _RankingPeriod.overall ||
         (period == _RankingPeriod.month && _rankingMonth != null) ||
         (period == _RankingPeriod.day && _rankingDay != null)) {
@@ -1137,12 +930,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     }
   }
 
-  // ── Tab 5: Compare Stations ──
-  // Reuses the same "station_ridership_totals" query as the Ranking view
-  // (Overall) / station_ridership_totals_for_range() (Month/Day) — one
-  // real, grouped Supabase query for every station — and simply reads off
-  // the two selected stations' rows. No separate endpoint, no per-station
-  // looping, no hardcoded ridership.
   Future<void> _runCompare() async {
     final stationA = _compareStationA;
     final stationB = _compareStationB;
@@ -1196,8 +983,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   void _onComparePeriodChanged(_RankingPeriod period) {
     setState(() {
       _comparePeriod = period;
-      // Month/Day with nothing picked yet must not keep showing results
-      // from whatever period was previously active.
+
       final needsSelection = (period == _RankingPeriod.month && _compareMonth == null) ||
           (period == _RankingPeriod.day && _compareDay == null);
       if (needsSelection) {
@@ -1337,14 +1123,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // ── Shared section-card building blocks (used by all four tabs) ────────
-  // Presentation-only helpers: consistent heading style, card padding,
-  // corner radius, and spacing so Crowd / Peak / History / Connections all
-  // read as the same design language. None of these touch data, queries,
-  // or calculations — they only lay out whatever child widget is passed in.
-
-  // Consistent section heading: small label + optional icon + optional
-  // italic subtitle.
   Widget _sectionHeading(String title, {IconData? icon, String? subtitle}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1372,9 +1150,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Consistent section card wrapper: same padding/radius/border for every
-  // section on every tab, so each page reads as clearly separated blocks
-  // instead of one long scroll of mixed content.
   Widget _sectionCard({required String title, IconData? icon, String? subtitle, required Widget child}) {
     return Container(
       width: double.infinity,
@@ -1395,8 +1170,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Consistent empty-state row: used instead of leaving a section blank
-  // when there's genuinely nothing to show.
   Widget _emptyState(String message) {
     return Container(
       width: double.infinity,
@@ -1419,10 +1192,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Consistent "please complete required fields" warning: shown instead
-  // of calculating or displaying results when a required input is
-  // missing. Never fills the gap with a default value — only tells the
-  // user what to pick.
   Widget _validationMessage(String message) {
     return Container(
       width: double.infinity,
@@ -1446,15 +1215,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // ── Tab 1 UI ───────────────────────────────────────────────────────────
-
-  // Sections (mirrors the Connections tab pattern):
-  //   A. Station & prediction inputs
-  //   B. Crowd prediction summary
-  //   C. Station Demand Profile
-  //   D. Crowd alert insight
-  //   E. Calculation Breakdown
-  // (plus the existing methodology/legend reference cards at the bottom)
   Widget _buildCrowdEstimateTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
@@ -1470,7 +1230,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           ),
           const SizedBox(height: _sectionGap),
 
-          // A. Station & prediction inputs
           _sectionCard(
             title: 'STATION & PREDICTION INPUTS',
             icon: Icons.tune,
@@ -1581,7 +1340,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           if (_crowdResult != null) ...[
             const SizedBox(height: _sectionGap),
 
-            // B. Crowd prediction summary
             _sectionCard(
               title: 'CROWD PREDICTION SUMMARY',
               icon: Icons.groups_outlined,
@@ -1654,7 +1412,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             ),
             const SizedBox(height: _sectionGap),
 
-            // C. Station Demand Profile
             _sectionCard(
               title: 'STATION DEMAND PROFILE',
               icon: Icons.insights_outlined,
@@ -1662,8 +1419,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             ),
             const SizedBox(height: _sectionGap),
 
-            // D. Calculation Breakdown — collapsed by default; expand to
-            // see the step-by-step math behind the estimate.
             _buildCalculationBreakdownCard(),
           ],
 
@@ -1678,11 +1433,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // ── Calculation breakdown / methodology / legend (explainability) ──────
-
-  // "How is this estimated?" — collapsed by default. Wraps the existing
-  // step-by-step breakdown in a tappable, expandable card so it stays out
-  // of the way until someone wants to see the math.
   Widget _buildCalculationBreakdownCard() {
     return Container(
       width: double.infinity,
@@ -1717,7 +1467,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Formula summary, always visible at a glance.
+
         Container(
           width: double.infinity,
           padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
@@ -1839,11 +1589,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Station Demand Profile — describes the station's real historical
-  // ridership relative to the network average (the existing Relative
-  // Station Factor). Deliberately separate from the occupancy result
-  // above it, since this reflects the STATION's typical demand level,
-  // not the predicted occupancy for the selected time.
   Widget _buildStationDemandProfile() {
     final factor = _crowdResultFactor ?? 1.0;
     final dayLabel = kWeekdayLabels[_weekday! - 1];
@@ -1915,15 +1660,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // ── Tab 2 UI ───────────────────────────────────────────────────────────
-
-  // Sections (mirrors the Connections tab pattern):
-  //   A. Station & day selection
-  //   B. Full-Day Crowd Pattern (hourly line chart, 6am-12am)
-  //   C. Peak Analysis Summary
-  //   D. Top 3 Predicted Time Periods
-  //   E. Peak vs Off-Peak Comparison
-  //   F. Data Source / Method
   Widget _buildPeakHoursTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
@@ -1939,7 +1675,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           ),
           const SizedBox(height: _sectionGap),
 
-          // A. Station & day selection
           _sectionCard(
             title: 'STATION & DAY SELECTION',
             icon: Icons.tune,
@@ -1985,7 +1720,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           if (_peakSlots != null) ...[
             const SizedBox(height: _sectionGap),
 
-            // B. Full-Day Crowd Pattern
             _sectionCard(
               title: 'FULL-DAY CROWD PATTERN',
               icon: Icons.show_chart,
@@ -1998,7 +1732,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             ),
             const SizedBox(height: _sectionGap),
 
-            // C. Peak Analysis Summary
             _sectionCard(
               title: 'PEAK ANALYSIS SUMMARY',
               icon: Icons.summarize_outlined,
@@ -2006,7 +1739,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             ),
             const SizedBox(height: _sectionGap),
 
-            // D. Top 3 Predicted Time Periods
             _sectionCard(
               title: 'TOP 3 PREDICTED TIME PERIODS',
               icon: Icons.leaderboard_outlined,
@@ -2014,7 +1746,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             ),
             const SizedBox(height: _sectionGap),
 
-            // E. Peak vs Off-Peak Comparison
             _sectionCard(
               title: 'PEAK VS OFF-PEAK COMPARISON',
               icon: Icons.compare_arrows,
@@ -2022,7 +1753,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             ),
             const SizedBox(height: _sectionGap),
 
-            // F. How is this estimated? — collapsed by default.
             _buildPeakMethodologyCard(),
           ],
         ],
@@ -2031,12 +1761,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   }
 
   String _hourLabel(int hour) {
-    final h = hour % 24; // 24 (midnight, end of day) wraps to 0 → "12am"
+    final h = hour % 24;
     return h == 12 ? '12pm' : h > 12 ? '${h - 12}pm' : h == 0 ? '12am' : '${h}am';
   }
 
-  // Peak Analysis Summary — all values reused directly from _peakSlots,
-  // _peakDayAvg and _peakFactor. No new calculation performed here.
   Widget _buildPeakSummaryCard() {
     final peak = _peakSlots!.reduce((a, b) => a.value.occupancy >= b.value.occupancy ? a : b);
     final category = timeCategoryFor(peak.key * 60);
@@ -2054,7 +1782,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Top 3 Predicted Time Periods — sorted from the existing _peakSlots list.
   Widget _buildTopPeakPeriods() {
     final sorted = [..._peakSlots!]
       ..sort((a, b) => b.value.occupancy.compareTo(a.value.occupancy));
@@ -2093,7 +1820,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Peak vs Off-Peak Comparison — derived only from existing _peakSlots values.
   Widget _buildPeakVsOffPeak() {
     final peak = _peakSlots!.reduce((a, b) => a.value.occupancy >= b.value.occupancy ? a : b);
     final offPeak = _peakSlots!.reduce((a, b) => a.value.occupancy <= b.value.occupancy ? a : b);
@@ -2112,10 +1838,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // "How is this estimated?" — collapsed by default, mirroring the same
-  // pattern used on the Crowd Estimate tab. Wraps the existing data
-  // source / methodology explanation so it stays out of the way until
-  // someone wants to read it.
   Widget _buildPeakMethodologyCard() {
     return Container(
       width: double.infinity,
@@ -2148,7 +1870,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Formula summary, always visible at a glance.
+
         Container(
           width: double.infinity,
           padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
@@ -2200,12 +1922,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Full breakdown of the baseline, one row per hour from 6am through 12am
-  // (the full Rapid KL operating window) — the same 19-hour set _peakSlots
-  // now uses — as a single Time | Weekday | Weekend | Estimated table.
-  // Weekday/Weekend columns are read straight from _baselineOccupancy();
-  // Estimated is that same rule table for the selected day, multiplied by
-  // the station factor — nothing new computed here.
   Widget _buildFullBaselineRanges() {
     final weekday = _peakWeekday!;
     final isWeekend = weekday == DateTime.saturday || weekday == DateTime.sunday;
@@ -2216,7 +1932,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         color: selected ? accent : Colors.black45,
         fontWeight: selected ? FontWeight.bold : FontWeight.normal);
 
-    final hours = List.generate(19, (i) => 6 + i); // 6am..12am inclusive, one row per hour
+    final hours = List.generate(19, (i) => 6 + i);
 
     return Container(
       width: double.infinity,
@@ -2292,20 +2008,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Full-Day Crowd Pattern (Tab 2 / Peak Hours): hourly estimated crowd
-  // levels from 6am-12am (midnight), computed directly via predictCrowd() —
-  // i.e. the same _baselineOccupancy() rule table and the same
-  // network-comparison factor (_peakFactor) already computed by
-  // _runPeakHours(). This independently recomputes the same 19-hour set
-  // _peakSlots now holds (rather than reusing _peakSlots directly), so it
-  // remains purely a chart-rendering concern; the Peak Analysis Summary,
-  // Top 3 Predicted Time Periods, and Peak vs Off-Peak Comparison below all
-  // read from _peakSlots and are numerically consistent with this chart.
   Widget _buildFullDayCrowdChart() {
     final weekday = _peakWeekday!;
     final factor = _peakFactor ?? 0;
-    // 6am..12am (midnight) inclusive — the full Rapid KL operating window,
-    // rather than stopping at 10pm.
+
     final hours = List.generate(19, (i) => 6 + i);
     final results = hours.map((h) => predictCrowd(weekday, h * 60, factor)).toList();
     final occupancies = results.map((r) => r.occupancy).toList();
@@ -2332,9 +2038,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Readout for the hovered/tapped point — always reserves its row
-          // so the chart doesn't jump, but only shows text once a point is
-          // hovered (desktop) or tapped (touch).
+
           SizedBox(
             height: 18,
             child: hoverValid
@@ -2369,12 +2073,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                             peakIndex: peakIndex,
                           ),
                         ),
-                        // Hit-targets, one per hour slot (same even
-                        // division as the painter's own slotWidth). A
-                        // MouseRegion updates the readout above on hover
-                        // (desktop/web), and a tap does the same on touch —
-                        // in addition to the native Tooltip on long-press.
-                        // Chart drawing/design above is unchanged.
+
                         Row(
                           children: List.generate(hours.length, (i) {
                             final result = results[i];
@@ -2424,16 +2123,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // ── Tab 3 UI ───────────────────────────────────────────────────────────
-
-  // Sections (mirrors the Connections tab pattern):
-  //   A. Station selection
-  //   B. History filters (month only)
-  //   C. Summary statistics (Average / Highest / Lowest)
-  //   D. Ridership Trend & Insight (trend stats + plain-language read, one card)
-  //   E. Calendar Heatmap (daily ridership by date, month from History Filters)
-  //   F. Weekly Ridership Pattern (Monday–Sunday averages, + Weekday vs Weekend)
-  //   G. Monthly Ridership Trend (all months for the station, line chart)
   Widget _buildHistoryTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
@@ -2449,7 +2138,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           ),
           const SizedBox(height: _sectionGap),
 
-          // A. Station selection
           _sectionCard(
             title: 'STATION SELECTION',
             icon: Icons.pin_drop_outlined,
@@ -2494,14 +2182,13 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           ],
           if (_historyData != null && _historyData!.isNotEmpty) ...[
             Builder(builder: (context) {
-              // Distinct months present in the loaded data, sorted chronologically.
+
               final months = _historyData!
                   .map((e) => DateTime(e.date.year, e.date.month))
                   .toSet()
                   .toList()
                 ..sort();
 
-              // Apply the month filter (null = show everything).
               final byMonth = _historyMonthFilter == null
                   ? _historyData!
                   : _historyData!
@@ -2518,9 +2205,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   ? 'all months'
                   : '${monthNames[_historyMonthFilter!.month - 1]} ${_historyMonthFilter!.year}';
 
-              // B. History filters — month only. Always shown once data is
-              // loaded, so the filter stays visible even if it currently
-              // yields no records.
               final filtersSection = _sectionCard(
                 title: 'HISTORY FILTERS',
                 icon: Icons.filter_alt_outlined,
@@ -2545,29 +2229,15 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 ),
               );
 
-              // Weekly Ridership Pattern data — grouped by day-of-week from
-              // `byMonth` (respects the month filter). Real data only, no
-              // modelling.
               final weeklyPattern = _computeWeeklyPattern(byMonth);
-              // Same `byMonth` (month-filtered) records feed the Weekday
-              // vs Weekend comparison below.
+
               final weekdayWeekendStats = _computeWeekdayWeekendComparison(byMonth);
               final weeklyPatternSection =
               _buildWeeklyPatternSection(weeklyPattern, weekdayWeekendStats, monthFilterLabel);
 
-              // Monthly Ridership Trend — fed the full `_historyData` for
-              // this station, NOT `byMonth`, so it always shows every
-              // available month regardless of the month filter above.
               final monthlyTrend = _computeMonthlyTrend(_historyData!);
               final monthlyTrendSection = _buildMonthlyTrendSection(monthlyTrend);
 
-              // Calendar Heatmap — when a specific month is chosen in
-              // History Filters, the calendar shows that month directly
-              // and hides the nav arrows. When History Filters is "All
-              // months", the calendar can still only show one month at a
-              // time, so it shows one month at a time with its own
-              // left/right arrows to step through every available month
-              // (no separate filter dropdown inside the calendar itself).
               late final DateTime heatmapMonth;
               late final bool heatmapShowArrows;
               int heatmapAllMonthsIdx = 0;
@@ -2630,7 +2300,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   filtersSection,
                   const SizedBox(height: _sectionGap),
 
-                  // C. Summary statistics (Average / Highest / Lowest)
                   _sectionCard(
                     title: 'SUMMARY STATISTICS',
                     icon: Icons.query_stats_outlined,
@@ -2677,12 +2346,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   ),
                   const SizedBox(height: _sectionGap),
 
-                  // D. Ridership Trend & Insight — one card: the trend
-                  // stats (current-period vs previous-period average,
-                  // computed by splitting the currently-shown real records
-                  // in half chronologically) plus a short plain-language
-                  // interpretation of that same trend underneath. No
-                  // modelling, no fixed calendar window.
                   _sectionCard(
                     title: 'RIDERSHIP TREND',
                     icon: Icons.trending_up,
@@ -2691,11 +2354,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                         : Builder(builder: (context) {
                       final (message, color, icon) = _ridershipInsight(trend);
                       final pct = trend.percentChange;
-                      // % Change accent follows the same crowd-based
-                      // convention as _ridershipInsight/_monthlyChangeInsight
-                      // above: an increase means more crowding (red), a
-                      // decrease means less crowding (green), and a small
-                      // change is neutral. Same ±5% stability band as those.
+
                       final pctColor = pct > 5
                           ? const Color(0xFFDC2626)
                           : pct < -5
@@ -2729,8 +2388,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                             style: TextStyle(fontSize: 11, color: Colors.black45),
                           ),
                           const SizedBox(height: 12),
-                          // Ridership Insight — plain-language read of the
-                          // trend above, kept in the same card.
+
                           Container(
                             width: double.infinity,
                             padding: const EdgeInsets.all(12),
@@ -2759,15 +2417,12 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   ),
                   const SizedBox(height: _sectionGap),
 
-                  // E. Calendar Heatmap (daily ridership by date, month from History Filters)
                   heatmapSection,
                   const SizedBox(height: _sectionGap),
 
-                  // F. Weekly Ridership Pattern (Monday–Sunday averages, + Weekday vs Weekend)
                   weeklyPatternSection,
                   const SizedBox(height: _sectionGap),
 
-                  // G. Monthly Ridership Trend (all months for this station)
                   monthlyTrendSection,
                 ],
               );
@@ -2778,9 +2433,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Weekly Ridership Pattern section card (Tab 3 / History). Renders one
-  // bar per day-of-week present in the real, month-filtered data, with the
-  // highest/lowest day highlighted, plus a plain-language insight line.
   Widget _buildWeeklyPatternSection(List<({int weekday, double avg, int count})> pattern,
       _WeekdayWeekendStats weekdayWeekendStats, String monthFilterLabel) {
     const dayNames = [
@@ -2814,10 +2466,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           ...pattern.map((p) {
             final isMax = p.weekday == highest.weekday;
             final isMin = p.weekday == lowest.weekday && lowest.weekday != highest.weekday;
-            // Gradient across the whole week — green (least crowded day)
-            // through to red (most crowded day) — same crowd convention
-            // used elsewhere, scaled by where this day's average falls
-            // between the week's real min and max.
+
             final t = avgRange == 0 ? 1.0 : ((p.avg - minAvg) / avgRange).clamp(0.0, 1.0);
             final barColor = Color.lerp(const Color(0xFF16A34A), const Color(0xFFDC2626), t)!;
             return _weekdayRow(
@@ -2855,11 +2504,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Weekday (Mon–Fri) vs Weekend (Sat–Sun) comparison — sits inside the
-  // same Weekly Ridership Pattern card as the day-of-week bars above, using
-  // the same underlying real records (respects the month filter, ignores
-  // the day-of-week filter). Shows both averages, the real difference and
-  // percentage difference, plus a small bar chart. No hardcoded ridership.
   Widget _weekdayWeekendComparisonSection(_WeekdayWeekendStats stats, String monthFilterLabel) {
     final header = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2881,10 +2525,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       ],
     );
 
-    // Genuinely no weekday or weekend records at all for this month filter
-    // (e.g. neither group has data) — shouldn't normally happen since the
-    // pattern above is non-empty, but handled defensively rather than
-    // assuming/hardcoding a value.
     if (stats.weekdayCount == 0 && stats.weekendCount == 0) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2899,9 +2539,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     final weekendAvg = stats.weekendAvg;
     final maxAvg = [weekdayAvg ?? 0.0, weekendAvg ?? 0.0].reduce((a, b) => a >= b ? a : b);
 
-    // More people = red, fewer people = green, matching the crowd
-    // convention used elsewhere in this tab. Tied or missing-data cases
-    // fall back to a neutral color rather than guessing.
     const moreColor = Color(0xFFDC2626);
     const fewerColor = Color(0xFF16A34A);
     Color weekdayColor = Colors.blueGrey;
@@ -2911,8 +2548,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       weekendColor = weekdayAvg > weekendAvg ? fewerColor : moreColor;
     }
 
-    // Difference / percentage difference — only meaningful when both sides
-    // actually have real data.
     Widget diffLine;
     if (weekdayAvg != null && weekendAvg != null) {
       final diff = weekdayAvg - weekendAvg;
@@ -2940,9 +2575,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
             ),
             const SizedBox(height: 2),
-            // Weekday is described as either higher (red, more people)
-            // or lower (green, fewer people) than weekend — matching the
-            // crowd convention and the ranking compare-stations style.
+
             Text(
               'Weekday is ${diffPct.toStringAsFixed(1)}% ${diff > 0 ? 'higher' : 'lower'}',
               textAlign: TextAlign.center,
@@ -2955,8 +2588,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
         ),
       );
     } else {
-      // One side has no real records for the selected month — say so
-      // rather than computing a difference against a missing value.
+
       final missing = weekdayAvg == null ? 'weekday' : 'weekend';
       diffLine = Container(
         width: double.infinity,
@@ -3006,8 +2638,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // One bar in the Weekday vs Weekend chart — mirrors the styling of
-  // _weekdayRow / _compareBarRow used elsewhere in this tab.
   Widget _weekdayWeekendBarRow(String label, double avg, double maxAvg, {required Color color}) {
     final factor = maxAvg == 0 ? 0.0 : avg / maxAvg;
     return Row(
@@ -3044,9 +2674,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // One day-of-week bar row for the Weekly Ridership Pattern section.
-  // Mirrors the bar-with-value style already used by _connectionRow, with
-  // an extra "Highest"/"Lowest" tag under the standout day(s).
   Widget _weekdayRow(String dayLabel, double avg, double maxAvg,
       {required Color color, required bool isMax, required bool isMin}) {
     final factor = maxAvg == 0 ? 0.0 : avg / maxAvg;
@@ -3103,12 +2730,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Monthly Ridership Trend section card (Tab 3 / History). Plots the real
-  // average daily ridership per calendar month for the selected station —
-  // every month present in `_historyData`, unaffected by the month or
-  // day-of-week filters used elsewhere in this tab. Also surfaces the
-  // highest/lowest months and the overall % change from the first to the
-  // last available month. Real data only — no modelling, nothing hardcoded.
   Widget _buildMonthlyTrendSection(List<({DateTime month, double avg, int count})> trend) {
     if (trend.isEmpty) {
       return _sectionCard(
@@ -3125,9 +2746,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     final highestIndex = trend.indexWhere((t) => t.month == highest.month);
     final lowestIndex = trend.indexWhere((t) => t.month == lowest.month);
 
-    // Overall change: first available month's average vs the last
-    // available month's average, in chronological order. Null (rather
-    // than 0) when there's only one month of data — nothing to compare.
     double? overallChangePct;
     if (trend.length >= 2 && trend.first.avg != 0) {
       overallChangePct = ((trend.last.avg - trend.first.avg) / trend.first.avg) * 100;
@@ -3197,9 +2815,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Describes the overall month-to-month change in words. Mirrors the
-  // tone/threshold style of _ridershipInsight for consistency (an increase
-  // in ridership is flagged red as "more crowding", a decrease green).
   (String, Color, IconData) _monthlyChangeInsight(
       double? pct, DateTime firstMonth, DateTime lastMonth) {
     if (pct == null) {
@@ -3231,10 +2846,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // The scrollable line-chart container for Monthly Ridership Trend: fixed
-  // width per month so the chart and the month labels beneath it always
-  // line up, scrolling horizontally when there are more months than fit
-  // on screen (same visual language as the Daily Totals chart above it).
   Widget _monthlyTrendChart(
       List<({DateTime month, double avg, int count})> trend, int highestIndex, int lowestIndex) {
     const slotWidth = 64.0;
@@ -3268,11 +2879,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                         lowestIndex: lowestIndex,
                       ),
                     ),
-                    // Invisible hit-targets, one per month slot (same
-                    // even division as the painter's own slotWidth), so
-                    // hovering (desktop) or long-pressing (touch) a data
-                    // point shows its exact month + real average via a
-                    // Tooltip. Chart drawing/design above is unchanged.
+
                     Row(
                       children: trend.map((t) {
                         return Expanded(
@@ -3307,18 +2914,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // ── Calendar Heatmap (Tab 3 / History) ──────────────────────────────────
-  // Renders one calendar-style month grid where each real day-of-data gets
-  // a filled cell whose color intensity reflects its real ridership value
-  // (min–max scaled against the other real days in that same month — a
-  // purely presentational scale, not a modelled or hardcoded one). Days
-  // with no record in the local dataset render as empty/unfilled cells,
-  // never as a ridership of 0. Reuses the History Filters month above —
-  // no separate month control of its own, to avoid duplicate filters.
-
-  // Builds the day cells for one calendar month: one entry per calendar
-  // day in the month, `ridership` null where `_historyData` has no record
-  // for that date.
   List<_HeatmapDayCell> _computeHeatmapMonthCells(
       List<RidershipRecord> records, DateTime month) {
     final daysInMonth = DateTime(month.year, month.month + 1, 0).day;
@@ -3334,34 +2929,18 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     });
   }
 
-  // Real min/max ridership among the days that actually have a record this
-  // month — used only to scale color intensity, never displayed as if it
-  // were itself a computed statistic. Null when the month has no records.
   (double, double)? _heatmapMinMax(List<_HeatmapDayCell> cells) {
     final values = cells.where((c) => c.ridership != null).map((c) => c.ridership!).toList();
     if (values.isEmpty) return null;
     return (values.reduce((a, b) => a < b ? a : b), values.reduce((a, b) => a > b ? a : b));
   }
 
-  // Maps a real ridership value to a fill color: green (least crowded, this
-  // month's real min) through to red (most crowded, this month's real max)
-  // — same crowd convention used across the rest of this tab. Empty days
-  // are handled by the caller (they never reach this function with a null
-  // value).
   Color _heatmapColor(double value, (double, double) minMax) {
     final (minV, maxV) = minMax;
     final t = (maxV == minV) ? 1.0 : ((value - minV) / (maxV - minV)).clamp(0.0, 1.0);
     return Color.lerp(const Color(0xFF16A34A), const Color(0xFFDC2626), t)!.withValues(alpha: 0.15 + t * 0.65);
   }
 
-  // `heatmapMonth` / `heatmapMonthLabel` come from the History Filters
-  // month above (see the Builder in _buildHistoryTab). When History
-  // Filters is a specific month, this section just displays it (no
-  // arrows). When History Filters is "All months", this section shows
-  // one month at a time and exposes its own left/right arrows
-  // (`showArrows`/`canGoPrev`/`canGoNext`/`onPrev`/`onNext`) to step
-  // through the station's available months — never a second dropdown
-  // filter inside the calendar itself.
   Widget _buildHeatmapSection(
       List<RidershipRecord> records, DateTime heatmapMonth, String heatmapMonthLabel,
       {required bool showArrows,
@@ -3440,7 +3019,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Mon–Sun header row above the calendar grid.
   Widget _heatmapWeekdayHeader() {
     const labels = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
     return Row(
@@ -3454,12 +3032,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Lays the month's real day-cells out into a 7-wide calendar grid,
-  // padding with blank leading/trailing slots so day 1 lands under the
-  // correct weekday column (week starts Monday, matching the rest of the
-  // app's day-of-week convention).
   Widget _heatmapGrid(List<_HeatmapDayCell> cells, (double, double) minMax) {
-    final leading = cells.first.date.weekday - 1; // Monday=1 -> 0 leading blanks
+    final leading = cells.first.date.weekday - 1;
     final items = <_HeatmapDayCell?>[
       ...List<_HeatmapDayCell?>.filled(leading, null),
       ...cells,
@@ -3475,10 +3049,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return Column(children: rows);
   }
 
-  // One calendar cell. Tap shows the exact date + real ridership (or "no
-  // record") in the detail line below the grid; a Tooltip gives the same
-  // information on hover for desktop / long-press on touch devices. Days
-  // with no record render with no fill at all — never a ridership of 0.
   Widget _heatmapCell(_HeatmapDayCell? cell, (double, double) minMax) {
     if (cell == null) {
       return const AspectRatio(aspectRatio: 1, child: SizedBox.shrink());
@@ -3521,8 +3091,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Low → high color-scale legend, plus the real min/max ridership that
-  // scale is anchored to for this specific month.
   Widget _heatmapLegend((double, double) minMax) {
     final (minV, maxV) = minMax;
     return Row(
@@ -3553,17 +3121,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // ── Tab 4 UI ───────────────────────────────────────────────────────────
-  //
-  // Six visually distinct sections, each rendered with the shared
-  // _sectionCard() helper defined above build():
-  //   A. Station selection
-  //   B. Connection summary
-  //   C. Connection insight
-  //   D. Top destinations
-  //   E. Top origins
-  //   F. Busiest network-wide connections
-
   Widget _buildConnectionsTab() {
     final hasOdData = _connStation != null && _stationsWithOdData.contains(_connStation);
     return SingleChildScrollView(
@@ -3580,7 +3137,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           ),
           const SizedBox(height: _sectionGap),
 
-          // A. Station selection
           _sectionCard(
             title: 'STATION SELECTION',
             icon: Icons.pin_drop_outlined,
@@ -3650,9 +3206,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 ),
               ),
             ] else ...[
-              // B. Connection summary. More trips = red, fewer = green,
-              // matching the crowd convention used elsewhere in the app —
-              // tied counts fall back to neutral rather than guessing.
+
               Builder(builder: (context) {
                 final outgoing = _connOutgoing ?? 0;
                 final incoming = _connIncoming ?? 0;
@@ -3678,7 +3232,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               }),
               const SizedBox(height: _sectionGap),
 
-              // C. Connection insight
               _sectionCard(
                 title: 'CONNECTION INSIGHT',
                 icon: Icons.insights,
@@ -3686,7 +3239,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               ),
               const SizedBox(height: _sectionGap),
 
-              // D. Top destinations
               _sectionCard(
                 title: 'TOP DESTINATIONS',
                 icon: Icons.north_east,
@@ -3702,7 +3254,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               ),
               const SizedBox(height: _sectionGap),
 
-              // E. Top origins
               _sectionCard(
                 title: 'TOP ORIGINS',
                 icon: Icons.south_west,
@@ -3719,7 +3270,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             ],
             const SizedBox(height: _sectionGap),
 
-            // F. Busiest network-wide connections
             _sectionCard(
               title: 'BUSIEST CONNECTIONS NETWORK-WIDE',
               icon: Icons.leaderboard,
@@ -3741,8 +3291,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Simple derived insight — no new data source, just incoming - outgoing
-  // from the two totals already fetched for the summary cards above.
   Widget _connectionInsightCard(int outgoing, int incoming) {
     final diff = incoming - outgoing;
     const accent = Color(0xFF4F46E5);
@@ -3789,9 +3337,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
   Widget _busiestConnectionRow(int rank, String label, int trips, int maxTrips) {
     final isTop = rank == 1;
-    // More trips = red, fewer trips = green, matching the crowd convention
-    // used elsewhere in the app — scaled by this row's trips relative to
-    // the single busiest connection in the network-wide list.
+
     final factor = maxTrips == 0 ? 0.0 : trips / maxTrips;
     final accent = Color.lerp(const Color(0xFF16A34A), const Color(0xFFDC2626), factor.clamp(0.0, 1.0))!;
     return Container(
@@ -3825,8 +3371,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Adds thousands separators to a whole number, e.g. 708230 -> "708,230".
-  // Purely a display helper — never touches the underlying numeric value.
   String _formatNumber(num n) {
     final s = n.round().toString();
     final negative = s.startsWith('-');
@@ -3871,9 +3415,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
 
   Widget _connectionRow(String stationName, int trips, int maxTrips) {
     final factor = maxTrips == 0 ? 0.0 : trips / maxTrips;
-    // More trips = red, fewer trips = green, matching the crowd convention
-    // used elsewhere in the app — scaled by this row's trips relative to
-    // the busiest connection in its own top-5 list.
+
     final color = Color.lerp(const Color(0xFF16A34A), const Color(0xFFDC2626), factor.clamp(0.0, 1.0))!;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
@@ -3931,9 +3473,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   fontWeight: FontWeight.bold,
                   color: neutral ? Colors.black87 : accentColor)),
           const SizedBox(height: 2),
-          // Always reserve this line (blank when no subtitle) so every stat
-          // card — Summary Statistics and Ridership Trend alike — is
-          // exactly the same height, whether or not it has a date caption.
+
           Text(subtitle ?? '\u200b',
               style: const TextStyle(fontSize: 10, color: Colors.black45),
               maxLines: 1,
@@ -3943,28 +3483,10 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // ── Tab 5 UI ───────────────────────────────────────────────────────────
-  //
-  // Station Ridership Ranking — real per-station ridership averages/totals
-  // from the "station_ridership_totals" view (one grouped query for every
-  // station). No hardcoded ridership, no modelling.
-  // Sections (mirrors the other tabs' pattern):
-  //   A. Load control
-  //   B. Top 5 busiest stations
-  //   C. Top 5 least-busy stations
-  //   D. Ranking insight (busiest / least-busy station, in plain language)
-
-  // Tab 5 has two sub-pages sharing one tab slot: Station Ranking (existing)
-  // and Compare Stations (new). This just picks which one to render; the
-  // toggle itself lives in _tab5ViewSwitch() and is rendered at the top of
-  // each sub-page.
   Widget _buildTab5() {
     return _tab5View == _Tab5View.ranking ? _buildStationRankingTab() : _buildCompareStationsTab();
   }
 
-  // Segmented-looking chip pair for switching between the two Tab 5
-  // sub-pages. Uses the same ChoiceChip look as the period filters below,
-  // so it reads as part of the existing UI rather than a new control.
   Widget _tab5ViewSwitch() {
     return Wrap(
       spacing: 8,
@@ -3986,10 +3508,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Real earliest–latest date across every station's data (from the
-  // min_date/max_date the ranking query already returns per station) —
-  // shown as "Based on Jan–Mar 2026 data" when available. Not a fixed
-  // label; simply not shown if the range isn't known yet.
   String? _rankingPeriodLabel() {
     final data = _rankingData;
     if (data == null || data.isEmpty) return null;
@@ -4007,10 +3525,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return '${DateFormat('MMM yyyy').format(minDate)} – ${DateFormat('MMM yyyy').format(maxDate)}';
   }
 
-  // Period filter row for the Ranking tab: Overall / Month / Day chips,
-  // plus a compact month dropdown or date picker button underneath when
-  // Month or Day is selected. Deliberately not wrapped in a section
-  // card — just inline controls, per the tab's simplified layout.
   Widget _rankingPeriodFilter() {
     const monthNames = [
       'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
@@ -4094,10 +3608,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
             ),
           ],
           const SizedBox(height: 6),
-          // Network average — a simple line, not a card. Real value from
-          // Supabase's "network_average" view (same one the Crowd/Peak
-          // tabs already use), which is also what every "× network
-          // average" figure below is computed against.
+
           Text(
             'Network average: ${_formatNumber(_networkAverage)}/day',
             style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: Colors.black54),
@@ -4147,16 +3658,14 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               final sortedDesc = [..._rankingData!]..sort((a, b) => b.avgRidership.compareTo(a.avgRidership));
               final busiest = sortedDesc.take(5).toList();
               final leastBusy = sortedDesc.reversed.take(5).toList();
-              // Real "X.XX× network average" comparison — station avg ÷
-              // _networkAverage, both sourced from Supabase. Guarded
-              // against a zero network average rather than dividing by it.
+
               double vsNetworkAvg(double stationAvg) =>
                   _networkAverage > 0 ? stationAvg / _networkAverage : 0.0;
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // A. Top 5 busiest stations
+
                   _sectionCard(
                     title: 'TOP 5 BUSIEST STATIONS',
                     icon: Icons.trending_up,
@@ -4171,7 +3680,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   ),
                   const SizedBox(height: _sectionGap),
 
-                  // B. Top 5 least-busy stations
                   _sectionCard(
                     title: 'TOP 5 LEAST-BUSY STATIONS',
                     icon: Icons.trending_down,
@@ -4192,11 +3700,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // One ranked-station row for the Station Crowd Ranking tab. Mirrors
-  // _busiestConnectionRow's rank/label/value layout and top-row highlight
-  // treatment, with a ridership-per-day value plus a real "X.XX× network
-  // avg" comparison underneath (station avg ÷ _networkAverage, both from
-  // Supabase — no modelling, no hardcoded ridership).
   Widget _rankingRow(int rank, String station, int avgRidership, double vsNetworkAvg, Color color) {
     final isTop = rank == 1;
     return Container(
@@ -4240,16 +3743,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // ── Tab 5 UI: Compare Stations ──────────────────────────────────────────
-  //
-  // Real per-station ridership averages for two chosen stations, from the
-  // same "station_ridership_totals" query the Ranking page uses. No new
-  // data source, no hardcoded ridership.
-  // Sections:
-  //   A. Station A / Station B pickers + period filter (Overall/Month/Day)
-  //   B. Average ridership for each + the ridership difference
-  //   C. A simple comparison bar chart
-  //   D. One-line insight comparing the two stations
   Widget _buildCompareStationsTab() {
     final dataA = _compareDataA;
     final dataB = _compareDataB;
@@ -4275,7 +3768,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           ),
           const SizedBox(height: _sectionGap),
 
-          // A. Station pickers + period filter
           _sectionCard(
             title: 'SELECT STATIONS',
             icon: Icons.compare_arrows,
@@ -4346,7 +3838,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 ],
 
                 if (haveResults) ...[
-                  // B. Average ridership + difference
+
                   _sectionCard(
                     title: 'AVERAGE DAILY RIDERSHIP',
                     icon: Icons.bar_chart,
@@ -4354,8 +3846,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                   ),
                   const SizedBox(height: _sectionGap),
 
-                  // C. Simple comparison bar chart (reuses the same bar row
-                  // style as the History tab's weekly pattern chart).
                   _sectionCard(
                     title: 'RIDERSHIP COMPARISON',
                     icon: Icons.stacked_bar_chart,
@@ -4369,9 +3859,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Period filter row for Compare Stations — identical Overall/Month/Day
-  // controls to the Ranking page's filter, bound to the compare-specific
-  // state so switching one page's period never affects the other.
   Widget _comparePeriodFilter() {
     const monthNames = [
       'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
@@ -4429,13 +3916,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // Two stat blocks (Station A / Station B average ridership) plus a real
-  // ridership-difference line underneath — both values and the difference
-  // are computed from the fetched Supabase rows, nothing hardcoded.
   Widget _compareAverageSection(_StationRidershipRow a, _StationRidershipRow b) {
-    // More people = red, fewer people = green, matching the crowd
-    // convention used elsewhere in the app. Tied averages fall back to a
-    // neutral color rather than guessing.
+
     Color colorA = Colors.blueGrey;
     Color colorB = Colors.blueGrey;
     if (a.avgRidership != b.avgRidership) {
@@ -4443,9 +3925,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       colorB = a.avgRidership > b.avgRidership ? const Color(0xFF16A34A) : const Color(0xFFDC2626);
     }
     final diff = a.avgRidership - b.avgRidership;
-    // Percentage is the difference relative to the lower of the two real
-    // averages (i.e. "X% higher than the lower station"), guarded against
-    // a zero average rather than dividing by it.
+
     final lowerAvg = diff >= 0 ? b.avgRidership : a.avgRidership;
     final diffPct = lowerAvg > 0 ? (diff.abs() / lowerAvg * 100) : 0.0;
     return Column(
@@ -4487,9 +3967,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
               ),
               const SizedBox(height: 2),
-              // Station A is described as either higher (red, more
-              // people) or lower (green, fewer people) than Station B
-              // — matching the crowd convention used elsewhere.
+
               Text(
                 '${a.station} is ${diffPct.toStringAsFixed(1)}% ${diff > 0 ? 'higher' : 'lower'}',
                 textAlign: TextAlign.center,
@@ -4520,10 +3998,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // A simple two-bar comparison: the full station name sits above its bar
-  // rather than beside it, so long names never get truncated. Same bar
-  // fill/track colors and rounded look as the rest of the app, just
-  // stacked instead of inline — no Highest/Lowest tags, just the bars.
   Widget _compareBarChart(_StationRidershipRow a, _StationRidershipRow b) {
     final maxAvg = a.avgRidership >= b.avgRidership ? a.avgRidership : b.avgRidership;
     Color colorA = Colors.blueGrey;
@@ -4542,9 +4016,6 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     );
   }
 
-  // One bar in the comparison chart: full station name on its own line,
-  // then the proportional bar (real avgRidership ÷ the larger of the two
-  // averages) with its value at the trailing end.
   Widget _compareBarRow(String station, double avg, double maxAvg, {required Color color}) {
     final factor = maxAvg == 0 ? 0.0 : avg / maxAvg;
     return Column(

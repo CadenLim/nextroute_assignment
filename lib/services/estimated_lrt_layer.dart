@@ -26,7 +26,7 @@ class _EstimatedLrtLayerState extends State<EstimatedLrtLayer> {
     }
     try {
       files['calendar_dates'] = await rootBundle.loadString('assets/gtfs/rail/calendar_dates.txt');
-    } catch (_) { /* Optional GTFS exception file, absent in supplied assets. */ }
+    } catch (_) {  }
     return LrtEstimator(files);
   }
 

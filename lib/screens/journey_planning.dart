@@ -1,4 +1,3 @@
-// journey_planning.dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' show asin, cos, sqrt, pi;
@@ -19,9 +18,7 @@ import 'favourite_routes.dart';
 import 'auth_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-// =========================================================================
-// 🌟 内存状态缓存（防止切换 Tab 页面被销毁后状态重置）
-// =========================================================================
+
 class JourneyStateCache {
   static String originName = '';
   static StationModel? originStation;
@@ -44,9 +41,7 @@ class JourneyStateCache {
   }
 }
 
-// =========================================================================
-// ARCGIS ENTERPRISE STATIC MAP GENERATOR (NO API KEY REQUIRED)
-// =========================================================================
+
 String getStaticMapUrl(double lat, double lon, {double zoomDelta = 0.005}) {
   double minLon = lon - zoomDelta;
   double minLat = lat - zoomDelta;
@@ -683,15 +678,15 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
 
           int totalWalk = walkStartMins + walkEndMins;
 
-          // 🌟 核心修复：只将可见的 Legs 时长相加，因为等车时间已经有真实频次计算，可以正常累加！
+
           int totalDur = transitDur + totalWalk + waitMins;
           route['duration'] = '$totalDur min';
 
-          // 提取起步时间
+
           final departStr = route['scheduledDepart'].toString();
 
           try {
-            // 将 24 小时制转为可读的 12 小时制 AM/PM
+
             route['scheduledDepart'] = _formatTime(departStr);
           } catch (_) {}
 
@@ -714,7 +709,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
             });
           }
 
-          // 🌟 插入 Wait 到渲染树中
+
           if (waitMins > 0) {
             legs.insert(walkStartMins > 0 ? 1 : 0, {
               'mode': 'Wait',
@@ -1912,7 +1907,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
     return {'code': code, 'color': color, 'name': mainLeg['name'] ?? name};
   }
 
-  // 🌟 修复：防止 12 小时制 AM/PM 时间导致 int.parse() 抛出异常
+
   String _formatTime(String? timeStr) {
     if (timeStr == null || !timeStr.contains(':')) return '8:00 AM';
     try {
@@ -2823,7 +2818,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
         int.tryParse(route['duration'].toString().split(' ')[0]) ?? 20;
     int walkMins = _calculateWalkMins(route);
 
-    // 🌟 基于一致的计算逻辑保证 Depart + totalMins = Arrive
+
     final String departStr = _formatTime(
       route['scheduledDepart'] ?? DateFormat('HH:mm').format(DateTime.now()),
     );
@@ -3591,9 +3586,7 @@ class _ExpandableTransitLegState extends State<ExpandableTransitLeg> {
   }
 }
 
-// =========================================================================
-// ROUTE MAP VIEWER SCREEN
-// =========================================================================
+
 class RouteMapViewerScreen extends StatefulWidget {
   final StationModel origin;
   final StationModel destination;
@@ -4024,9 +4017,7 @@ class _RouteMapViewerScreenState extends State<RouteMapViewerScreen> {
   }
 }
 
-// =========================================================================
-// MAP PICKER MOCK SCREEN
-// =========================================================================
+
 class MapPickerMockScreen extends StatefulWidget {
   final List<StationModel> allStations;
   final ApiService apiService;

@@ -1,7 +1,7 @@
 // journey_planning.dart
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' show asin, cos, sqrt;
+import 'dart:math' show asin, cos, sqrt, pi;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
@@ -141,23 +141,21 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
     if (widget.authenticate == null) {
       _authSubscription = Supabase.instance.client.auth.onAuthStateChange
           .listen((state) {
-            if (!mounted) return;
-            if (state.event == AuthChangeEvent.signedIn ||
-                state.event == AuthChangeEvent.signedOut) {
-              setState(() {
-                _savedRouteKeys.clear();
-                _recentJourneys = [];
-                _savedPlaces = [];
-              });
-              _loadRecentJourneys();
-              _loadSavedRouteKeys();
-              _loadSavedPlaces();
-            }
+        if (!mounted) return;
+        if (state.event == AuthChangeEvent.signedIn ||
+            state.event == AuthChangeEvent.signedOut) {
+          setState(() {
+            _savedRouteKeys.clear();
+            _recentJourneys = [];
+            _savedPlaces = [];
           });
+          _loadRecentJourneys();
+          _loadSavedRouteKeys();
+          _loadSavedPlaces();
+        }
+      });
     }
 
-    // Only the main Journey tab restores its previous search. A Favourite Route
-    // replanning screen must start from its own saved endpoints and identity.
     if (widget.savedRoute == null && !widget.selectForDailyCommute) {
       _originDisplayName = JourneyStateCache.originName;
       _originGtfsStation = JourneyStateCache.originStation;
@@ -194,7 +192,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
     _fetchLiveVehicles();
     _liveVehiclesTimer = Timer.periodic(
       const Duration(seconds: 15),
-      (_) => _fetchLiveVehicles(),
+          (_) => _fetchLiveVehicles(),
     );
   }
 
@@ -230,10 +228,10 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
   }
 
   void _selectSavedPlace(
-    BuildContext sheetContext,
-    SavedPlace place,
-    bool isOrigin,
-  ) {
+      BuildContext sheetContext,
+      SavedPlace place,
+      bool isOrigin,
+      ) {
     final station = place.resolveStation(_allStations);
     setState(() {
       if (isOrigin) {
@@ -270,8 +268,8 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
         _updateCache();
         if (_originGtfsStation == null || _destinationGtfsStation == null) {
           setState(
-            () => _searchError =
-                'A saved station is no longer available. Please select your locations again.',
+                () => _searchError =
+            'A saved station is no longer available. Please select your locations again.',
           );
         } else {
           await _handleSearch(preferredRoute: saved);
@@ -413,7 +411,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
           int.tryParse(
             leg['duration'].toString().replaceAll(RegExp(r'[^0-9]'), ''),
           ) ??
-          15;
+              15;
 
       if (mode == 'Walk' || mode == 'Wait') {
         continue;
@@ -440,24 +438,24 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
   }
 
   double _calculateDistance(
-    double lat1,
-    double lon1,
-    double lat2,
-    double lon2,
-  ) {
+      double lat1,
+      double lon1,
+      double lat2,
+      double lon2,
+      ) {
     var p = 0.017453292519943295;
     var a =
         0.5 -
-        cos((lat2 - lat1) * p) / 2 +
-        cos(lat1 * p) * cos(lat2 * p) * (1 - cos((lon2 - lon1) * p)) / 2;
+            cos((lat2 - lat1) * p) / 2 +
+            cos(lat1 * p) * cos(lat2 * p) * (1 - cos((lon2 - lon1) * p)) / 2;
     return 12742 * asin(sqrt(a.clamp(0.0, 1.0)));
   }
 
   StationModel _findNearestGtfsStation(
-    double lat,
-    double lon,
-    String placeName,
-  ) {
+      double lat,
+      double lon,
+      String placeName,
+      ) {
     String cleanSearchName = placeName
         .toUpperCase()
         .replaceAll(RegExp(r'\([^)]+\)'), '')
@@ -484,7 +482,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
               .replaceAll(RegExp(r'\s*\([^)]+\)'), '')
               .replaceAll(RegExp(r'[^A-Z0-9]'), '');
           if ((normStation.contains(normSearch) ||
-                  normSearch.contains(normStation)) &&
+              normSearch.contains(normStation)) &&
               station.lat != 0 &&
               station.lon != 0) {
             lat = station.lat;
@@ -514,10 +512,10 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
 
           bool isExactMatch =
               cleanSearchName.isNotEmpty &&
-              station.name.toUpperCase() == cleanSearchName;
+                  station.name.toUpperCase() == cleanSearchName;
           bool isSafeSubstring =
               cleanSearchName.length >= 4 &&
-              station.name.toUpperCase().contains(cleanSearchName);
+                  station.name.toUpperCase().contains(cleanSearchName);
 
           if (distance <= 0.4 || isExactMatch || isSafeSubstring) {
             combinedIds.addAll(station.ids);
@@ -577,12 +575,12 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
       final bool isSameStation =
           _originDisplayName.trim().toUpperCase() ==
               _destinationDisplayName.trim().toUpperCase() ||
-          (_originGtfsStation!.name.trim().toUpperCase() ==
+              (_originGtfsStation!.name.trim().toUpperCase() ==
                   _destinationGtfsStation!.name.trim().toUpperCase() &&
-              (_originGtfsStation!.lat - _destinationGtfsStation!.lat).abs() <
-                  0.0001 &&
-              (_originGtfsStation!.lon - _destinationGtfsStation!.lon).abs() <
-                  0.0001);
+                  (_originGtfsStation!.lat - _destinationGtfsStation!.lat).abs() <
+                      0.0001 &&
+                  (_originGtfsStation!.lon - _destinationGtfsStation!.lon).abs() <
+                      0.0001);
 
       if (isSameStation) {
         setState(() {
@@ -603,31 +601,31 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
             .toList();
         if (validOrigins.isNotEmpty) {
           searchOrigin = validOrigins.reduce(
-            (a, b) =>
+                (a, b) =>
+            _calculateDistance(
+              searchOrigin.lat,
+              searchOrigin.lon,
+              a.lat,
+              a.lon,
+            ) <
                 _calculateDistance(
-                      searchOrigin.lat,
-                      searchOrigin.lon,
-                      a.lat,
-                      a.lon,
-                    ) <
-                    _calculateDistance(
-                      searchOrigin.lat,
-                      searchOrigin.lon,
-                      b.lat,
-                      b.lon,
-                    )
+                  searchOrigin.lat,
+                  searchOrigin.lon,
+                  b.lat,
+                  b.lon,
+                )
                 ? a
                 : b,
           );
           walkStartMins =
               (_calculateDistance(
-                        _originGtfsStation!.lat,
-                        _originGtfsStation!.lon,
-                        searchOrigin.lat,
-                        searchOrigin.lon,
-                      ) /
-                      4.0 *
-                      60)
+                _originGtfsStation!.lat,
+                _originGtfsStation!.lon,
+                searchOrigin.lat,
+                searchOrigin.lon,
+              ) /
+                  4.0 *
+                  60)
                   .round();
         }
       }
@@ -636,31 +634,31 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
         final validDests = _allStations.where((s) => s.ids.isNotEmpty).toList();
         if (validDests.isNotEmpty) {
           searchDest = validDests.reduce(
-            (a, b) =>
+                (a, b) =>
+            _calculateDistance(
+              searchDest.lat,
+              searchDest.lon,
+              a.lat,
+              a.lon,
+            ) <
                 _calculateDistance(
-                      searchDest.lat,
-                      searchDest.lon,
-                      a.lat,
-                      a.lon,
-                    ) <
-                    _calculateDistance(
-                      searchDest.lat,
-                      searchDest.lon,
-                      b.lat,
-                      b.lon,
-                    )
+                  searchDest.lat,
+                  searchDest.lon,
+                  b.lat,
+                  b.lon,
+                )
                 ? a
                 : b,
           );
           walkEndMins =
               (_calculateDistance(
-                        _destinationGtfsStation!.lat,
-                        _destinationGtfsStation!.lon,
-                        searchDest.lat,
-                        searchDest.lon,
-                      ) /
-                      4.0 *
-                      60)
+                _destinationGtfsStation!.lat,
+                _destinationGtfsStation!.lon,
+                searchDest.lat,
+                searchDest.lon,
+              ) /
+                  4.0 *
+                  60)
                   .round();
         }
       }
@@ -675,36 +673,30 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
       try {
         final results = await _apiService.findRoutes(searchOrigin, searchDest);
         if (!mounted) return;
-        // Preserve the planner's normal ranked top four for ordinary searches.
-        // The complete result list is retained only so Favourite Plan Again can
-        // locate a stable service sequence outside that display window.
+
         final normallyRankedResults = results.take(4).toList();
 
         for (var route in results) {
           int transitDur =
               int.tryParse(route['duration'].toString().split(' ')[0]) ?? 0;
           int waitMins = route['wait'] as int? ?? 0;
+
           int totalWalk = walkStartMins + walkEndMins;
 
+          // 🌟 核心修复：只将可见的 Legs 时长相加，因为等车时间已经有真实频次计算，可以正常累加！
           int totalDur = transitDur + totalWalk + waitMins;
           route['duration'] = '$totalDur min';
 
+          // 提取起步时间
+          final departStr = route['scheduledDepart'].toString();
+
           try {
-            String dep =
-                route['scheduledDepart']?.toString() ??
-                DateFormat('HH:mm').format(DateTime.now());
-            final parts = dep.split(':');
-            final dt = DateTime(
-              2000,
-              1,
-              1,
-              int.parse(parts[0]),
-              int.parse(parts[1]),
-            ).subtract(Duration(minutes: walkStartMins + waitMins));
-            route['scheduledDepart'] = DateFormat('HH:mm').format(dt);
+            // 将 24 小时制转为可读的 12 小时制 AM/PM
+            route['scheduledDepart'] = _formatTime(departStr);
           } catch (_) {}
 
           List<dynamic> legs = List.from(route['legs'] ?? []);
+
           if (walkStartMins > 0) {
             legs.insert(0, {
               'mode': 'Walk',
@@ -713,7 +705,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
               'icon': Icons.directions_walk,
               'color': Colors.grey,
               'desc':
-                  'Walk from ${_originGtfsStation!.name} to ${searchOrigin.name}',
+              'Walk from ${_originGtfsStation!.name} to ${searchOrigin.name}',
               'from': {
                 'lat': _originGtfsStation!.lat,
                 'lon': _originGtfsStation!.lon,
@@ -721,10 +713,19 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
               'to': {'lat': searchOrigin.lat, 'lon': searchOrigin.lon},
             });
           }
-          if (legs.length > (walkStartMins > 0 ? 1 : 0)) {
-            final firstRide = legs[walkStartMins > 0 ? 1 : 0];
-            firstRide['desc'] = '${firstRide['desc']} (Wait: $waitMins min)';
+
+          // 🌟 插入 Wait 到渲染树中
+          if (waitMins > 0) {
+            legs.insert(walkStartMins > 0 ? 1 : 0, {
+              'mode': 'Wait',
+              'name': 'Wait',
+              'duration': '$waitMins min',
+              'icon': Icons.timer,
+              'color': Colors.orange,
+              'desc': 'Wait for next departure',
+            });
           }
+
           if (walkEndMins > 0) {
             legs.add({
               'mode': 'Walk',
@@ -733,7 +734,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
               'icon': Icons.directions_walk,
               'color': Colors.grey,
               'desc':
-                  'Walk from ${searchDest.name} to ${_destinationGtfsStation!.name}',
+              'Walk from ${searchDest.name} to ${_destinationGtfsStation!.name}',
               'from': {'lat': searchDest.lat, 'lon': searchDest.lon},
               'to': {
                 'lat': _destinationGtfsStation!.lat,
@@ -760,13 +761,13 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
         final allResultsPreferredIndex = preferredRoute == null
             ? -1
             : results.indexWhere(
-                (route) => _matchesSavedRoute(route, preferredRoute),
-              );
+              (route) => _matchesSavedRoute(route, preferredRoute),
+        );
         final visibleResults = normallyRankedResults;
         if (allResultsPreferredIndex >= 0 &&
             preferredRoute != null &&
             !visibleResults.any(
-              (route) => _matchesSavedRoute(route, preferredRoute),
+                  (route) => _matchesSavedRoute(route, preferredRoute),
             )) {
           if (visibleResults.length == 4) visibleResults.removeLast();
           visibleResults.add(results[allResultsPreferredIndex]);
@@ -774,15 +775,15 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
         final preferredIndex = preferredRoute == null
             ? -1
             : visibleResults.indexWhere(
-                (route) => _matchesSavedRoute(route, preferredRoute),
-              );
+              (route) => _matchesSavedRoute(route, preferredRoute),
+        );
 
         setState(() {
           _realRoutes = visibleResults;
           _selectedRouteIndex = preferredIndex < 0 ? 0 : preferredIndex;
           if (visibleResults.isEmpty)
             _searchError =
-                'No routes found. Try another origin or destination.';
+            'No routes found. Try another origin or destination.';
           _updateCache();
         });
 
@@ -800,7 +801,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
       } catch (_) {
         if (mounted)
           setState(
-            () => _searchError = 'Unable to find routes. Please try again.',
+                () => _searchError = 'Unable to find routes. Please try again.',
           );
       } finally {
         if (mounted) setState(() => _isLoading = false);
@@ -883,8 +884,8 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
       final saved = routes
           .where(
             (candidate) =>
-                candidate.routeKey == draft.routeKey && candidate.id != null,
-          )
+        candidate.routeKey == draft.routeKey && candidate.id != null,
+      )
           .firstOrNull;
       if (saved == null) {
         if (mounted) setState(() => _savedRouteKeys.remove(draft.routeKey));
@@ -943,12 +944,12 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
               _livePlaces = data
                   .map(
                     (e) => {
-                      'name': e['name'] ?? 'Unknown Place',
-                      'desc': e['display_name'] ?? '',
-                      'lat': double.tryParse(e['lat'].toString()) ?? 0.0,
-                      'lon': double.tryParse(e['lon'].toString()) ?? 0.0,
-                    },
-                  )
+                  'name': e['name'] ?? 'Unknown Place',
+                  'desc': e['display_name'] ?? '',
+                  'lat': double.tryParse(e['lat'].toString()) ?? 0.0,
+                  'lon': double.tryParse(e['lon'].toString()) ?? 0.0,
+                },
+              )
                   .toList();
             });
           }
@@ -977,10 +978,10 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
       final StationModel selectedStation = (result['station'] is StationModel)
           ? (result['station'] as StationModel)
           : _findNearestGtfsStation(
-              result['lat'],
-              result['lon'],
-              result['name'],
-            );
+        result['lat'],
+        result['lon'],
+        result['name'],
+      );
 
       setState(() {
         if (isOrigin) {
@@ -1059,21 +1060,21 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
                         children: _savedPlaces
                             .map(
                               (place) => ActionChip(
-                                avatar: Icon(
-                                  switch (place.type) {
-                                    SavedPlaceType.home => Icons.home_outlined,
-                                    SavedPlaceType.university =>
-                                      Icons.school_outlined,
-                                    SavedPlaceType.work => Icons.work_outline,
-                                  },
-                                  size: 17,
-                                  color: _primaryBlue,
-                                ),
-                                label: Text(place.type.label),
-                                onPressed: () =>
-                                    _selectSavedPlace(context, place, isOrigin),
-                              ),
-                            )
+                            avatar: Icon(
+                              switch (place.type) {
+                                SavedPlaceType.home => Icons.home_outlined,
+                                SavedPlaceType.university =>
+                                Icons.school_outlined,
+                                SavedPlaceType.work => Icons.work_outline,
+                              },
+                              size: 17,
+                              color: _primaryBlue,
+                            ),
+                            label: Text(place.type.label),
+                            onPressed: () =>
+                                _selectSavedPlace(context, place, isOrigin),
+                          ),
+                        )
                             .toList(),
                       ),
                       const SizedBox(height: 12),
@@ -1088,15 +1089,15 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
                         ),
                         suffixIcon: _isSearchingPlaces
                             ? const Padding(
-                                padding: EdgeInsets.all(12),
-                                child: SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                ),
-                              )
+                          padding: EdgeInsets.all(12),
+                          child: SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                            ),
+                          ),
+                        )
                             : null,
                         filled: true,
                         fillColor: Colors.grey[100],
@@ -1157,7 +1158,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
                               ),
                             ),
                             ..._livePlaces.map(
-                              (place) => ListTile(
+                                  (place) => ListTile(
                                 contentPadding: EdgeInsets.zero,
                                 leading: CircleAvatar(
                                   backgroundColor: Colors.orange[50],
@@ -1184,11 +1185,11 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
                                 ),
                                 onTap: () {
                                   final nearestStation =
-                                      _findNearestGtfsStation(
-                                        place['lat'],
-                                        place['lon'],
-                                        place['name'],
-                                      );
+                                  _findNearestGtfsStation(
+                                    place['lat'],
+                                    place['lon'],
+                                    place['name'],
+                                  );
                                   setState(() {
                                     if (isOrigin) {
                                       _originDisplayName = place['name'];
@@ -1283,18 +1284,18 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
   }
 
   Future<void> _startNavigation(
-    Map<String, dynamic> route,
-    int totalMins,
-    String departTime,
-    String arriveTime,
-  ) async {
+      Map<String, dynamic> route,
+      int totalMins,
+      String departTime,
+      String arriveTime,
+      ) async {
     setState(() => _isStartingNavigation = true);
     try {
       double farePrice =
           double.tryParse(
             route['fare'].toString().replaceAll('RM ', '').trim(),
           ) ??
-          0.0;
+              0.0;
       List<Map<String, dynamic>> dbSafeSteps = [];
       if (route['legs'] != null) {
         for (var leg in (route['legs'] as List)) {
@@ -1313,7 +1314,6 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
       if (mounted) {
         setState(() => _isStartingNavigation = false);
         final activeBusRoutes = module5BusRoutesFromJourneySteps(dbSafeSteps);
-        // Module 5 tracking is local and cannot interrupt Journey navigation.
         unawaited(
           Module5UserRouteContext.shared.startJourney(
             busRoutes: activeBusRoutes,
@@ -1372,7 +1372,6 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
         );
         await _loadRecentJourneys();
       }
-      // This only clears Module 5's device-local tracking state.
       unawaited(Module5UserRouteContext.shared.endJourney());
       if (!mounted || !modalContext.mounted) return;
       Navigator.pop(modalContext);
@@ -1403,9 +1402,9 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
   }
 
   bool _isVehicleOnRoute(
-    LiveVehicle vehicle,
-    Map<String, dynamic>? activeRoute,
-  ) {
+      LiveVehicle vehicle,
+      Map<String, dynamic>? activeRoute,
+      ) {
     if (activeRoute == null) return true;
     final String vRouteId = vehicle.routeId.toUpperCase().trim();
     if (vRouteId.isEmpty) return false;
@@ -1430,14 +1429,14 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
   }
 
   void _showLiveNavigationModal(
-    Map<String, dynamic> route,
-    int totalMins,
-    String departTime,
-    String arriveTime,
-    bool signedIn,
-    double fare,
-    List<Map<String, dynamic>> transitSteps,
-  ) {
+      Map<String, dynamic> route,
+      int totalMins,
+      String departTime,
+      String arriveTime,
+      bool signedIn,
+      double fare,
+      List<Map<String, dynamic>> transitSteps,
+      ) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1615,7 +1614,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
     double lon = _originGtfsStation?.lon ?? 101.6861;
     final activeRoute =
         route ??
-        (_realRoutes.isNotEmpty ? _realRoutes[_selectedRouteIndex] : null);
+            (_realRoutes.isNotEmpty ? _realRoutes[_selectedRouteIndex] : null);
     final List<LiveVehicle> liveOnRoute = _liveVehicles
         .where((v) => _isVehicleOnRoute(v, activeRoute))
         .toList();
@@ -1666,14 +1665,14 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
                   children: [
                     TileLayer(
                       urlTemplate:
-                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.nextroute.app',
                     ),
                     EstimatedLrtLayer(route: activeRoute),
                     MarkerLayer(
                       markers: [
                         ...liveOnRoute.map(
-                          (vehicle) => Marker(
+                              (vehicle) => Marker(
                             point: LatLng(vehicle.lat, vehicle.lon),
                             width: 50,
                             height: 50,
@@ -1850,7 +1849,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
               int.tryParse(
                 leg['duration'].toString().replaceAll(RegExp(r'[^0-9]'), ''),
               ) ??
-              0;
+                  0;
         }
       }
     }
@@ -1913,39 +1912,36 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
     return {'code': code, 'color': color, 'name': mainLeg['name'] ?? name};
   }
 
-  String _formatTime(String? time24) {
-    if (time24 == null || !time24.contains(':')) return '8:00 AM';
+  // 🌟 修复：防止 12 小时制 AM/PM 时间导致 int.parse() 抛出异常
+  String _formatTime(String? timeStr) {
+    if (timeStr == null || !timeStr.contains(':')) return '8:00 AM';
     try {
-      final parts = time24.split(':');
+      if (timeStr.toLowerCase().contains('am') || timeStr.toLowerCase().contains('pm')) return timeStr;
+      final parts = timeStr.trim().split(':');
       final now = DateTime.now();
-      final dt = DateTime(
-        now.year,
-        now.month,
-        now.day,
-        int.parse(parts[0]),
-        int.parse(parts[1]),
-      );
+      final dt = DateTime(now.year, now.month, now.day, int.parse(parts[0]), int.parse(parts[1]));
       return DateFormat('h:mm a').format(dt);
     } catch (e) {
-      return time24;
+      return timeStr;
     }
   }
 
-  String _calculateArrival(String? time24, int durationMins) {
-    if (time24 == null || !time24.contains(':')) return '8:30 AM';
+  String _calculateArrival(String? timeStr, int durationMins) {
+    if (timeStr == null || !timeStr.contains(':')) return '8:30 AM';
     try {
-      final parts = time24.split(':');
+      DateTime dt;
       final now = DateTime.now();
-      final dt = DateTime(
-        now.year,
-        now.month,
-        now.day,
-        int.parse(parts[0]),
-        int.parse(parts[1]),
-      ).add(Duration(minutes: durationMins));
+      if (timeStr.toLowerCase().contains('am') || timeStr.toLowerCase().contains('pm')) {
+        final parsed = DateFormat('h:mm a').parse(timeStr.trim());
+        dt = DateTime(now.year, now.month, now.day, parsed.hour, parsed.minute);
+      } else {
+        final parts = timeStr.trim().split(':');
+        dt = DateTime(now.year, now.month, now.day, int.parse(parts[0]), int.parse(parts[1]));
+      }
+      dt = dt.add(Duration(minutes: durationMins));
       return DateFormat('h:mm a').format(dt);
     } catch (e) {
-      return time24;
+      return timeStr;
     }
   }
 
@@ -2023,39 +2019,39 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
                     else if (!_hasSearched)
                       _buildRecentJourneys()
                     else if (_realRoutes.isEmpty)
-                      Center(
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 40),
-                          child: Column(
-                            children: [
-                              Icon(
-                                Icons.directions_transit_outlined,
-                                size: 64,
-                                color: Colors.grey[300],
-                              ),
-                              const SizedBox(height: 16),
-                              Text(
-                                'No transit routes found.',
-                                style: TextStyle(
-                                  color: _textGrey,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
+                        Center(
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 40),
+                            child: Column(
+                              children: [
+                                Icon(
+                                  Icons.directions_transit_outlined,
+                                  size: 64,
+                                  color: Colors.grey[300],
                                 ),
-                              ),
-                            ],
+                                const SizedBox(height: 16),
+                                Text(
+                                  'No transit routes found.',
+                                  style: TextStyle(
+                                    color: _textGrey,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
+                        )
+                      else
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildRouteComparisonList(),
+                            const SizedBox(height: 32),
+                            _buildJourneySummaryCard(),
+                            const SizedBox(height: 40),
+                          ],
                         ),
-                      )
-                    else
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _buildRouteComparisonList(),
-                          const SizedBox(height: 32),
-                          _buildJourneySummaryCard(),
-                          const SizedBox(height: 40),
-                        ],
-                      ),
                   ],
                 ),
               ),
@@ -2216,7 +2212,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
                     style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                   ),
                   onPressed:
-                      _isLoading || _isSavingRoute || _isStartingNavigation
+                  _isLoading || _isSavingRoute || _isStartingNavigation
                       ? null
                       : _resetSearch,
                 ),
@@ -2248,11 +2244,11 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
                     ),
                   ),
                   onPressed:
-                      !_isLoading &&
-                          !_isSavingRoute &&
-                          !_isStartingNavigation &&
-                          _originGtfsStation != null &&
-                          _destinationGtfsStation != null
+                  !_isLoading &&
+                      !_isSavingRoute &&
+                      !_isStartingNavigation &&
+                      _originGtfsStation != null &&
+                      _destinationGtfsStation != null
                       ? () => _handleSearch(preferredRoute: widget.savedRoute)
                       : null,
                 ),
@@ -2568,6 +2564,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
           );
           final lineDetails = _getLineDetails(route);
           final walkMins = _calculateWalkMins(route);
+          final waitMins = route['wait'] as int? ?? 0;
           final String durationStr = route['duration'] ?? '20 min';
           final String fareStr = route['fare'] ?? 'RM 2.00';
 
@@ -2610,12 +2607,12 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
                 ),
                 boxShadow: isSelected
                     ? [
-                        BoxShadow(
-                          color: _primaryBlue.withValues(alpha: 0.1),
-                          blurRadius: 10,
-                          offset: const Offset(0, 4),
-                        ),
-                      ]
+                  BoxShadow(
+                    color: _primaryBlue.withValues(alpha: 0.1),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ]
                     : [],
               ),
               child: Row(
@@ -2682,6 +2679,11 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
                               Icons.directions_walk,
                               '$walkMins min walk',
                             ),
+                            if (waitMins > 0)
+                              _buildRouteMetric(
+                                Icons.timer,
+                                '$waitMins min wait',
+                              ),
                           ],
                         ),
                       ],
@@ -2716,10 +2718,10 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
                         ),
                         child: isSelected
                             ? const Icon(
-                                Icons.check,
-                                color: Colors.white,
-                                size: 16,
-                              )
+                          Icons.check,
+                          color: Colors.white,
+                          size: 16,
+                        )
                             : null,
                       ),
                     ],
@@ -2744,13 +2746,11 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
         int.tryParse(route['duration'].toString().split(' ')[0]) ?? 20;
     int walkMins = _calculateWalkMins(route);
 
+    // 🌟 基于一致的计算逻辑保证 Depart + totalMins = Arrive
     final String departStr = _formatTime(
       route['scheduledDepart'] ?? DateFormat('HH:mm').format(DateTime.now()),
     );
-    final String arriveStr = _calculateArrival(
-      route['scheduledDepart'] ?? DateFormat('HH:mm').format(DateTime.now()),
-      totalMins,
-    );
+    final String arriveStr = _calculateArrival(departStr, totalMins);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -3014,21 +3014,21 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
                         onPressed: _isSavingRoute || _isStartingNavigation
                             ? null
                             : () => isSaved
-                                  ? _removeSavedRoute(route)
-                                  : _saveRoute(route),
+                            ? _removeSavedRoute(route)
+                            : _saveRoute(route),
                         icon: _isSavingRoute
                             ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                          ),
+                        )
                             : Icon(
-                                isSaved
-                                    ? Icons.favorite
-                                    : Icons.favorite_border,
-                              ),
+                          isSaved
+                              ? Icons.favorite
+                              : Icons.favorite_border,
+                        ),
                         label: Text(isSaved ? 'Saved' : 'Save route'),
                       ),
                     ),
@@ -3049,37 +3049,37 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
                             ? null
                             : widget.selectForDailyCommute
                             ? () => Navigator.pop(
-                                context,
-                                _routeToSave(
-                                  route,
-                                  '$_originDisplayName → $_destinationDisplayName',
-                                ),
-                              )
+                          context,
+                          _routeToSave(
+                            route,
+                            '$_originDisplayName → $_destinationDisplayName',
+                          ),
+                        )
                             : () => _startNavigation(
-                                route,
-                                totalMins,
-                                departStr,
-                                arriveStr,
-                              ),
+                          route,
+                          totalMins,
+                          departStr,
+                          arriveStr,
+                        ),
                         child: _isStartingNavigation
                             ? const SizedBox(
-                                height: 20,
-                                width: 20,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
-                              )
+                          height: 20,
+                          width: 20,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2,
+                          ),
+                        )
                             : Text(
-                                widget.selectForDailyCommute
-                                    ? 'Use for Daily Commute'
-                                    : 'Start Journey',
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
-                                ),
-                              ),
+                          widget.selectForDailyCommute
+                              ? 'Use for Daily Commute'
+                              : 'Start Journey',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
                       ),
                     ),
                   ],
@@ -3138,10 +3138,10 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
   }
 
   Widget _buildMoovitTimeline(
-    Map<String, dynamic> route,
-    String departTime,
-    String arriveTime,
-  ) {
+      Map<String, dynamic> route,
+      String departTime,
+      String arriveTime,
+      ) {
     List<Widget> nodes = [];
     List<dynamic> rawLegs = route['legs'] ?? [];
 
@@ -3152,20 +3152,31 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
     for (int i = 0; i < rawLegs.length; i++) {
       var leg = rawLegs[i];
 
-      if (leg['mode'] == 'Walk') {
+      if (leg['mode'] == 'Walk' || leg['mode'] == 'Wait') {
         String transferStation = leg['desc']
             .replaceAll('Walk from ', '')
             .replaceAll(' to ', ' -> ');
-        nodes.add(_buildWalkLeg(transferStation, leg['duration']));
-        currentStation = transferStation.split(' -> ').last;
-        if (i < rawLegs.length - 1 && rawLegs[i + 1]['mode'] != 'Walk') {
+        if (leg['mode'] == 'Wait') transferStation = leg['desc'];
+
+        IconData icon = leg['mode'] == 'Wait' ? Icons.timer : Icons.directions_walk;
+
+        nodes.add(_buildWalkLeg(transferStation, leg['duration'], icon));
+
+        if (leg['mode'] == 'Walk') {
+          currentStation = transferStation.split(' -> ').last;
+        }
+
+        if (i < rawLegs.length - 1 &&
+            rawLegs[i + 1]['mode'] != 'Walk' &&
+            rawLegs[i + 1]['mode'] != 'Wait') {
           nodes.add(
             _buildStationNode(currentStation, 'Boarding', type: 'transfer'),
           );
         }
       } else {
         String endStation = _destinationDisplayName;
-        if (i + 1 < rawLegs.length && rawLegs[i + 1]['mode'] == 'Walk') {
+        if (i + 1 < rawLegs.length &&
+            (rawLegs[i + 1]['mode'] == 'Walk' || rawLegs[i + 1]['mode'] == 'Wait')) {
           endStation = 'Next Transfer';
         }
 
@@ -3221,7 +3232,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
     );
   }
 
-  Widget _buildWalkLeg(String title, String duration) {
+  Widget _buildWalkLeg(String title, String duration, [IconData icon = Icons.directions_walk]) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -3247,7 +3258,7 @@ class _JourneyPlanningScreenState extends State<JourneyPlanningScreen>
             padding: const EdgeInsets.only(top: 10),
             child: Row(
               children: [
-                const Icon(Icons.directions_walk, size: 16, color: Colors.grey),
+                Icon(icon, size: 16, color: Colors.grey),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -3303,7 +3314,7 @@ class _ExpandableTransitLegState extends State<ExpandableTransitLeg> {
         (widget.leg['intermediate_stops'] as List<dynamic>?)
             ?.map((e) => e.toString())
             .toList() ??
-        [];
+            [];
     int stopCount = realStops.length;
 
     if (stopCount == 0) {
@@ -3311,7 +3322,7 @@ class _ExpandableTransitLegState extends State<ExpandableTransitLeg> {
           int.tryParse(
             widget.leg['duration'].toString().replaceAll(RegExp(r'[^0-9]'), ''),
           ) ??
-          15;
+              15;
       stopCount = (durationMins / 2.5).round();
       if (stopCount < 1) stopCount = 1;
     }
@@ -3331,8 +3342,8 @@ class _ExpandableTransitLegState extends State<ExpandableTransitLeg> {
                 width: 4,
                 height: _isExpanded
                     ? (realStops.isEmpty
-                          ? stopCount * 28.0 + 60
-                          : realStops.length * 28.0 + 60)
+                    ? stopCount * 28.0 + 60
+                    : realStops.length * 28.0 + 60)
                     : 60,
                 decoration: BoxDecoration(
                   color: color,
@@ -3415,83 +3426,83 @@ class _ExpandableTransitLegState extends State<ExpandableTransitLeg> {
                     child: !_isExpanded
                         ? const SizedBox.shrink()
                         : Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Board at: ${widget.startStation}',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 13,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-
-                                if (realStops.isNotEmpty)
-                                  for (String stopName in realStops)
-                                    Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 6,
-                                        horizontal: 4,
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          Icon(
-                                            Icons.circle,
-                                            size: 6,
-                                            color: Colors.grey[400],
-                                          ),
-                                          const SizedBox(width: 12),
-                                          Expanded(
-                                            child: Text(
-                                              stopName,
-                                              style: TextStyle(
-                                                color: Colors.grey[600],
-                                                fontSize: 12,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    )
-                                else
-                                  for (int i = 1; i <= stopCount; i++)
-                                    Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 6,
-                                        horizontal: 4,
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          Icon(
-                                            Icons.circle,
-                                            size: 6,
-                                            color: Colors.grey[400],
-                                          ),
-                                          const SizedBox(width: 12),
-                                          Text(
-                                            'Intermediate Stop $i',
-                                            style: TextStyle(
-                                              color: Colors.grey[600],
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-
-                                const SizedBox(height: 8),
-                                Text(
-                                  'Alight at: ${widget.endStation}',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 13,
-                                  ),
-                                ),
-                              ],
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Board at: ${widget.startStation}',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
                             ),
                           ),
+                          const SizedBox(height: 8),
+
+                          if (realStops.isNotEmpty)
+                            for (String stopName in realStops)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 6,
+                                  horizontal: 4,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      Icons.circle,
+                                      size: 6,
+                                      color: Colors.grey[400],
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Text(
+                                        stopName,
+                                        style: TextStyle(
+                                          color: Colors.grey[600],
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              )
+                          else
+                            for (int i = 1; i <= stopCount; i++)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 6,
+                                  horizontal: 4,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      Icons.circle,
+                                      size: 6,
+                                      color: Colors.grey[400],
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Text(
+                                      'Intermediate Stop $i',
+                                      style: TextStyle(
+                                        color: Colors.grey[600],
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                          const SizedBox(height: 8),
+                          Text(
+                            'Alight at: ${widget.endStation}',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -3546,7 +3557,7 @@ class _RouteMapViewerScreenState extends State<RouteMapViewerScreen> {
     _fetchLiveVehicles();
     _liveTimer = Timer.periodic(
       const Duration(seconds: 15),
-      (_) => _fetchLiveVehicles(),
+          (_) => _fetchLiveVehicles(),
     );
   }
 
@@ -3875,55 +3886,55 @@ class _RouteMapViewerScreenState extends State<RouteMapViewerScreen> {
             child: _legGeometries.isEmpty
                 ? const Center(child: CircularProgressIndicator())
                 : FlutterMap(
-                    mapController: _mapController,
-                    options: MapOptions(
-                      initialCenter: LatLng(
-                        (widget.origin.lat + widget.destination.lat) / 2,
-                        (widget.origin.lon + widget.destination.lon) / 2,
+              mapController: _mapController,
+              options: MapOptions(
+                initialCenter: LatLng(
+                  (widget.origin.lat + widget.destination.lat) / 2,
+                  (widget.origin.lon + widget.destination.lon) / 2,
+                ),
+                initialZoom: 13.0,
+                onMapReady: () => _centerOnRoute(),
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate:
+                  'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  userAgentPackageName: 'com.nextroute.app',
+                ),
+                PolylineLayer(
+                  polylines: _legGeometries.map((leg) {
+                    return Polyline(
+                      points: leg.points,
+                      color: _legColor(leg.mode),
+                      strokeWidth: 5.0,
+                    );
+                  }).toList(),
+                ),
+                EstimatedLrtLayer(route: widget.route),
+                MarkerLayer(markers: _buildWaypointMarkers()),
+                MarkerLayer(
+                  markers: [
+                    ..._buildLiveVehicleMarkers(),
+                    if (allPoints.isNotEmpty) ...[
+                      Marker(
+                        point: allPoints.first,
+                        width: 60,
+                        height: 60,
+                        alignment: Alignment.topCenter,
+                        child: _buildStartPin(),
                       ),
-                      initialZoom: 13.0,
-                      onMapReady: () => _centerOnRoute(),
-                    ),
-                    children: [
-                      TileLayer(
-                        urlTemplate:
-                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                        userAgentPackageName: 'com.nextroute.app',
-                      ),
-                      PolylineLayer(
-                        polylines: _legGeometries.map((leg) {
-                          return Polyline(
-                            points: leg.points,
-                            color: _legColor(leg.mode),
-                            strokeWidth: 5.0,
-                          );
-                        }).toList(),
-                      ),
-                      EstimatedLrtLayer(route: widget.route),
-                      MarkerLayer(markers: _buildWaypointMarkers()),
-                      MarkerLayer(
-                        markers: [
-                          ..._buildLiveVehicleMarkers(),
-                          if (allPoints.isNotEmpty) ...[
-                            Marker(
-                              point: allPoints.first,
-                              width: 60,
-                              height: 60,
-                              alignment: Alignment.topCenter,
-                              child: _buildStartPin(),
-                            ),
-                            Marker(
-                              point: allPoints.last,
-                              width: 60,
-                              height: 60,
-                              alignment: Alignment.topCenter,
-                              child: _buildEndPin(),
-                            ),
-                          ],
-                        ],
+                      Marker(
+                        point: allPoints.last,
+                        width: 60,
+                        height: 60,
+                        alignment: Alignment.topCenter,
+                        child: _buildEndPin(),
                       ),
                     ],
-                  ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -4129,8 +4140,8 @@ class _MapPickerMockScreenState extends State<MapPickerMockScreen> {
     if ((q == 'LRT' || q == 'RAIL' || q == 'TRAIN') &&
         (cat == 'RAIL' ||
             station.lines.any(
-              (l) =>
-                  l.toUpperCase().contains('LINE') ||
+                  (l) =>
+              l.toUpperCase().contains('LINE') ||
                   l.toUpperCase().contains('LRT'),
             )))
       return true;
@@ -4142,18 +4153,18 @@ class _MapPickerMockScreenState extends State<MapPickerMockScreen> {
     final isAgl = q == 'AGL' || q == 'AG' || q == 'LINE 3' || q == 'AMPANG';
     final isSpl =
         q == 'SPL' ||
-        q == 'SP' ||
-        q == 'PH' ||
-        q == 'LINE 4' ||
-        q == 'SRI PETALING';
+            q == 'SP' ||
+            q == 'PH' ||
+            q == 'LINE 4' ||
+            q == 'SRI PETALING';
     final isKgl =
         q == 'KGL' || q == 'KG' || q == 'SBK' || q == 'LINE 9' || q == 'KAJANG';
     final isPyl =
         q == 'PYL' ||
-        q == 'PY' ||
-        q == 'SSP' ||
-        q == 'LINE 12' ||
-        q == 'PUTRAJAYA';
+            q == 'PY' ||
+            q == 'SSP' ||
+            q == 'LINE 12' ||
+            q == 'PUTRAJAYA';
     final isMrl = q == 'MRL' || q == 'MR' || q == 'LINE 8' || q == 'MONORAIL';
     final isBrt = q == 'BRT' || q == 'B1' || q == 'SUNWAY';
 
@@ -4272,7 +4283,7 @@ class _MapPickerMockScreenState extends State<MapPickerMockScreen> {
         );
         bool matchesRoute =
             routeTokens.contains(_routeFilter) ||
-            bus.routeId.toUpperCase() == _routeFilter;
+                bus.routeId.toUpperCase() == _routeFilter;
         if (!matchesRoute) continue;
       }
 
@@ -4423,7 +4434,7 @@ class _MapPickerMockScreenState extends State<MapPickerMockScreen> {
                   children: [
                     TileLayer(
                       urlTemplate:
-                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.nextroute.app',
                     ),
                     EstimatedLrtLayer(query: _routeFilter),
@@ -4504,7 +4515,7 @@ class _MapPickerMockScreenState extends State<MapPickerMockScreen> {
                                 controller: _searchController,
                                 decoration: const InputDecoration(
                                   hintText:
-                                      'Filter stations by route (e.g. 250)...',
+                                  'Filter stations by route (e.g. 250)...',
                                   border: InputBorder.none,
                                   isDense: true,
                                   contentPadding: EdgeInsets.symmetric(
@@ -4551,14 +4562,14 @@ class _MapPickerMockScreenState extends State<MapPickerMockScreen> {
                     onPressed: _isLocating ? null : _getUserLocation,
                     child: _isLocating
                         ? const SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
                         : const Icon(
-                            Icons.my_location,
-                            color: Color(0xFF8B5CF6),
-                          ),
+                      Icons.my_location,
+                      color: Color(0xFF8B5CF6),
+                    ),
                   ),
                 ),
               ],

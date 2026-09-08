@@ -91,7 +91,7 @@ bool _routeIncluded(
   Set<String> routineRoutes = const {},
 }) {
   if (scope == _allNetworkScope) return true;
-  // A route-less official notice is network-wide and relevant to every user.
+
   if (routeId == null) return true;
   final scopedRoutes = switch (scope) {
     _activeJourneyScope => activeRoutes,
@@ -269,7 +269,7 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
     try {
       await _analyticsFuture;
     } on Object {
-      // The Live Service tab displays the fetch error.
+
     }
   }
 
@@ -357,7 +357,7 @@ class _ServiceAnalyticsScreenState extends State<ServiceAnalyticsScreen> {
         });
       }
     } on Object {
-      // Raw route IDs remain available if the local catalogue cannot load.
+
     }
   }
 
@@ -1118,7 +1118,7 @@ class _RouteActivityCard extends StatelessWidget {
   }
 }
 
-/// Network-free presentation, also used by the widget tests.
+
 class AnalyticsHistoryView extends StatefulWidget {
   const AnalyticsHistoryView({
     required this.report,
@@ -1186,9 +1186,7 @@ class _AnalyticsHistoryViewState extends State<AnalyticsHistoryView> {
         ),
       );
       final save = widget.saveReport;
-      // A native Save As dialog can open behind the Flutter window on Windows,
-      // which makes the report screen appear to have disappeared. Desktop
-      // exports therefore go straight to Downloads and keep the app visible.
+
       final saveDirectlyToDownloads =
           !kIsWeb &&
           (defaultTargetPlatform == TargetPlatform.windows ||

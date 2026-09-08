@@ -160,7 +160,7 @@ class _NotificationCentreScreenState extends State<NotificationCentreScreen> {
         });
       }
     } on Object {
-      // Notifications can still display their raw route ID.
+
     }
   }
 

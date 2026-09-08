@@ -1,10 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Device-local route subscriptions for Module 5.
-///
-/// Route following is a presentation preference, so it deliberately does not
-/// write to the shared `profiles` table or require a Module 5 user role.
+
 class Module5RoutePreferences extends ChangeNotifier {
   Module5RoutePreferences({SharedPreferencesAsync? preferences})
     : _providedPreferences = preferences;
@@ -26,8 +23,7 @@ class Module5RoutePreferences extends ChangeNotifier {
     try {
       stored = await _store.getStringList(_storageKey) ?? const [];
     } on StateError {
-      // Widget tests do not register the native preferences implementation.
-      // An empty in-memory selection is the safe fallback.
+
       stored = const [];
     }
     _followedRoutes = {
@@ -47,7 +43,7 @@ class Module5RoutePreferences extends ChangeNotifier {
     try {
       await _store.setStringList(_storageKey, sorted);
     } on StateError {
-      // Keep the in-memory choice usable on an unsupported/test platform.
+
     }
     _followedRoutes = Set.unmodifiable(updated);
     _loaded = true;

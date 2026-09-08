@@ -141,7 +141,7 @@ class DailyAnalyticsSummary {
       averageSevereCongestionCount: _readDouble(
         json['average_severe_congestion_count'],
       ),
-      // Legacy snapshots did not distinguish unknown congestion from zero.
+
       averageCongestionRate:
           _readInt(json['congestion_reported_observation_count']) > 0 &&
               json['average_congestion_rate'] != null
@@ -251,7 +251,7 @@ class NotificationPreferences {
       value is bool ? value : fallback;
 }
 
-/// An archived public alert, independent of a user's read/preferences state.
+
 class AnalyticsAlert {
   const AnalyticsAlert({
     required this.id,
@@ -396,8 +396,7 @@ class TransitNotification {
   final DateTime? expiresAt;
   final bool isActive;
 
-  /// Publisher-supplied details, or clearly labelled schedule-observation
-  /// estimates created by the Module 5 cloud collector.
+
   final int? delayMinutes;
   final String? vehicleLabel;
   final String? fromStop;
@@ -526,7 +525,6 @@ class TransitNotification {
     throw FormatException('Invalid or missing $key.');
   }
 
-  // Invalid optional details must not suppress an otherwise valid warning.
   static int? _optionalMinutes(Object? value) =>
       value is int && value >= 0 && value <= 1440 ? value : null;
 

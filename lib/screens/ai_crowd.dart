@@ -908,13 +908,14 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     }
     final dayAvg = await _api.getStationAverageForWeekday(station!, weekday!);
     if (!mounted) return;
-    // Sample hours chosen to reflect Rapid KL's actual operating pattern:
-    // service runs 06:00–24:00 (00:00–06:00 excluded, matching Tab 1's
-    // _isOutsideOperatingHours cutoff), with the morning rush (07:00–09:00)
-    // and evening rush (17:00–19:30) given denser coverage since that's
-    // when demand swings the most, plus a couple of midday samples for
-    // off-peak contrast.
-    final hours = [6, 7, 8, 9, 12, 15, 17, 18, 19];
+    // Full operating-hours coverage: 06:00–24:00 (00:00–06:00 excluded,
+    // matching Tab 1's _isOutsideOperatingHours cutoff), one hour per slot —
+    // the same 19-hour set already used by the Full-Day Crowd Pattern chart
+    // (_buildFullDayCrowdChart) and the Full Baseline Ranges table
+    // (_buildFullBaselineRanges), so Peak Summary, Top 3 Peak Hours, and
+    // Peak vs Off-Peak are now derived from the same hourly data as the
+    // chart instead of a smaller 9-hour sample.
+    final hours = List.generate(19, (i) => 6 + i);
     final factor = _magnitudeFactor(dayAvg);
     final slots = hours
         .map((h) => MapEntry(h, predictCrowd(weekday, h * 60, factor)))
@@ -2173,12 +2174,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   }
 
   // Full breakdown of the baseline, one row per hour from 6am through 12am
-  // (the full Rapid KL operating window) — not just the 9 hours sampled by
-  // _peakSlots — as a single Time | Weekday | Weekend | Estimated table,
-  // mirroring the original sampled-hours table's layout. Weekday/Weekend
-  // columns are read straight from _baselineOccupancy(); Estimated is that
-  // same rule table for the selected day, multiplied by the station factor
-  // — nothing new computed here.
+  // (the full Rapid KL operating window) — the same 19-hour set _peakSlots
+  // now uses — as a single Time | Weekday | Weekend | Estimated table.
+  // Weekday/Weekend columns are read straight from _baselineOccupancy();
+  // Estimated is that same rule table for the selected day, multiplied by
+  // the station factor — nothing new computed here.
   Widget _buildFullBaselineRanges() {
     final weekday = _peakWeekday!;
     final isWeekend = weekday == DateTime.saturday || weekday == DateTime.sunday;
@@ -2269,10 +2269,11 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
   // levels from 6am-12am (midnight), computed directly via predictCrowd() —
   // i.e. the same _baselineOccupancy() rule table and the same
   // network-comparison factor (_peakFactor) already computed by
-  // _runPeakHours(). This is purely a denser, full-day view for the chart;
-  // it does not touch _peakSlots, so the Peak Analysis Summary, Top 3
-  // Predicted Time Periods, and Peak vs Off-Peak Comparison below all keep
-  // using the original 9 sampled hours, unchanged.
+  // _runPeakHours(). This independently recomputes the same 19-hour set
+  // _peakSlots now holds (rather than reusing _peakSlots directly), so it
+  // remains purely a chart-rendering concern; the Peak Analysis Summary,
+  // Top 3 Predicted Time Periods, and Peak vs Off-Peak Comparison below all
+  // read from _peakSlots and are numerically consistent with this chart.
   Widget _buildFullDayCrowdChart() {
     final weekday = _peakWeekday!;
     final factor = _peakFactor ?? 0;
@@ -2888,6 +2889,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     Widget diffLine;
     if (weekdayAvg != null && weekendAvg != null) {
       final diff = weekdayAvg - weekendAvg;
+      final higherLabel = diff >= 0 ? 'weekdays' : 'weekends';
       final lowerAvg = diff >= 0 ? weekendAvg : weekdayAvg;
       final diffPct = lowerAvg > 0 ? (diff.abs() / lowerAvg * 100) : 0.0;
       diffLine = Container(
@@ -2897,33 +2899,12 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
           color: Colors.grey.withValues(alpha: 0.06),
           borderRadius: BorderRadius.circular(8),
         ),
-        child: diff.abs() < 0.5
-            ? const Text(
-          'Difference: 0/day (0.0%, essentially tied)',
+        child: Text(
+          diff.abs() < 0.5
+              ? 'Difference: 0/day (0.0%, essentially tied)'
+              : 'Difference: ${_formatNumber(diff.abs())}/day (${diffPct.toStringAsFixed(1)}% higher on $higherLabel)',
           textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
-        )
-            : Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              'Difference: ${_formatNumber(diff.abs())}/day',
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
-            ),
-            const SizedBox(height: 2),
-            // Weekday is described as either higher (red, more people)
-            // or lower (green, fewer people) than weekend — matching the
-            // crowd convention and the ranking compare-stations style.
-            Text(
-              'Weekday is ${diffPct.toStringAsFixed(1)}% ${diff > 0 ? 'higher' : 'lower'}',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.bold,
-                  color: diff > 0 ? const Color(0xFFDC2626) : const Color(0xFF16A34A)),
-            ),
-          ],
+          style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.black87),
         ),
       );
     } else {
@@ -3086,7 +3067,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
       return _sectionCard(
         title: 'MONTHLY RIDERSHIP TREND',
         icon: Icons.show_chart,
-        subtitle: 'Average daily ridership by month.',
+        subtitle: 'Average daily ridership by month, from all real records for this station.',
         child: _emptyState('No records available to compute a monthly trend.'),
       );
     }
@@ -3110,7 +3091,8 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
     return _sectionCard(
       title: 'MONTHLY RIDERSHIP TREND',
       icon: Icons.show_chart,
-      subtitle: 'Average daily ridership by month.',
+      subtitle: 'Average daily ridership by month, from all real records for this station '
+          '(not affected by the month filter).',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -4448,7 +4430,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
               ),
               const SizedBox(height: 2),
               // Station A is described as either higher (red, more
-              // people) or lower (green, fewer people) than Station B
+              // people) or lower (cyan, fewer people) than Station B
               // — matching the crowd convention used elsewhere.
               Text(
                 '${a.station} is ${diffPct.toStringAsFixed(1)}% ${diff > 0 ? 'higher' : 'lower'}',
@@ -4456,7 +4438,7 @@ class _AiCrowdScreenState extends State<AiCrowdScreen> {
                 style: TextStyle(
                     fontSize: 12.5,
                     fontWeight: FontWeight.bold,
-                    color: diff > 0 ? const Color(0xFFDC2626) : const Color(0xFF16A34A)),
+                    color: diff > 0 ? const Color(0xFFDC2626) : const Color(0xFF0891B2)),
               ),
             ],
           ),

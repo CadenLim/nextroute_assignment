@@ -8,7 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:gtfs_realtime_bindings/gtfs_realtime_bindings.dart' as gtfs;
 
-import 'personal_assistance_functions.dart'; // 🌟 ADDED FRIEND'S FUNCTION
+import 'personal_assistance_functions.dart';
 import 'gtfs_route_timetable.dart';
 
 // =========================================================
@@ -32,7 +32,6 @@ class StationModel {
   });
 }
 
-// 🌟 LIVE VEHICLE MODEL
 class LiveVehicle {
   final String id;
   final double lat;
@@ -97,6 +96,10 @@ class ApiService {
   final Map<String, List<GtfsFrequencyWindow>> _tripFrequencies = {};
   final Map<String, GtfsServiceCalendar> _serviceCalendars = {};
   final Map<String, Map<int, bool>> _calendarExceptions = {};
+
+  // 🌟 新增：存储轻快铁/捷运的频次信息 (frequencies.txt)
+  final Map<String, List<Map<String, int>>> _railFrequencies = {};
+
   bool _isGtfsFullyCached = false;
 
   String _cleanStationName(String rawName) {
@@ -158,14 +161,135 @@ class ApiService {
     return 12742 * asin(sqrt(a));
   }
 
-  Duration _parseDuration(String timeStr) {
-    final parts = timeStr.split(':');
-    if (parts.length != 3) return Duration.zero;
-    return Duration(
-      hours: int.tryParse(parts[0]) ?? 0,
-      minutes: int.tryParse(parts[1]) ?? 0,
-      seconds: int.tryParse(parts[2]) ?? 0,
-    );
+  int _timeToSeconds(String t) {
+    final p = t.trim().split(':');
+    if (p.length < 2) return 0;
+    final h = int.tryParse(p[0]) ?? 0;
+    final m = int.tryParse(p[1]) ?? 0;
+    final s = p.length > 2 ? (int.tryParse(p[2]) ?? 0) : 0;
+    return h * 3600 + m * 60 + s;
+  }
+
+  String _secondsToTime(int s) {
+    s = s % 86400;
+    final h = (s ~/ 3600).toString().padLeft(2, '0');
+    final m = ((s % 3600) ~/ 60).toString().padLeft(2, '0');
+    return '$h:$m';
+  }
+
+  // 🌟 新增：解析 frequencies.txt（folder 用于和 trip_id 的前缀保持一致，例如 'bus_', 'mrt_feeder_', 'rail_'）
+  void _parseRailFrequencies(String raw, String folder) {
+    final lines = const CsvToListConverter(eol: '\n', shouldParseNumbers: false)
+        .convert(raw.replaceAll('\uFEFF', '').replaceAll('\r\n', '\n'))
+        .where((row) => row.any((cell) => cell.toString().trim().isNotEmpty))
+        .toList();
+    if (lines.isEmpty) return;
+
+    final header = lines[0]
+        .map((e) => e.toString().trim().toLowerCase())
+        .toList();
+    final tripIdIdx = header.indexOf('trip_id');
+    final startIdx = header.indexOf('start_time');
+    final endIdx = header.indexOf('end_time');
+    final headwayIdx = header.indexOf('headway_secs');
+
+    if (tripIdIdx == -1 || startIdx == -1 || endIdx == -1 || headwayIdx == -1)
+      return;
+
+    for (final line in lines.skip(1)) {
+      final parts = line.map((e) => e.toString().trim()).toList();
+      if (parts.length > headwayIdx) {
+        final tripKey = '${folder}_${parts[tripIdIdx]}';
+        final startSecs = _timeToSeconds(parts[startIdx]);
+        final endSecs = _timeToSeconds(parts[endIdx]);
+        final headwaySecs = int.tryParse(parts[headwayIdx]) ?? 300;
+
+        _railFrequencies.putIfAbsent(tripKey, () => []);
+        _railFrequencies[tripKey]!.add({
+          'start': startSecs,
+          'end': endSecs,
+          'headway': headwaySecs,
+        });
+      }
+    }
+  }
+
+  // 🌟 核心修复：根据真实的轻快铁班次间隔计算等待时间，防止错估导致 1000+ 分钟等待
+  Map<String, dynamic> _computeDepartureAndWait(
+    String tripId,
+    List<Map<String, dynamic>> stops,
+    int originStopIndex,
+    int nowSeconds,
+  ) {
+    if (_railFrequencies.containsKey(tripId)) {
+      final freqs = _railFrequencies[tripId]!;
+      final tStartBase = _timeToSeconds(stops[0]['arrival_time']);
+      final tOriginBase = _timeToSeconds(
+        stops[originStopIndex]['arrival_time'],
+      );
+      final offsetSecs = tOriginBase - tStartBase; // 首站到达当前站的耗时
+      final tReq = nowSeconds - offsetSecs;
+
+      for (final f in freqs) {
+        final start = f['start']!;
+        final end = f['end']!;
+        final headway = f['headway']!;
+
+        if (tReq <= start) {
+          final depStation = start + offsetSecs;
+          final wait = ((depStation - nowSeconds) / 60).ceil();
+          return {
+            'wait': wait < 0 ? 0 : wait,
+            'depart': _secondsToTime(depStation),
+          };
+        } else if (tReq <= end) {
+          final k = ((tReq - start) / headway).ceil();
+          final tripStart = start + k * headway;
+          if (tripStart <= end) {
+            final depStation = tripStart + offsetSecs;
+            final wait = ((depStation - nowSeconds) / 60).ceil();
+            return {
+              'wait': wait < 0 ? 0 : wait,
+              'depart': _secondsToTime(depStation),
+            };
+          }
+        }
+      }
+
+      // 已过末班车，算次日首班车
+      final firstF = freqs.first;
+      final depStationTomorrow = firstF['start']! + offsetSecs + 86400;
+      final waitTomorrow = ((depStationTomorrow - nowSeconds) / 60).ceil();
+      return {
+        'wait': waitTomorrow,
+        'depart': _secondsToTime(depStationTomorrow),
+      };
+    }
+
+    // 普通巴士 / MRT Feeder fallback 算法
+    final arrivalTimeStr = stops[originStopIndex]['arrival_time'] as String;
+    final oMins = _timeToMinutes(arrivalTimeStr); // 自动处理 25:30 -> 1530 mins
+    final nowMinutes = (nowSeconds / 60).floor();
+
+    int wait = oMins - nowMinutes;
+    if (wait < 0) wait += 1440; // 处理跨午夜班次
+
+    // 格式化真实的出发时间 (将 25:xx:xx 转换回正常的 01:xx)
+    String departStr;
+    try {
+      final parts = arrivalTimeStr.split(':');
+      int h = int.parse(parts[0]);
+      int m = int.parse(parts[1]);
+      if (h >= 24) h -= 24;
+      departStr =
+          '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}';
+    } catch (_) {
+      departStr = arrivalTimeStr.length >= 5
+          ? arrivalTimeStr.substring(0, 5)
+          : arrivalTimeStr;
+    }
+
+    return {'wait': wait, 'depart': departStr};
   }
 
   Future<void> _ensureGtfsFullyCached() async {
@@ -204,8 +328,13 @@ class ApiService {
             'assets/gtfs/$folder/frequencies.txt',
           );
           _tripFrequencies.addAll(_parseFrequencies(rawFrequencies, folder));
-        } catch (_) {
-          // frequencies.txt is optional in GTFS. Fixed trips remain usable.
+          // Journey Planning and Smart Reminder share the same GTFS frequency
+          // asset while keeping the compact representations each calculation
+          // needs.
+          _parseRailFrequencies(rawFrequencies, folder);
+        } catch (e) {
+          // frequencies.txt is optional. Fixed timetable trips remain usable.
+          debugPrint('GTFS frequencies load error for $folder: $e');
         }
 
         try {
@@ -436,17 +565,6 @@ class ApiService {
     return intermediateStops;
   }
 
-  // Fixed/stage-fare approximation, keyed on straight-line distance rather than
-  // elapsed minutes. Rapid Bus & Rail fares are set by distance/zone, not by
-  // how long the vehicle took to get there (which moves with traffic) — a
-  // duration-based formula overcharges a route stuck in a jam and undercharges
-  // a lucky fast one, which is backwards.
-  //
-  // These tier boundaries are a reasonable placeholder, not a confirmed source
-  // of truth for the exact current fare. If assets/gtfs/<folder>/ ships
-  // fare_attributes.txt / fare_rules.txt, prefer looking the fare up there —
-  // that's Prasarana's own published price per fare_id and will always be
-  // more accurate than a hand-tuned table.
   double _fareForLeg(String folder, double distanceKm) {
     if (folder == 'rail') {
       if (distanceKm <= 4) return 1.10;
@@ -457,7 +575,7 @@ class ApiService {
       if (distanceKm <= 35) return 4.60;
       return 6.40;
     }
-    if (folder == 'mrt_feeder') return 1.00; // Feeder buses: flat RM1.
+    if (folder == 'mrt_feeder') return 1.00;
     if (distanceKm <= 4) return 1.00;
     if (distanceKm <= 10) return 2.00;
     return 3.00;
@@ -476,11 +594,17 @@ class ApiService {
         for (var s in _cachedStations)
           for (var id in s.ids) id: s,
       };
-      final nowMinutes = DateTime.now().hour * 60 + DateTime.now().minute;
 
-      int getWaitTime(int tripMins) {
-        int w = tripMins - nowMinutes;
-        return w < 0 ? w + 1440 : w;
+      // 🌟 核心修复 1：强制使用马来西亚时间 (UTC+8) 并处理 GTFS 午夜翻滚 (24:00:00+)
+      final nowUTC = DateTime.now().toUtc();
+      final nowMYT = nowUTC.add(const Duration(hours: 8));
+
+      int nowSeconds = nowMYT.hour * 3600 + nowMYT.minute * 60 + nowMYT.second;
+      final weekday = nowMYT.weekday; // 1 = Monday, 7 = Sunday
+
+      // 如果当前时间是凌晨 (0点~4点)，将时间推至 24 小时以后，以匹配 GTFS 的 25:00:00 格式
+      if (nowMYT.hour < 4) {
+        nowSeconds += 24 * 3600;
       }
 
       Map<String, Map<String, dynamic>> bestDirect = {};
@@ -491,6 +615,13 @@ class ApiService {
         final stops = _allTripStopTimes[tripId]!;
         if (stops.length < 2) continue;
 
+        // 🌟 基于日历的过滤
+        if (tripId.startsWith('rail_')) {
+          if (weekday <= 5 && !tripId.contains('MonFri')) continue;
+          if (weekday == 6 && !tripId.contains('Sat')) continue;
+          if (weekday == 7 && !tripId.contains('Sun')) continue;
+        }
+
         int oIdx = stops.indexWhere(
           (s) => _matchesStation(origin, s['stop_id']),
         );
@@ -500,23 +631,29 @@ class ApiService {
 
         if (oIdx != -1 && dIdx != -1 && oIdx < dIdx) {
           String rId = stops[oIdx]['route_id'];
-          int oMins = _timeToMinutes(stops[oIdx]['arrival_time']);
-          int wait = getWaitTime(oMins);
+          final depInfo = _computeDepartureAndWait(
+            tripId,
+            stops,
+            oIdx,
+            nowSeconds,
+          );
+          int wait = depInfo['wait'] as int;
+          int dur =
+              (_timeToMinutes(stops[dIdx]['arrival_time']) -
+                      _timeToMinutes(stops[oIdx]['arrival_time']))
+                  .abs();
 
           if (!bestDirect.containsKey(rId) || wait < bestDirect[rId]!['wait']) {
-            int dur = (_timeToMinutes(stops[dIdx]['arrival_time']) - oMins)
-                .abs();
             List<String> intermediates = _getIntermediateStops(
               stops,
               oIdx,
               dIdx,
               stopIdToStation,
             );
-
             bestDirect[rId] = {
               'wait': wait,
               'dur': dur == 0 ? 15 : dur,
-              'depart': stops[oIdx]['arrival_time'],
+              'depart': depInfo['depart'],
               'stops': intermediates,
               'trip': tripId,
             };
@@ -525,8 +662,13 @@ class ApiService {
 
         if (oIdx != -1) {
           String rId = stops[oIdx]['route_id'];
-          int oMins = _timeToMinutes(stops[oIdx]['arrival_time']);
-          int wait = getWaitTime(oMins);
+          final depInfo = _computeDepartureAndWait(
+            tripId,
+            stops,
+            oIdx,
+            nowSeconds,
+          );
+          int wait = depInfo['wait'] as int;
 
           for (int i = oIdx + 1; i < stops.length; i++) {
             final stm = stopIdToStation[stops[i]['stop_id']];
@@ -534,19 +676,20 @@ class ApiService {
               reachFromOrigin.putIfAbsent(stm, () => {});
               if (!reachFromOrigin[stm]!.containsKey(rId) ||
                   wait < reachFromOrigin[stm]![rId]!['wait']) {
-                int dur = (_timeToMinutes(stops[i]['arrival_time']) - oMins)
-                    .abs();
+                int dur =
+                    (_timeToMinutes(stops[i]['arrival_time']) -
+                            _timeToMinutes(stops[oIdx]['arrival_time']))
+                        .abs();
                 List<String> intermediates = _getIntermediateStops(
                   stops,
                   oIdx,
                   i,
                   stopIdToStation,
                 );
-
                 reachFromOrigin[stm]![rId] = {
                   'wait': wait,
                   'dur': dur == 0 ? 15 : dur,
-                  'depart': stops[oIdx]['arrival_time'],
+                  'depart': depInfo['depart'],
                   'stops': intermediates,
                   'trip': tripId,
                 };
@@ -573,7 +716,6 @@ class ApiService {
                   dIdx,
                   stopIdToStation,
                 );
-
                 reachToDest[stm]![rId] = {
                   'dur': dur == 0 ? 15 : dur,
                   'stops': intermediates,
@@ -585,21 +727,12 @@ class ApiService {
         }
       }
 
-      // NOTE: a hardcoded special case for origin names containing 'PV15' or
-      // 'COLUMBIA' used to live here, injecting a fake edge to a specific LRT
-      // station for the '250'/'T250' routes. Removed: it only masked whatever
-      // real gap (missing stop/shape match, wrong stop_id, etc.) made that one
-      // route fail to resolve through the general path below. If that route
-      // still doesn't resolve after the candidate-station widening in
-      // journey_planning.dart, the fix belongs in the GTFS data/matching, not
-      // a name check here.
-
       for (final rId in bestDirect.keys) {
         final m =
             _allRouteMetadata[rId] ??
             {'short_name': rId, 'color': Colors.blue, 'folder': 'bus'};
         final data = bestDirect[rId]!;
-        final departStr = (data['depart'] as String).substring(0, 5);
+        final departStr = (data['depart'] as String);
         final List<String> intermediateNames =
             (data['stops'] as List<String>?) ?? [];
 
@@ -612,6 +745,7 @@ class ApiService {
             destination.lon,
           ),
         );
+
         results.add({
           'id': rId,
           'name': m['short_name'],
@@ -661,10 +795,7 @@ class ApiService {
               final d2 = reachToDest[stm]![r2Id]!['dur'];
               final wait = reachFromOrigin[stm]![r1Id]!['wait'];
               final departStr =
-                  (reachFromOrigin[stm]![r1Id]!['depart'] as String).substring(
-                    0,
-                    5,
-                  );
+                  (reachFromOrigin[stm]![r1Id]!['depart'] as String);
 
               final List<String> iStops1 =
                   (reachFromOrigin[stm]![r1Id]!['stops'] as List<String>?) ??
@@ -830,10 +961,7 @@ class ApiService {
               final d3 = reachToDest[stm2]![r3Id]!['dur'];
               final wait = reachFromOrigin[stm1]![r1Id]!['wait'];
               final departStr =
-                  (reachFromOrigin[stm1]![r1Id]!['depart'] as String).substring(
-                    0,
-                    5,
-                  );
+                  (reachFromOrigin[stm1]![r1Id]!['depart'] as String);
 
               final List<String> iStops1 =
                   (reachFromOrigin[stm1]![r1Id]!['stops'] as List<String>?) ??
@@ -983,7 +1111,6 @@ class ApiService {
         bool aHasRail = a['legs'].any((l) => l['mode'] == 'Rail');
         bool bHasRail = b['legs'].any((l) => l['mode'] == 'Rail');
 
-        // 🌟 NEW RULE: If user starts at a train station, heavily penalize taking a bus to another train!
         if (aStartsWithBus && aHasRail) scoreA += 500;
         if (bStartsWithBus && bHasRail) scoreB += 500;
 
@@ -1002,9 +1129,6 @@ class ApiService {
         return scoreA.compareTo(scoreB);
       });
 
-      // Consumers decide how many options to display. Favourite-route replanning
-      // must be able to find a saved service sequence even when it is no longer
-      // ranked in the current top four results.
       return finalResults;
     } catch (e) {
       debugPrint('Error finding routes: $e');
@@ -1471,7 +1595,6 @@ class ApiService {
     return tripStopTimes;
   }
 
-  // 🌟 Database Fix: Use Friend's Edge Function to bypass RLS blocking
   Future<void> saveNavigationHistory({
     required String origin,
     required String destination,
@@ -1540,7 +1663,6 @@ class ApiService {
       folder = 'mrt_feeder';
     }
     if (folder == 'rapid-bus-kl') folder = 'bus';
-    // KTMB is explicitly excluded, including direct calls from other screens.
     if (folder == 'ktmb' || folder == 'ktm') return [];
     if (folder == 'rail' || folder == 'rapid-rail-kl') {
       debugPrint(
@@ -1586,7 +1708,6 @@ class ApiService {
         final rawTrip = v.trip.tripId.trim();
         String? resolved;
 
-        // IDs belong to their source feed. Never guess using digits or plates.
         final routeKey = '${folder}_$rawRoute';
         if (rawRoute.isNotEmpty && _allRouteMetadata.containsKey(routeKey)) {
           resolved = routeKey;
@@ -1606,8 +1727,6 @@ class ApiService {
         if (resolved == null && rawTrip.isNotEmpty) {
           resolved = _tripToRouteCache['${folder}_$rawTrip'];
           if (resolved == null) {
-            // Some feeds omit the static service prefix. Accept only an
-            // underscore-delimited suffix that resolves to one route.
             final matches = _tripToRouteCache.entries
                 .where(
                   (entry) =>

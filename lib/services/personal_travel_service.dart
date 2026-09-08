@@ -114,9 +114,6 @@ class SavedRoute {
     final legServices = servicesFromJourney(route);
     if (_sameSequence(expectedServices, legServices)) return true;
 
-    // Compatibility for favourites created before stable-route-v1. We inspect
-    // only the service order encoded in the old value; the current journey's
-    // dynamic signature is intentionally never compared.
     return !hasStableSignature &&
         (_legacySignatureContainsSequence(signature, displayServices) ||
             _legacySignatureContainsSequence(signature, legServices));
@@ -178,9 +175,6 @@ class SavedRoute {
         normalised == 'LINE 5') {
       normalised = 'KELANA JAYA';
     }
-    // Journey legs can contain bookkeeping entries such as Transfer or
-    // Interchange.  They are not services and must never become part of a
-    // favourite route's stable service sequence.
     if (const {
       'TRANSFER',
       'INTERCHANGE',
@@ -234,9 +228,7 @@ class SavedRoute {
           );
           modes = List<String>.from(decoded['modes'] as List? ?? const []);
         }
-      } catch (_) {
-        // Keep loading legacy or malformed rows using their display line name.
-      }
+      } catch (_) {}
     }
     return SavedRoute(
       id: json['id'] as String,
@@ -301,9 +293,6 @@ class SavedRoute {
         })
         .toList(growable: false);
 
-    // A station name saved with the favourite is the strongest discriminator
-    // when nearby stops share an aggregated GTFS ID. Exact ID sets are the
-    // fallback for renamed stations. Coordinates break any remaining tie.
     final pool = sameName.isNotEmpty
         ? sameName
         : sameIds.isNotEmpty
@@ -324,11 +313,6 @@ class SavedRoute {
     final restoredIds = <String>{...saved.ids, ...station.ids}.toList()..sort();
     final restoredLines = <String>{...saved.lines, ...station.lines};
     return StationModel(
-      // Keep every ID that was used by Journey Planning when the favourite
-      // was saved. A saved location can intentionally contain multiple nearby
-      // platform/stop IDs; reducing it to one current station makes the same
-      // route disappear on reopen. Add newly resolved IDs for timetable
-      // updates without discarding the original search identity.
       ids: restoredIds,
       name: saved.name,
       lines: restoredLines,

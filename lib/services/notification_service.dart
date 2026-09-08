@@ -215,7 +215,6 @@ class LocalPushNotificationService {
     final deviceTimezone =
         await _deviceChannel.invokeMethod<String>('getLocalTimezone') ?? 'UTC';
     final timezoneName = switch (deviceTimezone) {
-      // The compact timezone database omits this equivalent alias.
       'Asia/Kuala_Lumpur' => 'Asia/Singapore',
       'GMT' || 'UTC' => 'Etc/UTC',
       final identifier => identifier,
@@ -325,9 +324,7 @@ class NotificationRepository {
                 isRead: false,
               );
               await showPushIfEnabled(notification);
-            } on FormatException {
-              // A malformed remote row is ignored and the list still reloads.
-            }
+            } on FormatException catch (_) {}
             onChanged();
           },
         )
@@ -352,7 +349,6 @@ class NotificationRepository {
 
   Future<List<Map<String, dynamic>>> _loadSupabaseRows() async {
     final now = DateTime.now().toUtc().toIso8601String();
-    // Separate limits keep a busy archive from displacing current alerts.
     final pages = await Future.wait([
       _supabase
           .from('notifications')
@@ -495,9 +491,7 @@ class NotificationRepository {
     }
     try {
       await devicePush.show(notification);
-    } on Object {
-      // An alert remains in the in-app inbox if device notification fails.
-    }
+    } on Object catch (_) {}
   }
 
   static bool _notificationEnabled(
@@ -514,10 +508,6 @@ class NotificationRepository {
     };
   }
 }
-
-// -----------------------------------------------------------------------------
-// Daily Commute model
-// -----------------------------------------------------------------------------
 
 class DailyCommute {
   const DailyCommute({
@@ -536,9 +526,6 @@ class DailyCommute {
   });
 
   factory DailyCommute.fromJson(Map<String, dynamic> json) {
-    // `arrive_by` is retained as the legacy database key to avoid a schema
-    // change. Its value is a departure time after the departure-based data
-    // migration has run.
     final timeParts = json['arrive_by'].toString().split(':');
     final hour = int.tryParse(timeParts.first) ?? 9;
     final minute = timeParts.length > 1 ? int.tryParse(timeParts[1]) ?? 0 : 0;
@@ -645,7 +632,6 @@ class DailyCommute {
     'saved_route_id': savedRouteId,
     'origin': origin,
     'destination': destination,
-    // Keep the deployed column name for compatibility; it stores departure.
     'arrive_by': _databaseTime(departureTimeMinutes),
     'active_days': activeDays.toList()..sort(),
     'reminder_enabled': reminderEnabled,
@@ -663,10 +649,6 @@ class DailyCommute {
         '${(normalized % 60).toString().padLeft(2, '0')}:00';
   }
 }
-
-// -----------------------------------------------------------------------------
-// Daily Commute persistence and scheduling
-// -----------------------------------------------------------------------------
 
 abstract interface class DailyCommuteRepository {
   Future<List<DailyCommute>> loadAll();

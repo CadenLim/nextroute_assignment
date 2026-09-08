@@ -74,6 +74,7 @@ class LocalPushNotificationService {
 
   final FlutterLocalNotificationsPlugin _plugin;
   bool _initialized = false;
+  bool _timeZonesInitialized = false;
   static const int _legacyDailyCommuteNotificationBaseId = 7800;
   static const MethodChannel _deviceChannel = MethodChannel('nextroute/device');
 
@@ -134,6 +135,7 @@ class LocalPushNotificationService {
   Future<void> scheduleDailyCommuteNotifications(DailyCommute commute) async {
     if (!isSupported || !commute.reminderEnabled) return;
     await _initialize();
+    await _refreshLocalTimezone();
     final notificationTime = commute.notificationTimeMinutes;
     final departureTime = _formatMinutes(commute.departureTimeMinutes);
     final estimatedArrival = _formatMinutes(commute.estimatedArrivalMinutes);
@@ -211,21 +213,41 @@ class LocalPushNotificationService {
     if (_initialized) {
       return;
     }
-    tz_data.initializeTimeZones();
-    final deviceTimezone =
-        await _deviceChannel.invokeMethod<String>('getLocalTimezone') ?? 'UTC';
-    final timezoneName = switch (deviceTimezone) {
-      'Asia/Kuala_Lumpur' => 'Asia/Singapore',
-      'GMT' || 'UTC' => 'Etc/UTC',
-      final identifier => identifier,
-    };
-    tz.setLocalLocation(tz.getLocation(timezoneName));
     await _plugin.initialize(
       settings: const InitializationSettings(
         android: AndroidInitializationSettings('@mipmap/ic_launcher'),
       ),
     );
     _initialized = true;
+  }
+
+  Future<void> _refreshLocalTimezone() async {
+    if (!_timeZonesInitialized) {
+      tz_data.initializeTimeZones();
+      _timeZonesInitialized = true;
+    }
+    final deviceTimezone =
+        await _deviceChannel.invokeMethod<String>('getLocalTimezone') ?? 'UTC';
+    final timezoneName = timezoneNameForDeviceIdentifier(deviceTimezone);
+    tz.setLocalLocation(tz.getLocation(timezoneName));
+  }
+
+  @visibleForTesting
+  static String timezoneNameForDeviceIdentifier(String deviceTimezone) {
+    final identifier = deviceTimezone.trim();
+    final fixedOffset = RegExp(
+      r'^(?:GMT|UTC)([+-])(\d{1,2})(?::?00)?$',
+    ).firstMatch(identifier);
+    if (fixedOffset != null) {
+      final hours = int.parse(fixedOffset.group(2)!);
+      final reversedSign = fixedOffset.group(1) == '+' ? '-' : '+';
+      return hours == 0 ? 'Etc/UTC' : 'Etc/GMT$reversedSign$hours';
+    }
+    return switch (identifier) {
+      'Asia/Kuala_Lumpur' => 'Asia/Singapore',
+      'GMT' || 'UTC' => 'Etc/UTC',
+      final value => value,
+    };
   }
 }
 

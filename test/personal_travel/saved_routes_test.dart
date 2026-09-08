@@ -324,7 +324,101 @@ void main() {
     expect(find.text('32 min'), findsOneWidget);
     expect(find.text('RM 5.25'), findsWidgets);
     expect(find.text('250 via Wangsa Maju'), findsWidgets);
+    expect(find.byKey(const Key('start-journey-again')), findsOneWidget);
   });
+
+  testWidgets('travel history can replan and start the same journey again', (
+    tester,
+  ) async {
+    final createdAt = DateTime(2026, 9, 7, 9, 37);
+    final api = PlanningApi();
+    final historyEntry = TravelHistoryEntry(
+      origin: 'CURRENT ORIGIN',
+      destination: 'CURRENT DESTINATION',
+      fare: 2,
+      currency: 'MYR',
+      departureTime: '09:37',
+      createdAt: createdAt,
+      lineName: 'Kelana Jaya',
+      originStation: station('CURRENT ORIGIN', ['rail_a']),
+      destinationStation: station('CURRENT DESTINATION', ['rail_c']),
+      routeSignature: 'DIR_rail_KJ',
+      transitSteps: const [
+        TravelHistoryStep(
+          mode: 'Rail',
+          name: 'Kelana Jaya',
+          duration: '10 min',
+          description: 'Board at CURRENT ORIGIN',
+        ),
+      ],
+    );
+    await launch(
+      tester,
+      PersonalTravelScreen(
+        service: ProfileServiceStub(history: [historyEntry]),
+        savedRoutesRepository: MemoryRoutes(),
+        savedPlacesRepository: MemoryPlaces(),
+        journeyApiService: api,
+        journeyAuthenticate: (_) async => true,
+      ),
+    );
+
+    await tester.tap(find.byKey(const Key('open-travel-history')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(Key('history-trip-${createdAt.toIso8601String()}')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('start-journey-again')));
+    await tester.pumpAndSettle();
+
+    final planning = tester.widget<JourneyPlanningScreen>(
+      find.byType(JourneyPlanningScreen),
+    );
+    expect(planning.savedRoute!.origin.name, 'CURRENT ORIGIN');
+    expect(planning.savedRoute!.destination.name, 'CURRENT DESTINATION');
+    expect(planning.savedRoute!.stableServiceSequence, ['KELANA JAYA']);
+    expect(api.searches, 1);
+    expect(find.text('10 min'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'legacy travel history replays by matching current station names',
+    (tester) async {
+      final createdAt = DateTime(2026, 9, 6, 8);
+      final api = PlanningApi();
+      await launch(
+        tester,
+        PersonalTravelScreen(
+          service: ProfileServiceStub(
+            history: [trip('CURRENT ORIGIN', 'CURRENT DESTINATION', createdAt)],
+          ),
+          savedRoutesRepository: MemoryRoutes(),
+          savedPlacesRepository: MemoryPlaces(),
+          journeyApiService: api,
+          journeyAuthenticate: (_) async => true,
+        ),
+      );
+
+      await tester.tap(find.byKey(const Key('open-travel-history')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(Key('history-trip-${createdAt.toIso8601String()}')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('start-journey-again')));
+      await tester.pumpAndSettle();
+
+      final planning = tester.widget<JourneyPlanningScreen>(
+        find.byType(JourneyPlanningScreen),
+      );
+      expect(planning.savedRoute!.origin.name, 'CURRENT ORIGIN');
+      expect(planning.savedRoute!.destination.name, 'CURRENT DESTINATION');
+      expect(api.searches, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   test('saved place keeps station data and resolves current GTFS IDs', () {
     final original = SavedPlace(
